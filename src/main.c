@@ -224,6 +224,8 @@ int main(int argc, char **argv) {
     g_back_max_h = av.geometry.max_height ? av.geometry.max_height : av.geometry.base_height;
     g_back = (u32 *)calloc((size_t)g_back_max_w * g_back_max_h, sizeof(u32));
     if (!g_back) { fprintf(stderr, "backbuffer alloc failed\n"); return 1; }
+    g_frame_w = av.geometry.base_width;
+    g_frame_h = av.geometry.base_height;
 
     /* Create window sized to a reasonable 2× of base geometry. */
     int win_w = (int)(av.geometry.base_width  * 2);
@@ -237,9 +239,19 @@ int main(int argc, char **argv) {
     double fps = av.timing.fps > 1.0 ? av.timing.fps : 60.0;
     DWORD frame_ms = (DWORD)(1000.0 / fps + 0.5);
 
+    unsigned long frames = 0;
+    DWORD last_report = GetTickCount();
     while (me_platform_pump()) {
         core->retro_run();
         present(g_hwnd);
+        frames++;
+        DWORD now = GetTickCount();
+        if (now - last_report >= 1000) {
+            printf("[run] frames/s=%lu video_refresh=%lu frame_dims=%ux%u back=%p\n",
+                   frames, g_video_calls, g_frame_w, g_frame_h, (void *)g_back);
+            frames = 0;
+            last_report = now;
+        }
         Sleep(frame_ms);
     }
 
