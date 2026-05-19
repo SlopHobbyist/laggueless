@@ -104,7 +104,9 @@ static void me_video_refresh_cb(const void *data, unsigned w, unsigned h, size_t
     g_video_calls++;
     if (!data || !g_back) return;
     if (w > g_back_max_w || h > g_back_max_h) return; /* skip frames bigger than allocation */
-    g_frame_w = w; g_frame_h = h;
+    /* DEBUG: don't update frame dims/buffer — keep test pattern visible. */
+    (void)pitch; (void)w; (void)h;
+    return;
     if (g_pixel_format == RETRO_PIXEL_FORMAT_XRGB8888) {
         convert_xrgb8888((const u32 *)data, pitch, w, h);
     } else if (g_pixel_format == RETRO_PIXEL_FORMAT_RGB565) {
@@ -226,6 +228,15 @@ int main(int argc, char **argv) {
     if (!g_back) { fprintf(stderr, "backbuffer alloc failed\n"); return 1; }
     g_frame_w = av.geometry.base_width;
     g_frame_h = av.geometry.base_height;
+
+    /* DEBUG: fill backbuffer with a magenta/cyan checkerboard so we can tell if
+       present() works independent of the core's video output. */
+    for (unsigned y = 0; y < g_back_max_h; y++) {
+        for (unsigned x = 0; x < g_back_max_w; x++) {
+            int c = ((x >> 4) ^ (y >> 4)) & 1;
+            g_back[y * g_back_max_w + x] = c ? 0x00FF00FF : 0x0000FFFF;
+        }
+    }
 
     /* Create window sized to a reasonable 2× of base geometry. */
     int win_w = (int)(av.geometry.base_width  * 2);
