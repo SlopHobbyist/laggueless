@@ -4,20 +4,28 @@
 #include "core_loader.h"
 
 int main(int argc, char **argv) {
-    (void)argc; (void)argv;
-
-    /* Smoke test: integer-scaling math. SNES 256x224 inside 1920x1080, 4:3 target. */
-    i32 rx, ry;
-    me_iscale_ratios(1920, 1080, 256, 224, 4, 3, &rx, &ry);
-    printf("[integer-scaling] 256x224 in 1920x1080 @ 4:3 -> rx=%d ry=%d -> %dx%d\n",
-           rx, ry, 256 * rx, 224 * ry);
-
-    HWND w = me_platform_create_window("multi-emulator (scaffold)", 1280, 720);
-    if (!w) { fprintf(stderr, "window create failed\n"); return 1; }
-
-    while (me_platform_pump()) {
-        /* TODO: run one emulated frame; push audio (blocking = clock); present video. */
-        Sleep(16);
+    if (argc < 2) {
+        fprintf(stderr, "usage: %s <core.dll>\n", argv[0]);
+        return 1;
     }
+
+    me_core *core = me_core_load(argv[1]);
+    if (!core) {
+        fprintf(stderr, "failed to load core: %s\n", argv[1]);
+        return 1;
+    }
+
+    unsigned api = core->retro_api_version();
+    printf("[core] retro_api_version = %u\n", api);
+
+    struct retro_system_info info = {0};
+    core->retro_get_system_info(&info);
+    printf("[core] library_name      = %s\n", info.library_name      ? info.library_name      : "(null)");
+    printf("[core] library_version   = %s\n", info.library_version   ? info.library_version   : "(null)");
+    printf("[core] valid_extensions  = %s\n", info.valid_extensions  ? info.valid_extensions  : "(null)");
+    printf("[core] need_fullpath     = %s\n", info.need_fullpath ? "true" : "false");
+    printf("[core] block_extract     = %s\n", info.block_extract ? "true" : "false");
+
+    me_core_unload(core);
     return 0;
 }
