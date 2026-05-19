@@ -1,0 +1,189 @@
+bsnes-mt
+
+bsnes-mt is an improved version of bsnes — an accurate emulator of the 16-bit game console SNES (Super Nintendo). Pixel-perfect scaling, PNG screen­shots, built-in hotkeys, better usability, and more.
+Improvements over bsnes
+
+    Pixel-perfect integer-ratio scaling (a.k.a. integer scaling) both vertically and horizontally.
+    Precise aspect ratio of 4:3 instead of 64:49 with correction enabled, in the “Center” and “Scale” modes.
+    Saving screenshots in the compressed PNG format instead of uncompressed BMP.
+    Built-in hotkeys for common actions such as switching to full-screen (F11, Alt+Enter) and pseudo-full-screen (Shift+Enter) modes, or taking a screen­shot (F9, PrintScreen); closing the app with Alt+F4 works in full-screen mode.
+    Drivers are not reset after crashes, a command-line option is provided for explicit reset.
+    Multi­language user interface (English is available too).
+    Better default settings: VSync, blur disabled, Windows’ native file dialogs.
+    Improved usability, bug fixes, and more.
+
+Pixel-perfect integer-ratio scaling on both axes
+
+The new “Pixel-Perfect” mode does integer-ratio scaling both vertically and horizontally, even with aspect-ratio correction enabled. Thanks to this, all pixels have exactly the same size, so there is no pixel shimmering.
+
+The mode is enabled by default. It can be enabled or disabled via the “Settings” → “Output” menu.
+Aspect-ratio accuracy and screen-space usage
+
+With aspect-ratio correction enabled, the actual aspect ratio might be different from the perfect 4:3.
+
+At the regular 256×224 resolution used in the absolute majority of SNES games, the most accurate aspect ratio and maximum screen-space usage are achieved with monitors with the QHD (2560×1440), 4K (3840×2160) and 5K (5120×2880) resolutions. On QHD, 4K and 5K monitors, 93% of the screen height are used. The aspect ratio on QHD and 5K monitors is perfect. Aspect-ratio error on 4K monitors is within 5% and almost unnoticeable.
+
+Least suitable for integer scaling of SNES games are Full HD (1920×1080) displays: just 83% of the screen height are used, and aspect-ratio error is greater than 7% and is noticeable visually.
+Both standard and double resolutions are supported
+
+Pixel-perfect scaling is supported for both standard resolutions 256×224 and 256x240 and high (double) resolutions such as 512×448 and 512×224. An example of a game that uses a high-resolution (HiRes) mode is “R.P.M. Racing” where menus are rendered at 512×448.
+Fast PPU mode is recommended
+
+It’s recommended to use the fast mode of PPU (enabled by default). Otherwise the double 512×448 resolution is always used, that may cause screen space to be used less entirely and aspect ratio to be less accurate. PPU mode can be changed via the “Fast mode” checkbox in the “PPU (video)” section of the “Settings” → “Enhancements” window.
+The “Center” mode is only pixel-perfect vertically
+
+The “Center” mode available in both bsnes-mt and original bsnes, with aspect-ratio correction enabled, only uses integer-ratio scaling vertically. The horizontal scaling ratio is typically fractional for the purpose of achieving a precise aspect ratio.
+
+But at fractional scaling ratios with blur disabled, different pixels in the same line have different sizes. This results in so called pixel shimmering (a.k.a. ripple effect, or jitter), when in-game objects are moving horizontally. Pixel-perfect scaling on both axes is free of this issue.
+
+See also
+
+        IntegerScaler — utility for integer-ratio scaling of games in Windows 7+.
+        SmartUpscale — web-browser extension for preventing blurring images on web pages.
+
+Precise aspect ratio in the “Center” and “Scale” modes
+4:3 instead of 64:49
+
+In the “Center” and “Scale” modes with aspect-ratio correction enabled, aspect ratio is precisely 4:3 (≈1.333) by default. The scaling mode can be selected and aspect-ratio correction can be enabled via the “Settings” → “Output” menu.
+
+Original bsnes uses the aspect ratio of 64:49 (≈1.3), because it calculates the image width based on the pixel aspect-ratio (PAR) of 8:7 instead of the target aspect ratio of 4:3 of the entire image. In bsnes-mt, the 8:7 PAR mode can be enabled via the “8:7 PAR instead of 4:3 AR” checkbox in the “Settings” → “Output” menu.
+More precise algorithm
+
+A more precise algorithm is used for aspect-ratio correction in the “Center” and “Scale” modes, that uses rounding of the scaled-image width.
+
+Original bsnes calculates a corrected width before calculating scaled size and discards fractional part of the resulting value instead of rounding. This results in an error that is higher than with rounding and grows proportionally with scaling ratio.
+Screenshots: PNG, folder auto­creation, date-based naming
+Compressed PNG format
+
+Screen­shots are saved in the PNG format with lossless compression. Thanks to this, screen­shot files have manyfold smaller size compared with uncompressed BMP format used in original bsnes.
+
+A screen­shot in the 256×224 resolution typical for SNES, in the BMP format has the fixed size of 168 KB. Size of screen­shots in the PNG format depends on complexity of the specific image, the size difference compared with BMP can reach tens or hundreds of times. For example, a PNG screen­shot of the screen with the logo of the “The Legend of Zelda” game weighs just 9 KB — 18 times less compared with the same screen­shot in the BMP format.
+Automatic folder creation
+
+The screen­shot folder specified in the emulator settings (“Settings” → “Paths” → “Screenshots”) is created automatically if does not exist. Original bsnes in such case does not save a screen­shot.
+
+Automatic folder creation is useful, for example, if the folder is located on a virtual RAM drive that’s cleared with its contents at each computer reboot. Most of screen­shots are a subject for deletion, so storing them temporarily on a RAM drive makes sense.
+Per-game subfolders
+
+Screen­shots are saved into a subfolder that has a name equal to the name of the game ROM-file. Original bsnes includes ROM-file name in file name of every screenshot.
+Naming based on date and time
+
+A universal approach is used for naming screen­shots, with no limitations regarding their maximum number. Screen­shot files are named according to date and time of taking the screen­shot. If the file exists, a three-digit number of milli­seconds is added to the end of the new-file name. If such file exists too, a numeric index is added, starting with 2 with unlimited increment.
+
+For example, if the default file name would be 2020-04-15 10-15-42.png, then if such file exists, the new file name would be 2020-04-15 10-15-42-123.png. If such file exists too, the file name would be 2020-04-15 10-15-42-123-2.png.
+
+Original bsnes names a screen­shot with a 3-digit index limited to the range of 1–1000, and once the top bound of that range is reached, a file with the same 000.bmp name is over­written forever, replacing the previous screen­shot each time.
+Drivers are not reset after crashes
+
+Backends (drivers) are now not reset after a crash, crashes are not detected, and the settings file is not over­written extra two times at each emulator start and when changing a driver via settings, just for the purpose of tracking crashes.
+
+An issue with a previously selected driver is not the only possible reason for a crash, so resetting driver after each crash is redundant and unusable.
+
+For resetting drivers explicitly when necessary, added the command-line option --resetdrivers. When starting the app with this option, drivers are reset, and the drivers’ settings window is opened immediately.
+Lists of recent games and save states
+
+    The maximum number of items in the lists of recent games and save states is increased from 9 to 25.
+        “File” → “Open Recent Game”;
+        “Tools” → “Save State” / “Load State”.
+
+    Improved the list of recent games (“File” → “Open Recent Game”):
+        empty items are now not displayed;
+        the item for clearing the list and the separator before it are only displayed if there are recent games in the list;
+        if there are no recent games, just one disabled meta­item is displayed, saying about that — “(No recent games)”.
+
+Default settings
+
+Changed default settings:
+
+    disabled blur, inappropriate in combination with pixel-perfect scaling: “Settings” → “Shader” → “None” instead of “Blur”;
+    enabled vertical synchronization (VSync) that serves for preventing screen tearing: “Settings” → “Drivers” → “Video” → “Synchronize”;
+    enabled using Windows’ native file dialogs instead of custom implemen­tations: “Settings” → “Emulator” → “Options” → “Use native file dialogs”. The custom implemen­tations work much slower and also don’t support navigating forward/backward with additional side mouse buttons.
+
+Multi­language user interface
+
+Besides English, the user interface is translated to multiple languages.
+
+By default, the language is chosen auto­matically based on the operating-system language. It’s possible to force a specific language via the command-line option --locale. The following translations are available:
+
+    en — English;
+    ru — Russian;
+    de — German;
+    it — Italian;
+    pt-br — Brazilian Portuguese;
+    es — Spanish;
+    ja — Japanese (partial).
+
+For example, --locale=en enables English language even when running under Russian-language Windows.
+
+The localization mechanism used allows to easily translate the user interface to other languages via text files. If a string is not translated, the original English-language string is used instead — this allows partial translations.
+Built-in hotkeys
+
+bsnes-mt has built-in hotkeys (keyboard shortcuts) for common actions:
+
+    F11, Alt+Enter to toggle full-screen mode;
+    Shift+Enter to toggle pseudo-full-screen mode;
+    Escape to exit full-screen or pseudo-full-screen mode;
+    F9, PrintScreen to take a screenshot;
+    Ctrl+O to open a game;
+    Ctrl+W, Ctrl+F4 to close the game;
+    F5 to reset system;
+    Pause/Break to pause emulation;
+    Alt+F4 for closing the app works in full-screen mode.
+
+Also, items were added into the “Settings” → “Size” menu for switching to full-screen and pseudo-full-screen modes. So there is no need for manually binding hotkeys before being able to switch to full-screen mode, and it’s always possible to exit full-screen mode.
+
+It’s possible via hotkeys, to switch directly between full-screen and pseudo-full-screen modes, with no need for first switching to windowed mode.
+
+It’s possible to enable or disable specific hotkeys individually via the “Settings” → “Hotkeys (built-in)” window.
+Bug fixes
+
+    Added a work­around for a bsnes bug resulted in the app window being invisible in Windows 10 if OS-level zoom has been changed and there was no reboot before starting the app.
+    Added a work­around for a bsnes bug resulted in impossibility to close the app with the standard Alt+F4 hotkey in full-screen mode.
+    Fixed bsnes bug resulted in that region (NTSC/PAL) auto­detection didn’t work when opening a game with Windows’ native file dialog.
+
+Miscellaneous
+
+    The items for opening/closing games and closing the application are moved from the “System” menu to the traditional “File” menu.
+
+    Custom confirmation windows are replaced with standard MessageBox() windows, so texts inside them are not cropped anymore.
+
+    bsnes:
+    bsnes-mt:
+
+    Window size is now not reset when (un)checking checkboxes in the “Settings” menu:
+        “Output” → “Aspect-Ratio Correction”;
+        “Output” → “Show Overscan Area”;
+        “Show Status Bar”.
+
+    Resetting window size when doing these actions does not make sense.
+    Added the “Open Settings Folder” item into the “Settings” menu. The item opens the folder that contains the app’s settings file that can be stored in one of three locations, two of which are hard to find manually. This allows to easily create a backup of the settings file or delete it if needed (e. g. when there is an anomaly in the app operation).
+    The checkbox item “Aspect Correction” in the “Settings” → “Output” menu is renamed to “Aspect-Ratio Correction” (“-Ratio” is added after “Aspect”). “Aspect Ratio” and “Aspect” are not synonyms.
+    Added indication of the regional version (NTSC/PAL) of the game in status bar after opening a game.
+    Added settings’ section title into the settings’ window titlebar. In original bsnes, the settings’ window has the permanent “Settings” title regardless of the current settings section.
+    The background of the SameBoy logo in the “About SameBoy” window made trans­parent; and the logo file is now 4-times smaller.
+    Removed unneeded spaces before ellipses in menu items.
+
+    Some compiler-specific code is replaced with portable standard code:
+        in the Emulator::Audio::process() method (the bsnes/emulator/audio/audio.cpp file);
+        in the nall::chrono::nanosecond() function (the nall/chrono.hpp file);
+        the ssize_t type is replaced with intmax_t.
+    Settings of bsnes-mt are stored in its own file independent from the regular bsnes version. Not just folder (directory) name is different, but also file name is different (bsnes-mt-settings.bml instead of settings.bml), so conflicts with bsnes are impossible even when the settings file is in the application folder. This makes it possible for bsnes and bsnes-mt to be located in the same folder and use the same game/cheat databases and shaders.
+
+Frequently asked questions (FAQ)
+
+What bsnes version bsnes-mt is based on?
+    bsnes-mt is based on bsnes v115 — the latest official bsnes release before becoming a community project. Important changes are merged periodically from the community bsnes version.
+Is bsnes-mt available as a libretro core?
+    No, this project is focused on the emulator as a standalone application. A libretro core wouldn’t make sense since the main bsnes-mt-specific features are inapplicable to libretro version: for example, scaling and taking screenshots are usually handled by libretro frontend (GUI), not by core. Emulation-wise, bsnes-mt is functionally identical to original bsnes.
+Is bsnes-mt cross-platform?
+    No, bsnes-mt is Windows-only, including Windows-specific implemen­tations of PNG compression and built-in hotkeys. The bsnes-mt author is a Windows user and doesn’t have enough time/motivation for providing cross-platform compati­bility (and even unable specifi­cally as for macOS). That said, the author considers this as a possible way to improve bsnes-mt in future. The Windows version should probably work in Linux as is via Wine.
+Why not submit your changes to the official higan/bsnes projects?
+
+    The bsnes-mt author prefers maintaining a separate fork for multiple reasons.
+
+        No motivation to convince anyone of anything. The author is happy to be independent and do whatever he thinks is right.
+        No motivation to use code style the author doesn’t typically use.
+        Original bsnes is cross-platform (though official bsnes releases were always Windows-only), bsnes-mt is Windows-only.
+
+Could you add the feature X?
+    Feel free to request features and report bugs of original bsnes. Note that the author only implements what he considers useful/important enough and only if he has enough time, motivation and experience. 

@@ -67,3 +67,4 @@ GEMINI.md
 .idx/
 prompts/
 .prompts/
+./example-cores/*
