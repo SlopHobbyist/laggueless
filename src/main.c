@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stdarg.h>
 #include "platform_win32.h"
+#include <mmsystem.h>
 #include "integer_scaling.h"
 #include "core_loader.h"
 #include "audio_wasapi.h"
@@ -116,11 +117,12 @@ static void me_video_refresh_cb(const void *data, unsigned w, unsigned h, size_t
    frame across calls, plus a fractional phase. */
 static unsigned g_core_rate = 0;
 static unsigned g_dev_rate  = 0;
+static int      g_audio_active = 0; /* 1 once me_audio_init has succeeded */
 static double   g_resamp_phase = 0.0; /* 0..1 position between prev and next input frame */
 static int16_t  g_resamp_prev_l = 0, g_resamp_prev_r = 0;
 
 static void resample_and_push(const int16_t *in, size_t in_frames) {
-    if (!g_dev_rate || !g_core_rate || in_frames == 0) return;
+    if (!g_audio_active || !g_dev_rate || !g_core_rate || in_frames == 0) return;
     double step = (double)g_core_rate / (double)g_dev_rate;
     /* Output frames until phase consumes all input. */
     enum { CHUNK = 512 };
@@ -281,13 +283,21 @@ static unsigned char *slurp(const char *path, size_t *out_size) {
 }
 
 int main(int argc, char **argv) {
-    if (argc < 3) {
-        fprintf(stderr, "usage: %s <core.dll> <rom>\n", argv[0]);
+    int no_audio = 0;
+    int pos = 1;
+    while (pos < argc && argv[pos][0] == '-') {
+        if (strcmp(argv[pos], "--no-audio") == 0) { no_audio = 1; pos++; }
+        else { fprintf(stderr, "unknown flag: %s\n", argv[pos]); return 1; }
+    }
+    if (argc - pos < 2) {
+        fprintf(stderr, "usage: %s [--no-audio] <core.dll> <rom>\n", argv[0]);
         return 1;
     }
+    const char *core_path = argv[pos];
+    const char *rom_path  = argv[pos + 1];
 
-    me_core *core = me_core_load(argv[1]);
-    if (!core) { fprintf(stderr, "failed to load core: %s\n", argv[1]); return 1; }
+    me_core *core = me_core_load(core_path);
+    if (!core) { fprintf(stderr, "failed to load core: %s\n", core_path); return 1; }
 
     unsigned api = core->retro_api_version();
     printf("[core] retro_api_version = %u\n", api);
@@ -310,12 +320,12 @@ int main(int argc, char **argv) {
     core->retro_init();
 
     struct retro_game_info game = {0};
-    game.path = argv[2];
+    game.path = rom_path;
     unsigned char *rom_data = NULL;
     size_t rom_size = 0;
     if (!info.need_fullpath) {
-        rom_data = slurp(argv[2], &rom_size);
-        if (!rom_data) { fprintf(stderr, "failed to read ROM: %s\n", argv[2]); return 1; }
+        rom_data = slurp(rom_path, &rom_size);
+        if (!rom_data) { fprintf(stderr, "failed to read ROM: %s\n", rom_path); return 1; }
         game.data = rom_data;
         game.size = rom_size;
     }
@@ -352,15 +362,32 @@ int main(int argc, char **argv) {
        core output up to that rate. */
     g_core_rate = (unsigned)(av.timing.sample_rate > 0 ? av.timing.sample_rate : 48000);
     double fps = av.timing.fps > 1.0 ? av.timing.fps : 60.0;
-    int audio_ok = (me_audio_init(&g_dev_rate) == 0);
-    if (!audio_ok) {
-        fprintf(stderr, "[audio] init failed; falling back to Sleep pacing\n");
+    int audio_ok = 0;
+    if (no_audio) {
+        printf("[audio] disabled via --no-audio; using Sleep-based pacing\n");
         g_dev_rate = g_core_rate;
+    } else {
+        audio_ok = (me_audio_init(&g_dev_rate) == 0);
+        if (!audio_ok) {
+            fprintf(stderr, "[audio] init failed; falling back to Sleep pacing\n");
+            g_dev_rate = g_core_rate;
+        } else {
+            g_audio_active = 1;
+        }
     }
     size_t frame_audio = (size_t)(g_dev_rate / fps + 0.5);
-    DWORD fallback_ms = (DWORD)(1000.0 / fps + 0.5);
     /* Pacing target: keep about 25 ms buffered in the ring. */
     size_t target_buffered = (size_t)(g_dev_rate * 0.025);
+
+    /* Sleep-fallback pacing state. Windows' default Sleep granularity is
+       ~15.6 ms, so for 60 Hz Sleep(17) actually waits ~31 ms (= 32 fps). We
+       request 1 ms resolution and accumulate fractional ms across frames. */
+    double frame_period_ms = 1000.0 / fps;
+    LARGE_INTEGER qpf, qstart;
+    QueryPerformanceFrequency(&qpf);
+    QueryPerformanceCounter(&qstart);
+    unsigned long frame_count = 0;
+    if (!audio_ok) timeBeginPeriod(1);
 
     while (me_platform_pump()) {
         if (me_platform_f11_pressed) {
@@ -380,9 +407,28 @@ int main(int argc, char **argv) {
         }
         core->retro_run();
         present(g_hwnd);
-        if (!audio_ok) Sleep(fallback_ms);
+        if (!audio_ok) {
+            /* Sleep until the absolute deadline for frame_count+1 — this
+               prevents drift from Sleep returning early or late. */
+            frame_count++;
+            LARGE_INTEGER now;
+            QueryPerformanceCounter(&now);
+            double elapsed_ms = (double)(now.QuadPart - qstart.QuadPart) * 1000.0 / (double)qpf.QuadPart;
+            double deadline_ms = frame_count * frame_period_ms;
+            double wait_ms = deadline_ms - elapsed_ms;
+            if (wait_ms > 1.5) {
+                Sleep((DWORD)(wait_ms - 1.0)); /* sleep most of it */
+            }
+            /* Spin the last <1 ms to land on the deadline. */
+            while (1) {
+                QueryPerformanceCounter(&now);
+                elapsed_ms = (double)(now.QuadPart - qstart.QuadPart) * 1000.0 / (double)qpf.QuadPart;
+                if (elapsed_ms >= deadline_ms) break;
+            }
+        }
     }
 
+    if (!audio_ok) timeEndPeriod(1);
     if (audio_ok) me_audio_shutdown();
 
     core->retro_unload_game();
