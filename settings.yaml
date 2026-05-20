@@ -11,6 +11,17 @@ video:
 audio:
   no_audio: false        # Changes frame timing on some cores/graphics apis
 
+# Run-ahead: reduces input latency by running the core extra frames ahead each
+# iteration and displaying the future frame. The displayed frame is what the
+# game would render N frames from "now", so reactions to your input appear
+# sooner. Costs one extra retro_run() per ghost frame plus a save/load of state
+# each visible frame. Cores that don't support savestates, or whose savestates
+# are very large, will not benefit (or may stutter).
+# Typical useful values: 1 (most games), 2-3 (games with multi-frame input lag).
+# 0 disables. Hardware-rendered cores (GL/Vulkan) currently skip run-ahead.
+runahead:
+  frames: 0              # 0 disables; clamped to 0..10
+
 log:
   pace_log: false        # log audio pacing diagnostics
   timing_log: false      # log frame timing diagnostics

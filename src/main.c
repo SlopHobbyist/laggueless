@@ -335,8 +335,15 @@ static void convert_rgb565(const u16 *src, size_t pitch_bytes, unsigned w, unsig
     }
 }
 
+/* Run-ahead: when set, video and audio callbacks discard their input. The core
+   still runs its frame normally; we just don't show it or hear it. Used to
+   silently advance the simulation N frames so the displayed frame is N frames
+   in the "future" relative to a normal run. */
+static int g_av_mute = 0;
+
 /* ---- video / audio / input callbacks -------------------------------------- */
 static void me_video_refresh_cb(const void *data, unsigned w, unsigned h, size_t pitch) {
+    if (g_av_mute) return;
     g_video_calls++;
     if (!data || !g_back) return;
     if (w > g_back_max_w || h > g_back_max_h) return;
@@ -466,10 +473,12 @@ static void resample_and_push(const int16_t *in, size_t in_frames) {
 }
 
 static void me_audio_sample_cb(int16_t l, int16_t r) {
+    if (g_av_mute) return;
     int16_t pair[2] = { l, r };
     resample_and_push(pair, 1);
 }
 static size_t me_audio_sample_batch_cb(const int16_t *data, size_t frames) {
+    if (g_av_mute) return frames;
     resample_and_push(data, frames);
     return frames;
 }
@@ -1083,6 +1092,40 @@ int main(int argc, char **argv) {
     LARGE_INTEGER pl_last_qpc; QueryPerformanceCounter(&pl_last_qpc);
     LARGE_INTEGER pl_window_start = pl_last_qpc;
 
+    /* Run-ahead setup. Disabled for HW (GL) cores: savestates don't capture GL
+       context state, and re-running a frame with GL side-effects (FBO writes,
+       texture uploads) would corrupt visible output. Software cores serialize
+       to a flat byte buffer that round-trips cleanly. */
+    int ra_frames = g_settings.runahead_frames;
+    if (ra_frames > 0 && g_hw_render_accepted) {
+        printf("[runahead] disabled for hardware-rendered cores\n");
+        ra_frames = 0;
+    }
+    size_t ra_state_size = 0;
+    void  *ra_state_buf  = NULL;
+    if (ra_frames > 0) {
+        if (!core->retro_serialize_size || !core->retro_serialize || !core->retro_unserialize) {
+            printf("[runahead] core lacks serialize support; disabling\n");
+            ra_frames = 0;
+        } else {
+            ra_state_size = core->retro_serialize_size();
+            if (ra_state_size == 0) {
+                printf("[runahead] core reports zero state size; disabling\n");
+                ra_frames = 0;
+            } else {
+                ra_state_buf = malloc(ra_state_size);
+                if (!ra_state_buf) {
+                    fprintf(stderr, "[runahead] state buffer alloc failed (%zu bytes); disabling\n",
+                            ra_state_size);
+                    ra_frames = 0;
+                } else {
+                    printf("[runahead] enabled: %d frame%s ahead, state=%zu bytes\n",
+                           ra_frames, ra_frames == 1 ? "" : "s", ra_state_size);
+                }
+            }
+        }
+    }
+
     while (me_platform_pump()) {
         const me_kb_binding *hk;
         hk = &g_settings.hk_toggle_fullscreen;
@@ -1118,7 +1161,43 @@ int main(int argc, char **argv) {
                while the core renders. No-op if interop is inactive. */
             me_gl_interop_lock();
         }
-        core->retro_run();
+        if (ra_frames > 0) {
+            /* Run-ahead, single-instance technique. The core is currently at
+               frame F (the displayed frame from last iteration). To show the
+               user frame F+ra_frames worth of latency reduction:
+                 1. save state at F
+                 2. silently advance ra_frames more frames (A/V muted) so the
+                    sim is "looking ahead"
+                 3. run one more frame with A/V on — this is what we show
+                 4. load the saved state — undo the ahead+visible frames
+                 5. advance exactly one real frame (muted) so next iter starts
+                    at F+1 — net forward progress is one frame per iteration.
+               The displayed frame is ra_frames ahead of the underlying sim
+               clock, which is exactly the input-latency reduction the user
+               feels: their input applies "earlier" relative to what they see. */
+            if (!core->retro_serialize(ra_state_buf, ra_state_size)) {
+                fprintf(stderr, "[runahead] serialize failed; disabling for rest of session\n");
+                free(ra_state_buf); ra_state_buf = NULL;
+                ra_frames = 0;
+                core->retro_run();
+            } else {
+                g_av_mute = 1;
+                for (int i = 0; i < ra_frames; i++) core->retro_run();
+                g_av_mute = 0;
+                core->retro_run();  /* this one is shown */
+                if (!core->retro_unserialize(ra_state_buf, ra_state_size)) {
+                    fprintf(stderr, "[runahead] unserialize failed; disabling for rest of session\n");
+                    free(ra_state_buf); ra_state_buf = NULL;
+                    ra_frames = 0;
+                } else {
+                    g_av_mute = 1;
+                    core->retro_run();
+                    g_av_mute = 0;
+                }
+            }
+        } else {
+            core->retro_run();
+        }
         if (g_hw_render_accepted) me_gl_interop_unlock();
         present(g_hwnd);
 
@@ -1262,6 +1341,7 @@ int main(int argc, char **argv) {
     if (g_hw_render_accepted && g_hw_render.context_destroy) {
         g_hw_render.context_destroy();
     }
+    free(ra_state_buf);
     if (save_path[0]) me_sram_save(core, save_path);
     core->retro_unload_game();
     core->retro_deinit();

@@ -64,6 +64,11 @@ typedef struct {
     /* audio */
     int no_audio;
 
+    /* run-ahead: number of frames to simulate ahead each iteration. 0 disables.
+       Reduces visible input latency by displaying a future frame. Each ghost
+       frame costs one extra retro_run() call plus a serialize/unserialize. */
+    int runahead_frames;
+
     /* log */
     int pace_log;
     int timing_log;

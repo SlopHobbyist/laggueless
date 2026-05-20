@@ -284,6 +284,18 @@ int me_settings_load(const char *path, me_settings *out) {
         out->no_audio = scalar_bool(map_get(&doc, audio, "no_audio"), out->no_audio);
     }
 
+    /* run-ahead */
+    yaml_node_t *ra = map_get(&doc, root, "runahead");
+    if (ra) {
+        const char *s = scalar_str(map_get(&doc, ra, "frames"));
+        if (s) {
+            int n = atoi(s);
+            if (n < 0) n = 0;
+            if (n > 10) n = 10;
+            out->runahead_frames = n;
+        }
+    }
+
     /* log */
     yaml_node_t *logn = map_get(&doc, root, "log");
     if (logn) {
