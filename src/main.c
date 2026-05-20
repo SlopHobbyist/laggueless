@@ -679,10 +679,11 @@ static void present(HWND hwnd) {
     int dx = (cw - dw) / 2;
     int dy = (ch - dh) / 2;
 
-    /* Vulkan present path. A3: clear-color only — g_back/integer scaling are
-       ignored. A4 replaces this with the textured-quad upload path. */
+    /* Vulkan present path: upload the active region of the BGRX backbuffer
+       and draw a textured quad sized to the integer-scaled rect. */
     if (me_vk_is_active()) {
-        me_vk_present_clear();
+        me_vk_present(g_back, g_frame_w, g_frame_h, g_back_max_w,
+                      cw, ch, dx, dy, dw, dh);
         return;
     }
 
@@ -1208,8 +1209,9 @@ int main(int argc, char **argv) {
             vk_initialized = 1;
             if (g_hw_render_accepted) {
                 fprintf(stderr,
-                    "[render] WARNING: --vulkan with a GL hardware core. A3 only clears the\n"
-                    "[render]          screen; the core's GL output is not yet displayed.\n");
+                    "[render] WARNING: --vulkan with a GL hardware core. The GL framebuffer\n"
+                    "[render]          is not yet bridged to Vulkan; expect a black screen.\n"
+                    "[render]          Software cores (mesen, snes9x, etc.) display correctly.\n");
             }
         } else {
             fprintf(stderr, "[render] Vulkan init failed; falling back to D3D11/GDI\n");
