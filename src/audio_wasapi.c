@@ -4,20 +4,20 @@
 #include <windows.h>
 #include <mmdeviceapi.h>
 #include <audioclient.h>
+#include <ksmedia.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "audio_wasapi.h"
 
-/* GUIDs (INITGUID above gives them storage). */
 DEFINE_GUID(ME_CLSID_MMDeviceEnumerator, 0xBCDE0395, 0xE52F, 0x467C, 0x8E,0x3D,0xC4,0x57,0x92,0x91,0x69,0x2E);
 DEFINE_GUID(ME_IID_IMMDeviceEnumerator,  0xA95664D2, 0x9614, 0x4F35, 0xA7,0x46,0xDE,0x8D,0xB6,0x36,0x17,0xE6);
 DEFINE_GUID(ME_IID_IAudioClient,         0x1CB9AD4C, 0xDBFA, 0x4C32, 0xB1,0x78,0xC2,0xF5,0x68,0xA7,0x03,0xB2);
 DEFINE_GUID(ME_IID_IAudioRenderClient,   0xF294ACFC, 0x3146, 0x4483, 0xA7,0xBF,0xAD,0xDC,0xA7,0xC2,0x60,0xE2);
 
-/* ---- ring buffer (interleaved stereo s16, size = power of two frames) ---- */
-#define ME_RING_FRAMES 8192u  /* ~170 ms at 48 kHz */
-static int16_t g_ring[ME_RING_FRAMES * 2];
+/* Ring buffer holds float32 interleaved stereo at the device rate. */
+#define ME_RING_FRAMES 16384u  /* ~340 ms at 48 kHz */
+static float g_ring[ME_RING_FRAMES * 2];
 static volatile unsigned g_ring_read = 0;
 static volatile unsigned g_ring_write = 0;
 static CRITICAL_SECTION g_ring_cs;
@@ -27,7 +27,6 @@ static size_t ring_used(void) {
 }
 static size_t ring_free(void) { return ME_RING_FRAMES - 1 - ring_used(); }
 
-/* ---- WASAPI state -------------------------------------------------------- */
 static IMMDeviceEnumerator *g_enum = NULL;
 static IMMDevice           *g_dev  = NULL;
 static IAudioClient        *g_ac   = NULL;
@@ -36,7 +35,8 @@ static HANDLE  g_ev = NULL;
 static HANDLE  g_thread = NULL;
 static volatile int g_quit = 0;
 static UINT32 g_buffer_frames = 0;
-static unsigned g_sample_rate = 0;
+static unsigned g_device_rate = 0;
+static unsigned g_device_channels = 2;
 
 static int com_ok(HRESULT hr, const char *where) {
     if (FAILED(hr)) {
@@ -46,7 +46,6 @@ static int com_ok(HRESULT hr, const char *where) {
     return 1;
 }
 
-/* Audio servicing thread: feeds device from ring buffer. */
 static DWORD WINAPI audio_thread(LPVOID arg) {
     (void)arg;
     while (!g_quit) {
@@ -61,22 +60,24 @@ static DWORD WINAPI audio_thread(LPVOID arg) {
         BYTE *dst = NULL;
         if (FAILED(IAudioRenderClient_GetBuffer(g_rc, avail, &dst))) continue;
 
-        int16_t *out = (int16_t *)dst;
+        float *out = (float *)dst;
+        unsigned ch = g_device_channels;
         EnterCriticalSection(&g_ring_cs);
         size_t used = ring_used();
         size_t take = used < avail ? used : avail;
         for (size_t i = 0; i < take; i++) {
             unsigned idx = (g_ring_read + (unsigned)i) & (ME_RING_FRAMES - 1);
-            out[i*2 + 0] = g_ring[idx*2 + 0];
-            out[i*2 + 1] = g_ring[idx*2 + 1];
+            float l = g_ring[idx*2 + 0];
+            float r = g_ring[idx*2 + 1];
+            out[i*ch + 0] = l;
+            if (ch > 1) out[i*ch + 1] = r;
+            for (unsigned c = 2; c < ch; c++) out[i*ch + c] = 0.0f;
         }
         g_ring_read = (g_ring_read + (unsigned)take) & (ME_RING_FRAMES - 1);
         LeaveCriticalSection(&g_ring_cs);
 
-        /* Pad with silence if the ring under-ran. */
         for (size_t i = take; i < avail; i++) {
-            out[i*2 + 0] = 0;
-            out[i*2 + 1] = 0;
+            for (unsigned c = 0; c < ch; c++) out[i*ch + c] = 0.0f;
         }
 
         IAudioRenderClient_ReleaseBuffer(g_rc, avail, 0);
@@ -84,7 +85,7 @@ static DWORD WINAPI audio_thread(LPVOID arg) {
     return 0;
 }
 
-int me_audio_init(unsigned sample_rate) {
+int me_audio_init(unsigned *out_device_rate) {
     InitializeCriticalSection(&g_ring_cs);
 
     HRESULT hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
@@ -96,65 +97,42 @@ int me_audio_init(unsigned sample_rate) {
     if (!com_ok(CoCreateInstance(&ME_CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL,
                                  &ME_IID_IMMDeviceEnumerator, (void **)&g_enum),
                 "CoCreateInstance")) return 1;
-
     if (!com_ok(IMMDeviceEnumerator_GetDefaultAudioEndpoint(g_enum, eRender, eConsole, &g_dev),
                 "GetDefaultAudioEndpoint")) return 1;
-
     if (!com_ok(IMMDevice_Activate(g_dev, &ME_IID_IAudioClient, CLSCTX_ALL, NULL, (void **)&g_ac),
                 "IMMDevice::Activate")) return 1;
 
-    /* Inspect mix format so we can warn if the device rate differs. */
     WAVEFORMATEX *mix = NULL;
-    if (SUCCEEDED(IAudioClient_GetMixFormat(g_ac, &mix)) && mix) {
-        printf("[audio] device mix: %u Hz, %u ch, %u bps\n",
-               (unsigned)mix->nSamplesPerSec, (unsigned)mix->nChannels, (unsigned)mix->wBitsPerSample);
-        if (mix->nSamplesPerSec != sample_rate) {
-            fprintf(stderr,
-                    "[audio] WARNING: core wants %u Hz but device is %u Hz; pitch will be off.\n"
-                    "        (resampling is a TODO — see plan step 6.)\n",
-                    sample_rate, (unsigned)mix->nSamplesPerSec);
-        }
-        CoTaskMemFree(mix);
-    }
+    if (!com_ok(IAudioClient_GetMixFormat(g_ac, &mix), "GetMixFormat") || !mix) return 1;
 
-    /* Request stereo s16 at the core's sample rate. */
-    WAVEFORMATEX wf = {0};
-    wf.wFormatTag      = WAVE_FORMAT_PCM;
-    wf.nChannels       = 2;
-    wf.nSamplesPerSec  = sample_rate;
-    wf.wBitsPerSample  = 16;
-    wf.nBlockAlign     = (WORD)(wf.nChannels * wf.wBitsPerSample / 8);
-    wf.nAvgBytesPerSec = wf.nSamplesPerSec * wf.nBlockAlign;
+    g_device_rate     = (unsigned)mix->nSamplesPerSec;
+    g_device_channels = (unsigned)mix->nChannels;
+    printf("[audio] device mix: %u Hz, %u ch, %u bps, tag=0x%04x\n",
+           g_device_rate, g_device_channels,
+           (unsigned)mix->wBitsPerSample, (unsigned)mix->wFormatTag);
 
-    REFERENCE_TIME dur = 50 * 10000; /* 50ms buffer */
+    REFERENCE_TIME dur = 50 * 10000;
     hr = IAudioClient_Initialize(g_ac, AUDCLNT_SHAREMODE_SHARED,
                                  AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-                                 dur, 0, &wf, NULL);
-    if (FAILED(hr)) {
-        fprintf(stderr,
-                "[audio] IAudioClient::Initialize failed hr=0x%08lx (likely format mismatch — "
-                "shared mode often requires the device mix format).\n",
-                (unsigned long)hr);
-        return 1;
-    }
+                                 dur, 0, mix, NULL);
+    CoTaskMemFree(mix);
+    if (!com_ok(hr, "IAudioClient::Initialize")) return 1;
 
     if (!com_ok(IAudioClient_GetBufferSize(g_ac, &g_buffer_frames), "GetBufferSize")) return 1;
 
     g_ev = CreateEventA(NULL, FALSE, FALSE, NULL);
     if (!g_ev) return 1;
     if (!com_ok(IAudioClient_SetEventHandle(g_ac, g_ev), "SetEventHandle")) return 1;
-
     if (!com_ok(IAudioClient_GetService(g_ac, &ME_IID_IAudioRenderClient, (void **)&g_rc),
                 "GetService(RenderClient)")) return 1;
-
     if (!com_ok(IAudioClient_Start(g_ac), "IAudioClient::Start")) return 1;
 
-    g_sample_rate = sample_rate;
     g_thread = CreateThread(NULL, 0, audio_thread, NULL, 0, NULL);
     if (!g_thread) return 1;
 
-    printf("[audio] WASAPI shared mode running: %u Hz, buffer=%u frames\n",
-           sample_rate, (unsigned)g_buffer_frames);
+    if (out_device_rate) *out_device_rate = g_device_rate;
+    printf("[audio] WASAPI shared mode running at device rate %u Hz, buffer=%u frames\n",
+           g_device_rate, (unsigned)g_buffer_frames);
     return 0;
 }
 
@@ -171,14 +149,17 @@ void me_audio_shutdown(void) {
     DeleteCriticalSection(&g_ring_cs);
 }
 
+unsigned me_audio_device_rate(void) { return g_device_rate; }
+
 size_t me_audio_push(const int16_t *data, size_t frames) {
+    /* Direct push at device rate (resampling happens in caller). */
     EnterCriticalSection(&g_ring_cs);
     size_t can = ring_free();
     if (can > frames) can = frames;
     for (size_t i = 0; i < can; i++) {
         unsigned idx = (g_ring_write + (unsigned)i) & (ME_RING_FRAMES - 1);
-        g_ring[idx*2 + 0] = data[i*2 + 0];
-        g_ring[idx*2 + 1] = data[i*2 + 1];
+        g_ring[idx*2 + 0] = data[i*2 + 0] * (1.0f / 32768.0f);
+        g_ring[idx*2 + 1] = data[i*2 + 1] * (1.0f / 32768.0f);
     }
     g_ring_write = (g_ring_write + (unsigned)can) & (ME_RING_FRAMES - 1);
     LeaveCriticalSection(&g_ring_cs);

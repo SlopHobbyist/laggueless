@@ -112,12 +112,54 @@ static void me_video_refresh_cb(const void *data, unsigned w, unsigned h, size_t
         convert_rgb565((const u16 *)data, pitch, w, h);
     }
 }
+/* Linear resampler from core rate -> device rate. State carries the last input
+   frame across calls, plus a fractional phase. */
+static unsigned g_core_rate = 0;
+static unsigned g_dev_rate  = 0;
+static double   g_resamp_phase = 0.0; /* 0..1 position between prev and next input frame */
+static int16_t  g_resamp_prev_l = 0, g_resamp_prev_r = 0;
+
+static void resample_and_push(const int16_t *in, size_t in_frames) {
+    if (!g_dev_rate || !g_core_rate || in_frames == 0) return;
+    double step = (double)g_core_rate / (double)g_dev_rate;
+    /* Output frames until phase consumes all input. */
+    enum { CHUNK = 512 };
+    int16_t out[CHUNK * 2];
+    size_t out_n = 0;
+    double phase = g_resamp_phase;
+    int16_t pl = g_resamp_prev_l, pr = g_resamp_prev_r;
+    size_t i = 0; /* index of "next" input frame */
+    while (i < in_frames) {
+        int16_t nl = in[i*2 + 0];
+        int16_t nr = in[i*2 + 1];
+        while (phase < 1.0) {
+            float fl = pl + (nl - pl) * (float)phase;
+            float fr = pr + (nr - pr) * (float)phase;
+            int il = (int)fl, ir = (int)fr;
+            if (il >  32767) il =  32767; else if (il < -32768) il = -32768;
+            if (ir >  32767) ir =  32767; else if (ir < -32768) ir = -32768;
+            out[out_n*2 + 0] = (int16_t)il;
+            out[out_n*2 + 1] = (int16_t)ir;
+            out_n++;
+            if (out_n == CHUNK) { me_audio_push(out, out_n); out_n = 0; }
+            phase += step;
+        }
+        phase -= 1.0;
+        pl = nl; pr = nr;
+        i++;
+    }
+    if (out_n) me_audio_push(out, out_n);
+    g_resamp_phase  = phase;
+    g_resamp_prev_l = pl;
+    g_resamp_prev_r = pr;
+}
+
 static void me_audio_sample_cb(int16_t l, int16_t r) {
     int16_t pair[2] = { l, r };
-    me_audio_push(pair, 1);
+    resample_and_push(pair, 1);
 }
 static size_t me_audio_sample_batch_cb(const int16_t *data, size_t frames) {
-    me_audio_push(data, frames);
+    resample_and_push(data, frames);
     return frames;
 }
 /* Player 1 RetroPad state, refreshed in input_poll. */
@@ -306,15 +348,16 @@ int main(int argc, char **argv) {
     g_hwnd = me_platform_create_window("multi-emulator", win_w, win_h);
     if (!g_hwnd) { fprintf(stderr, "window create failed\n"); return 1; }
 
-    /* Audio drives pacing: only run a frame when there's room for one frame's
-       worth of audio in the ring buffer. */
-    unsigned audio_rate = (unsigned)(av.timing.sample_rate > 0 ? av.timing.sample_rate : 48000);
+    /* Audio drives pacing. WASAPI runs at the device's mix rate; we resample
+       core output up to that rate. */
+    g_core_rate = (unsigned)(av.timing.sample_rate > 0 ? av.timing.sample_rate : 48000);
     double fps = av.timing.fps > 1.0 ? av.timing.fps : 60.0;
-    size_t frame_audio = (size_t)(audio_rate / fps + 0.5);
-    int audio_ok = (me_audio_init(audio_rate) == 0);
+    int audio_ok = (me_audio_init(&g_dev_rate) == 0);
     if (!audio_ok) {
         fprintf(stderr, "[audio] init failed; falling back to Sleep pacing\n");
+        g_dev_rate = g_core_rate;
     }
+    size_t frame_audio = (size_t)(g_dev_rate / fps + 0.5);
     DWORD fallback_ms = (DWORD)(1000.0 / fps + 0.5);
 
     while (me_platform_pump()) {

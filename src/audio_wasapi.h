@@ -4,10 +4,13 @@
 #include "types.h"
 #include <stddef.h>
 
-/* Initialize a WASAPI shared-mode render stream at the given sample rate
-   (stereo s16). Returns 0 on success, nonzero on failure. */
-int  me_audio_init(unsigned sample_rate);
+/* Initialize a WASAPI shared-mode render stream. The stream always runs at the
+   device's mix-format sample rate (returned via *out_device_rate). Returns 0
+   on success, nonzero on failure. */
+int  me_audio_init(unsigned *out_device_rate);
 void me_audio_shutdown(void);
+
+unsigned me_audio_device_rate(void);
 
 /* Push interleaved stereo s16 frames into the ring buffer. Returns frames
    actually accepted (may be < frames if buffer full). */
