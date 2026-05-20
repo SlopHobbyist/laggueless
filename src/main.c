@@ -26,6 +26,7 @@ static unsigned long g_video_calls = 0;
 static HWND g_hwnd = NULL;
 static int  g_use_d3d11 = 0;
 static int  g_force_vulkan = 0; /* --vulkan requested on the CLI */
+static int  g_no_vsync = 0;     /* --no-vsync (Vulkan: IMMEDIATE present mode) */
 
 /* Latency telemetry: timestamp of the most recent input poll callback. Read
    by the main loop to split retro_run() into "before poll" and "after poll"
@@ -993,6 +994,7 @@ int main(int argc, char **argv) {
         else if (strcmp(argv[i], "--gdi")      == 0) force_gdi = 1;
         else if (strcmp(argv[i], "--d3d11")    == 0) force_d3d11 = 1;
         else if (strcmp(argv[i], "--vulkan")   == 0) g_force_vulkan = 1;
+        else if (strcmp(argv[i], "--no-vsync") == 0) g_no_vsync = 1;
         else if (strcmp(argv[i], "--pace-log") == 0) pace_log  = 1;
         else if (strcmp(argv[i], "--timing-log") == 0) timing_log = 1;
         else if (strcmp(argv[i], "--latency-log") == 0) latency_log = 1;
@@ -1025,6 +1027,8 @@ int main(int argc, char **argv) {
                 "                                  on non-GSync/FreeSync displays)\n"
                 "  --vulkan                     use the Vulkan present path (work in progress;\n"
                 "                                 required for LSFG frame generation)\n"
+                "  --no-vsync                   (Vulkan only) use IMMEDIATE present mode\n"
+                "                                 (allows tearing, lowest latency)\n"
                 "  --pace-log                   log audio pacing diagnostics\n"
                 "  --timing-log                 log frame timing diagnostics\n"
                 "  --latency-log                log per-stage latency (poll/core/present/wait)\n"
@@ -1205,6 +1209,9 @@ int main(int argc, char **argv) {
     int vk_initialized = 0;
     if (g_force_vulkan) {
 #ifdef ME_HAVE_VULKAN
+        /* CLI flag → env var consumed by me_vk_init. */
+        if (g_no_vsync) _putenv("LAGGUELESS_VK_NO_VSYNC=1");
+        if (pace_log)   _putenv("LAGGUELESS_VK_PACE_LOG=1");
         if (me_vk_init(g_hwnd, g_back_max_w, g_back_max_h) == 0) {
             vk_initialized = 1;
             if (g_hw_render_accepted) {
@@ -1416,6 +1423,7 @@ int main(int argc, char **argv) {
            and the GDI present path return 0 here and rely on the QPC tail
            below for pacing. */
         if (g_use_d3d11) me_d3d11_wait_for_present(1000);
+        else if (me_vk_is_active()) me_vk_wait_for_present(1000);
         LARGE_INTEGER ll_t_after_wait; if (latency_log) QueryPerformanceCounter(&ll_t_after_wait);
         const me_kb_binding *hk;
         hk = &g_settings.hk_toggle_fullscreen;

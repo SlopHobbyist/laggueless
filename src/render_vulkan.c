@@ -13,7 +13,10 @@
 /* Up to FRAMES_IN_FLIGHT real frames can be CPU-side prepared at the same
    time. Two is enough to overlap CPU with GPU without queueing extra latency.
    Real swapchain image count comes from the surface (typically 2 or 3). */
-#define FRAMES_IN_FLIGHT 2
+/* A5: one CPU-side frame in flight at a time. The fence-wait at the top of
+   the main loop pins CPU exactly one frame behind GPU, matching the D3D11
+   path's max-frame-latency=1 model. */
+#define FRAMES_IN_FLIGHT 1
 #define MAX_SWAPCHAIN_IMAGES 8
 
 /* Per-frame-slot CPU/GPU pacing. The fence keeps CPU at most FRAMES_IN_FLIGHT
@@ -89,6 +92,11 @@ static struct {
     VkShaderModule      fs_module;
 
     int upload_image_initialized; /* layout has been set at least once */
+
+    /* Present-mode selection. Resolved at init from env vars. */
+    VkPresentModeKHR present_mode;
+    int pace_log; /* per-second swapchain/present diagnostics */
+    int present_count; /* monotonic, for pace_log */
 } g_vk;
 
 static VkDebugUtilsMessengerEXT g_messenger = VK_NULL_HANDLE;
@@ -173,6 +181,37 @@ static int find_mem_type(uint32_t type_bits, VkMemoryPropertyFlags want) {
 /* Swapchain + framebuffers + per-image views                                 */
 /* ------------------------------------------------------------------------- */
 
+/* Resolve which Vulkan present mode to use.
+   - LAGGUELESS_VK_NO_VSYNC=1 → IMMEDIATE if supported (tearing, lowest latency).
+   - LAGGUELESS_VK_MAILBOX=1  → MAILBOX if supported (no tearing, replaces queued frame).
+   - default                  → FIFO (vsync on, always available).
+   Returns VK_PRESENT_MODE_FIFO_KHR if the requested mode isn't supported. */
+static VkPresentModeKHR resolve_present_mode(VkPresentModeKHR want) {
+    if (want == VK_PRESENT_MODE_FIFO_KHR) return VK_PRESENT_MODE_FIFO_KHR;
+    uint32_t count = 0;
+    vkGetPhysicalDeviceSurfacePresentModesKHR(g_vk.phys, g_vk.surface, &count, NULL);
+    if (count == 0) return VK_PRESENT_MODE_FIFO_KHR;
+    VkPresentModeKHR *modes = calloc(count, sizeof(*modes));
+    if (!modes) return VK_PRESENT_MODE_FIFO_KHR;
+    vkGetPhysicalDeviceSurfacePresentModesKHR(g_vk.phys, g_vk.surface, &count, modes);
+    VkPresentModeKHR result = VK_PRESENT_MODE_FIFO_KHR;
+    for (uint32_t i = 0; i < count; i++) {
+        if (modes[i] == want) { result = want; break; }
+    }
+    free(modes);
+    return result;
+}
+
+static const char *present_mode_str(VkPresentModeKHR m) {
+    switch (m) {
+        case VK_PRESENT_MODE_IMMEDIATE_KHR:    return "IMMEDIATE (no vsync)";
+        case VK_PRESENT_MODE_MAILBOX_KHR:      return "MAILBOX";
+        case VK_PRESENT_MODE_FIFO_KHR:         return "FIFO (vsync)";
+        case VK_PRESENT_MODE_FIFO_RELAXED_KHR: return "FIFO_RELAXED";
+        default:                               return "?";
+    }
+}
+
 static void pick_surface_format(VkSurfaceFormatKHR *out) {
     uint32_t count = 0;
     vkGetPhysicalDeviceSurfaceFormatsKHR(g_vk.phys, g_vk.surface, &count, NULL);
@@ -248,7 +287,7 @@ static int create_swapchain_only(void) {
         .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
         .preTransform = caps.currentTransform,
         .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
-        .presentMode = VK_PRESENT_MODE_FIFO_KHR, /* A5 tunes this */
+        .presentMode = g_vk.present_mode,
         .clipped = VK_TRUE,
         .oldSwapchain = old,
     };
@@ -264,8 +303,9 @@ static int create_swapchain_only(void) {
     g_vk.sc_image_count = MAX_SWAPCHAIN_IMAGES;
     vkGetSwapchainImagesKHR(g_vk.device, g_vk.swapchain, &g_vk.sc_image_count, g_vk.sc_images);
 
-    printf("[vk] swapchain: %ux%u, %u images, format=%d, FIFO\n",
-           g_vk.sc_extent.width, g_vk.sc_extent.height, g_vk.sc_image_count, (int)g_vk.sc_format);
+    printf("[vk] swapchain: %ux%u, %u images, format=%d, %s\n",
+           g_vk.sc_extent.width, g_vk.sc_extent.height, g_vk.sc_image_count,
+           (int)g_vk.sc_format, present_mode_str(g_vk.present_mode));
 
     g_vk.swapchain_needs_recreate = 0;
     return 0;
@@ -800,6 +840,26 @@ int me_vk_init(HWND hwnd, unsigned max_w, unsigned max_h) {
     VK_CHECK(vkCreateDevice(g_vk.phys, &dci, NULL, &g_vk.device), "vkCreateDevice");
     vkGetDeviceQueue(g_vk.device, g_vk.gfx_queue_family, 0, &g_vk.gfx_queue);
 
+    /* Resolve present mode. Defaults to FIFO; opt-in to MAILBOX or IMMEDIATE
+       via env vars. Per-frame pacing (frames-in-flight=1) does the bulk of
+       latency reduction regardless. */
+    {
+        const char *no_vsync = getenv("LAGGUELESS_VK_NO_VSYNC");
+        const char *mailbox  = getenv("LAGGUELESS_VK_MAILBOX");
+        VkPresentModeKHR want = VK_PRESENT_MODE_FIFO_KHR;
+        if (no_vsync && no_vsync[0] && no_vsync[0] != '0') want = VK_PRESENT_MODE_IMMEDIATE_KHR;
+        else if (mailbox && mailbox[0] && mailbox[0] != '0') want = VK_PRESENT_MODE_MAILBOX_KHR;
+        g_vk.present_mode = resolve_present_mode(want);
+        if (g_vk.present_mode != want) {
+            fprintf(stderr, "[vk] requested present mode %s not supported, using %s\n",
+                    present_mode_str(want), present_mode_str(g_vk.present_mode));
+        }
+    }
+    {
+        const char *pl = getenv("LAGGUELESS_VK_PACE_LOG");
+        g_vk.pace_log = (pl && pl[0] && pl[0] != '0');
+    }
+
     /* The render pass needs sc_format; create the swapchain first (without
        framebuffers/views), then the render pass, then the views/framebuffers. */
     if (create_swapchain_only() != 0) goto fail;
@@ -862,6 +922,17 @@ void me_vk_shutdown(void) {
 }
 
 int me_vk_is_active(void) { return g_vk.active; }
+
+int me_vk_wait_for_present(unsigned timeout_ms) {
+    if (!g_vk.active) return 0;
+    /* With FRAMES_IN_FLIGHT=1 the single fence is the "previous frame is
+       done" signal. Matches the DXGI waitable-swap-chain semantics. */
+    VkFence f = g_vk.frames[0].in_flight;
+    if (f == VK_NULL_HANDLE) return 0;
+    uint64_t ns = (uint64_t)timeout_ms * 1000000ull;
+    vkWaitForFences(g_vk.device, 1, &f, VK_TRUE, ns);
+    return 1;
+}
 
 /* ------------------------------------------------------------------------- */
 /* Per-frame upload + draw + present                                          */
@@ -1054,6 +1125,24 @@ int me_vk_present(const u32 *pixels, unsigned frame_w, unsigned frame_h, unsigne
     }
 
     g_vk.frame_index = (g_vk.frame_index + 1) % FRAMES_IN_FLIGHT;
+    g_vk.present_count++;
+
+    if (g_vk.pace_log) {
+        static LARGE_INTEGER s_qpf = {0}, s_window = {0};
+        static int s_window_presents = 0;
+        if (!s_qpf.QuadPart) QueryPerformanceFrequency(&s_qpf);
+        LARGE_INTEGER now; QueryPerformanceCounter(&now);
+        if (!s_window.QuadPart) s_window = now;
+        s_window_presents++;
+        double secs = (double)(now.QuadPart - s_window.QuadPart) / (double)s_qpf.QuadPart;
+        if (secs >= 1.0) {
+            fprintf(stderr, "[vk:pace] presents=%d/s mode=%s ext=%ux%u images=%u\n",
+                    s_window_presents, present_mode_str(g_vk.present_mode),
+                    g_vk.sc_extent.width, g_vk.sc_extent.height, g_vk.sc_image_count);
+            s_window = now;
+            s_window_presents = 0;
+        }
+    }
     return 0;
 }
 
@@ -1065,6 +1154,7 @@ int me_vk_init(HWND hwnd, unsigned max_w, unsigned max_h) {
 }
 void me_vk_shutdown(void) {}
 int  me_vk_is_active(void) { return 0; }
+int  me_vk_wait_for_present(unsigned timeout_ms) { (void)timeout_ms; return 0; }
 int  me_vk_present(const u32 *pixels, unsigned frame_w, unsigned frame_h, unsigned max_w,
                    int cw, int ch, int dx, int dy, int dw, int dh) {
     (void)pixels; (void)frame_w; (void)frame_h; (void)max_w;
