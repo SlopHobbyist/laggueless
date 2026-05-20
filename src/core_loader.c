@@ -45,6 +45,8 @@ me_core *me_core_load(const char *dll_path) {
     ME_RESOLVE(c, retro_serialize_size);
     ME_RESOLVE(c, retro_serialize);
     ME_RESOLVE(c, retro_unserialize);
+    ME_RESOLVE(c, retro_get_memory_data);
+    ME_RESOLVE(c, retro_get_memory_size);
 
     return c;
 }

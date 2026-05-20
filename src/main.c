@@ -605,6 +605,99 @@ static void present(HWND hwnd) {
 }
 
 /* ---- file slurp ----------------------------------------------------------- */
+/* Extract the basename (no directory, no extension) from a path into out.
+   out must hold at least MAX_PATH bytes. */
+static void me_basename_noext(const char *path, char *out, size_t out_sz) {
+    const char *base = path;
+    for (const char *p = path; *p; p++) {
+        if (*p == '\\' || *p == '/') base = p + 1;
+    }
+    size_t n = 0;
+    while (base[n] && base[n] != '.' && n + 1 < out_sz) {
+        out[n] = base[n];
+        n++;
+    }
+    /* If the file has multiple dots, the above stops at the first one. That's
+       fine for our purposes — "Super Mario Bros. (World).nes" becomes
+       "Super Mario Bros", which is unique enough per core. */
+    out[n] = '\0';
+}
+
+/* Build saves\<core>\<rom>.srm. Returns 0 on success. Creates the per-core
+   subdirectory if missing. */
+static int me_build_save_path(const char *core_path, const char *rom_path,
+                              char *out, size_t out_sz) {
+    char core_base[MAX_PATH], rom_base[MAX_PATH];
+    me_basename_noext(core_path, core_base, sizeof(core_base));
+    me_basename_noext(rom_path,  rom_base,  sizeof(rom_base));
+    if (!core_base[0] || !rom_base[0]) return -1;
+
+    char dir[MAX_PATH];
+    int n = snprintf(dir, sizeof(dir), "saves\\%s", core_base);
+    if (n < 0 || (size_t)n >= sizeof(dir)) return -1;
+    CreateDirectoryA("saves", NULL);
+    CreateDirectoryA(dir, NULL);
+
+    n = snprintf(out, out_sz, "%s\\%s.srm", dir, rom_base);
+    if (n < 0 || (size_t)n >= out_sz) return -1;
+    return 0;
+}
+
+/* FNV-1a 64-bit. SRAM blocks are small (8KB–128KB typical) so a non-SIMD hash
+   is plenty fast — sub-100µs even at 128KB. */
+static uint64_t me_fnv1a64(const void *data, size_t len) {
+    const unsigned char *p = (const unsigned char *)data;
+    uint64_t h = 0xcbf29ce484222325ULL;
+    for (size_t i = 0; i < len; i++) {
+        h ^= p[i];
+        h *= 0x100000001b3ULL;
+    }
+    return h;
+}
+
+/* Load SRAM from disk into the core's save-RAM buffer. Silently no-ops if the
+   core exposes no save-RAM or the file doesn't exist yet (first-time launch). */
+static void me_sram_load(me_core *core, const char *save_path) {
+    if (!core->retro_get_memory_data || !core->retro_get_memory_size) return;
+    void *mem = core->retro_get_memory_data(RETRO_MEMORY_SAVE_RAM);
+    size_t sz = core->retro_get_memory_size(RETRO_MEMORY_SAVE_RAM);
+    if (!mem || sz == 0) {
+        printf("[save] core has no save-RAM\n");
+        return;
+    }
+    FILE *f = fopen(save_path, "rb");
+    if (!f) {
+        printf("[save] no existing save at %s (new game)\n", save_path);
+        return;
+    }
+    size_t got = fread(mem, 1, sz, f);
+    fclose(f);
+    printf("[save] loaded %zu/%zu bytes from %s\n", got, sz, save_path);
+}
+
+/* Write SRAM to disk. Writes to a .tmp file and renames to avoid leaving a
+   half-written .srm if we die mid-write. */
+static void me_sram_save(me_core *core, const char *save_path) {
+    if (!core->retro_get_memory_data || !core->retro_get_memory_size) return;
+    void *mem = core->retro_get_memory_data(RETRO_MEMORY_SAVE_RAM);
+    size_t sz = core->retro_get_memory_size(RETRO_MEMORY_SAVE_RAM);
+    if (!mem || sz == 0) return;
+
+    char tmp[MAX_PATH];
+    if ((size_t)snprintf(tmp, sizeof(tmp), "%s.tmp", save_path) >= sizeof(tmp)) return;
+    FILE *f = fopen(tmp, "wb");
+    if (!f) { fprintf(stderr, "[save] open failed: %s\n", tmp); return; }
+    size_t wrote = fwrite(mem, 1, sz, f);
+    fclose(f);
+    if (wrote != sz) { fprintf(stderr, "[save] short write: %zu/%zu\n", wrote, sz); return; }
+    /* MoveFileEx with REPLACE_EXISTING is the atomic swap on Windows. */
+    if (!MoveFileExA(tmp, save_path, MOVEFILE_REPLACE_EXISTING)) {
+        fprintf(stderr, "[save] rename failed (err=%lu)\n", GetLastError());
+        return;
+    }
+    printf("[save] wrote %zu bytes to %s\n", sz, save_path);
+}
+
 static unsigned char *slurp(const char *path, size_t *out_size) {
     FILE *f = fopen(path, "rb");
     if (!f) return NULL;
@@ -793,6 +886,29 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    char save_path[MAX_PATH] = {0};
+    if (me_build_save_path(core_path, rom_path, save_path, sizeof(save_path)) == 0) {
+        me_sram_load(core, save_path);
+    } else {
+        fprintf(stderr, "[save] could not derive save path; saves disabled\n");
+    }
+
+    /* SRAM dirty-poll state. We hash SRAM every ~1s and, once the hash
+       stabilizes for one additional poll, flush to disk. The stability check
+       avoids writing mid-update when the core is still mutating the buffer
+       (e.g. a multi-byte checksum being recomputed by the cart). */
+    uint64_t sram_disk_hash = 0;     /* hash of last bytes we wrote to disk */
+    uint64_t sram_last_hash = 0;     /* hash from previous poll tick */
+    int      sram_pending  = 0;      /* hash changed; waiting for it to settle */
+    DWORD    sram_last_poll_ms = GetTickCount();
+    if (save_path[0] && core->retro_get_memory_data && core->retro_get_memory_size) {
+        void *mem = core->retro_get_memory_data(RETRO_MEMORY_SAVE_RAM);
+        size_t sz = core->retro_get_memory_size(RETRO_MEMORY_SAVE_RAM);
+        if (mem && sz) {
+            sram_disk_hash = sram_last_hash = me_fnv1a64(mem, sz);
+        }
+    }
+
     struct retro_system_av_info av = {0};
     core->retro_get_system_av_info(&av);
     printf("[av] base=%ux%u max=%ux%u aspect=%.4f fps=%.4f rate=%.1f\n",
@@ -945,6 +1061,35 @@ int main(int argc, char **argv) {
         if (g_hw_render_accepted) me_gl_interop_unlock();
         present(g_hwnd);
 
+        /* SRAM dirty-poll: catches in-game saves so a force-quit shortly after
+           the user hits "Save" still persists the write. 1s cadence + one-tick
+           debounce → worst case ~2s to land on disk. */
+        if (save_path[0] && core->retro_get_memory_data && core->retro_get_memory_size) {
+            DWORD now_ms = GetTickCount();
+            if (now_ms - sram_last_poll_ms >= 1000) {
+                sram_last_poll_ms = now_ms;
+                void *mem = core->retro_get_memory_data(RETRO_MEMORY_SAVE_RAM);
+                size_t sz = core->retro_get_memory_size(RETRO_MEMORY_SAVE_RAM);
+                if (mem && sz) {
+                    uint64_t h = me_fnv1a64(mem, sz);
+                    if (h != sram_disk_hash) {
+                        if (sram_pending && h == sram_last_hash) {
+                            /* Settled — write it out. */
+                            me_sram_save(core, save_path);
+                            sram_disk_hash = h;
+                            sram_pending = 0;
+                        } else {
+                            /* Still changing (or first time we noticed) — wait one more tick. */
+                            sram_pending = 1;
+                        }
+                    } else {
+                        sram_pending = 0;
+                    }
+                    sram_last_hash = h;
+                }
+            }
+        }
+
         /* Dynamic rate control: PI controller on ring-fill error. The integral
            term `g_resamp_ratio_bias` absorbs the long-term core-vs-device
            clock mismatch; the proportional term adds a tiny instantaneous
@@ -1037,6 +1182,7 @@ int main(int argc, char **argv) {
     if (g_hw_render_accepted && g_hw_render.context_destroy) {
         g_hw_render.context_destroy();
     }
+    if (save_path[0]) me_sram_save(core, save_path);
     core->retro_unload_game();
     core->retro_deinit();
     if (g_hw_render_accepted) me_gl_shutdown();
