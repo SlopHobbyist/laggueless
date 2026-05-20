@@ -8,6 +8,7 @@
 #include "integer_scaling.h"
 #include "core_loader.h"
 #include "audio_wasapi.h"
+#include "render_d3d11.h"
 #include "libretro.h"
 
 /* ---- global state for callbacks (single core, single ROM) ----------------- */
@@ -20,6 +21,7 @@ static unsigned g_frame_w = 0, g_frame_h = 0;
 static unsigned long g_video_calls = 0;
 
 static HWND g_hwnd = NULL;
+static int  g_use_d3d11 = 0;
 
 /* ---- log callback --------------------------------------------------------- */
 static void me_log_cb(enum retro_log_level level, const char *fmt, ...) {
@@ -284,13 +286,15 @@ static unsigned char *slurp(const char *path, size_t *out_size) {
 
 int main(int argc, char **argv) {
     int no_audio = 0;
+    int force_gdi = 0;
     int pos = 1;
     while (pos < argc && argv[pos][0] == '-') {
-        if (strcmp(argv[pos], "--no-audio") == 0) { no_audio = 1; pos++; }
+        if      (strcmp(argv[pos], "--no-audio") == 0) { no_audio  = 1; pos++; }
+        else if (strcmp(argv[pos], "--gdi")      == 0) { force_gdi = 1; pos++; }
         else { fprintf(stderr, "unknown flag: %s\n", argv[pos]); return 1; }
     }
     if (argc - pos < 2) {
-        fprintf(stderr, "usage: %s [--no-audio] <core.dll> <rom>\n", argv[0]);
+        fprintf(stderr, "usage: %s [--no-audio] [--gdi] <core.dll> <rom>\n", argv[0]);
         return 1;
     }
     const char *core_path = argv[pos];
@@ -357,6 +361,17 @@ int main(int argc, char **argv) {
     if (win_h < 240) win_h = 480;
     g_hwnd = me_platform_create_window("multi-emulator", win_w, win_h);
     if (!g_hwnd) { fprintf(stderr, "window create failed\n"); return 1; }
+
+    /* Try D3D11 flip-model unless the user forced GDI. */
+    if (!force_gdi) {
+        if (me_d3d11_init(g_hwnd, g_back_max_w, g_back_max_h) == 0) {
+            g_use_d3d11 = 1;
+        } else {
+            fprintf(stderr, "[render] D3D11 init failed, falling back to GDI\n");
+        }
+    } else {
+        printf("[render] --gdi forced\n");
+    }
 
     /* Audio drives pacing. WASAPI runs at the device's mix rate; we resample
        core output up to that rate. */
@@ -430,6 +445,7 @@ int main(int argc, char **argv) {
 
     if (!audio_ok) timeEndPeriod(1);
     if (audio_ok) me_audio_shutdown();
+    if (g_use_d3d11) me_d3d11_shutdown();
 
     core->retro_unload_game();
     core->retro_deinit();
