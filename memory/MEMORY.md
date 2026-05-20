@@ -1,0 +1,3 @@
+- [User project — multi-emulator](project_multi_emulator.md) — Custom Win32 libretro frontend in C. Plan-driven (plan.md), step-gated. Currently on compat pass between step 7 and step 8.
+- [Speedrun/competition compliance](feedback_no_frame_skip.md) — Must NOT skip or duplicate emulator frames. Compliance with speedrun/competition rules is a hard requirement.
+- [Generic fixes over per-core](feedback_generic_fixes.md) — Prefer fixes that help multiple cores at once; avoid per-core special cases.

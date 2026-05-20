@@ -128,18 +128,20 @@ static unsigned g_dev_rate  = 0;
 static int      g_audio_active = 0; /* 1 once me_audio_init has succeeded */
 static double   g_resamp_phase = 0.0; /* 0..1 position between prev and next input frame */
 static int16_t  g_resamp_prev_l = 0, g_resamp_prev_r = 0;
+/* Dynamic rate control: small bias on the resampler ratio so the ring
+   converges to target depth without skipping/duplicating frames. Bounded to
+   ±0.5% = ~8 cents of pitch shift, well below audibility. */
+static double   g_resamp_ratio_bias = 0.0;
 
 static void resample_and_push(const int16_t *in, size_t in_frames) {
     if (!g_audio_active || !g_dev_rate || !g_core_rate || in_frames == 0) return;
-    double step = (double)g_core_rate / (double)g_dev_rate;
-    /* Output frames until phase consumes all input. */
+    double step = ((double)g_core_rate / (double)g_dev_rate) * (1.0 + g_resamp_ratio_bias);
     enum { CHUNK = 512 };
     int16_t out[CHUNK * 2];
     size_t out_n = 0;
     double phase = g_resamp_phase;
     int16_t pl = g_resamp_prev_l, pr = g_resamp_prev_r;
-    size_t i = 0; /* index of "next" input frame */
-    while (i < in_frames) {
+    for (size_t i = 0; i < in_frames; i++) {
         int16_t nl = in[i*2 + 0];
         int16_t nr = in[i*2 + 1];
         while (phase < 1.0) {
@@ -156,7 +158,6 @@ static void resample_and_push(const int16_t *in, size_t in_frames) {
         }
         phase -= 1.0;
         pl = nl; pr = nr;
-        i++;
     }
     if (out_n) me_audio_push(out, out_n);
     g_resamp_phase  = phase;
@@ -294,11 +295,15 @@ static unsigned char *slurp(const char *path, size_t *out_size) {
 int main(int argc, char **argv) {
     int no_audio = 0;
     int force_gdi = 0;
+    int pace_log = 0;
+    int timing_log = 0;
     const char *positional[2] = { NULL, NULL };
     int npos = 0;
     for (int i = 1; i < argc; i++) {
         if      (strcmp(argv[i], "--no-audio") == 0) no_audio  = 1;
         else if (strcmp(argv[i], "--gdi")      == 0) force_gdi = 1;
+        else if (strcmp(argv[i], "--pace-log") == 0) pace_log  = 1;
+        else if (strcmp(argv[i], "--timing-log") == 0) timing_log = 1;
         else if (argv[i][0] == '-') {
             fprintf(stderr, "unknown flag: %s\n", argv[i]); return 1;
         } else if (npos < 2) {
@@ -308,7 +313,7 @@ int main(int argc, char **argv) {
         }
     }
     if (npos < 2) {
-        fprintf(stderr, "usage: %s [--no-audio] [--gdi] <core.dll> <rom>\n", argv[0]);
+        fprintf(stderr, "usage: %s [--no-audio] [--gdi] [--pace-log] [--timing-log] <core.dll> <rom>\n", argv[0]);
         return 1;
     }
     const char *core_path = positional[0];
@@ -405,18 +410,31 @@ int main(int argc, char **argv) {
         }
     }
     size_t frame_audio = (size_t)(g_dev_rate / fps + 0.5);
-    /* Pacing target: keep about 25 ms buffered in the ring. */
-    size_t target_buffered = (size_t)(g_dev_rate * 0.025);
+    /* Pacing target: keep about 50 ms buffered in the ring. The WASAPI buffer
+       drains in ~50 ms bursts, so a 50 ms pre-buffer keeps the ring above
+       empty across drain events and reduces per-frame wait-loop jitter. */
+    size_t target_buffered = (size_t)(g_dev_rate * 0.050);
 
-    /* Sleep-fallback pacing state. Windows' default Sleep granularity is
-       ~15.6 ms, so for 60 Hz Sleep(17) actually waits ~31 ms (= 32 fps). We
-       request 1 ms resolution and accumulate fractional ms across frames. */
+    /* Video pacing is QPC absolute-deadline + spin-wait, regardless of audio.
+       Audio is kept in sync via a small bias on the resampler ratio (dynamic
+       rate control), NOT by skipping or duplicating frames. Windows' default
+       Sleep granularity is ~15.6 ms, so we request 1 ms resolution. */
     double frame_period_ms = 1000.0 / fps;
     LARGE_INTEGER qpf, qstart;
     QueryPerformanceFrequency(&qpf);
+    timeBeginPeriod(1);
+    /* Anchor qstart AFTER any one-time setup so the very first frame's
+       deadline doesn't start out late. */
     QueryPerformanceCounter(&qstart);
     unsigned long frame_count = 0;
-    if (!audio_ok) timeBeginPeriod(1);
+
+    /* Per-second rollup for --pace-log. */
+    double pl_gap_min = 1e9, pl_gap_max = 0, pl_gap_sum = 0;
+    size_t pl_fill_before_min = (size_t)-1, pl_fill_before_max = 0, pl_fill_before_sum = 0;
+    size_t pl_fill_after_min  = (size_t)-1, pl_fill_after_max  = 0, pl_fill_after_sum  = 0;
+    unsigned pl_iters = 0, pl_timeouts = 0;
+    LARGE_INTEGER pl_last_qpc; QueryPerformanceCounter(&pl_last_qpc);
+    LARGE_INTEGER pl_window_start = pl_last_qpc;
 
     while (me_platform_pump()) {
         if (me_platform_f11_pressed) {
@@ -428,41 +446,92 @@ int main(int argc, char **argv) {
             g_aspect_mode = (g_aspect_mode + 1) % 3;
             printf("[aspect] %s\n", g_aspect_names[g_aspect_mode]);
         }
-        if (audio_ok) {
-            /* Block until the ring buffer has drained back to the target
-               latency. Wait timeout keeps the message pump responsive. */
-            size_t want_writable = ME_RING_TOTAL - target_buffered;
-            (void)frame_audio;
-            DWORD start = GetTickCount();
-            while (me_audio_writable_frames() < want_writable) {
-                if (GetTickCount() - start >= 100) break;
-                Sleep(1);
-            }
-        }
+        size_t fill_before = 0, fill_after = 0;
+        int timed_out = 0;
+        (void)frame_audio; (void)timed_out;
+        if (audio_ok && pace_log) fill_before = ME_RING_TOTAL - me_audio_writable_frames();
+
         core->retro_run();
         present(g_hwnd);
-        if (!audio_ok) {
-            /* Sleep until the absolute deadline for frame_count+1 — this
-               prevents drift from Sleep returning early or late. */
-            frame_count++;
+
+        /* Dynamic rate control: nudge resampler ratio toward keeping the ring
+           at target_buffered. Bias ∈ [-0.005, +0.005] = ±0.5% pitch. We update
+           once per video frame; the correction is gentle so audio doesn't
+           audibly wobble. */
+        if (audio_ok) {
+            size_t fill = ME_RING_TOTAL - me_audio_writable_frames();
+            if (pace_log) fill_after = fill;
+            /* Error in frames, positive = too much buffered. Normalize by
+               target so the gain is rate-independent. */
+            double err = ((double)fill - (double)target_buffered) / (double)target_buffered;
+            /* Proportional control with tight bounds. Gain 0.0005 means a 100%
+               fill error pulls bias by 0.0005/frame; converges over ~1 second. */
+            g_resamp_ratio_bias += 0.0005 * err;
+            if (g_resamp_ratio_bias >  0.005) g_resamp_ratio_bias =  0.005;
+            if (g_resamp_ratio_bias < -0.005) g_resamp_ratio_bias = -0.005;
+        }
+
+        /* QPC absolute-deadline pace. Frame N must land at qstart + N*period.
+           Sleep most of the wait at 1ms resolution, then spin the last bit. */
+        frame_count++;
+        {
             LARGE_INTEGER now;
             QueryPerformanceCounter(&now);
             double elapsed_ms = (double)(now.QuadPart - qstart.QuadPart) * 1000.0 / (double)qpf.QuadPart;
-            double deadline_ms = frame_count * frame_period_ms;
+            double deadline_ms = (double)frame_count * frame_period_ms;
             double wait_ms = deadline_ms - elapsed_ms;
-            if (wait_ms > 1.5) {
-                Sleep((DWORD)(wait_ms - 1.0)); /* sleep most of it */
-            }
-            /* Spin the last <1 ms to land on the deadline. */
+            if (wait_ms > 1.5) Sleep((DWORD)(wait_ms - 1.0));
             while (1) {
                 QueryPerformanceCounter(&now);
                 elapsed_ms = (double)(now.QuadPart - qstart.QuadPart) * 1000.0 / (double)qpf.QuadPart;
                 if (elapsed_ms >= deadline_ms) break;
             }
         }
+        if (timing_log && (frame_count % 1000) == 0) {
+            LARGE_INTEGER now;
+            QueryPerformanceCounter(&now);
+            double elapsed_ms = (double)(now.QuadPart - qstart.QuadPart) * 1000.0 / (double)qpf.QuadPart;
+            double expected_ms = (double)frame_count * frame_period_ms;
+            double drift_ms = elapsed_ms - expected_ms;
+            printf("[timing] frame %lu expected=%.3f ms actual=%.3f ms drift=%+.3f ms (%+.3f us/frame) bias=%+.4f%%\n",
+                   frame_count, expected_ms, elapsed_ms, drift_ms,
+                   (drift_ms * 1000.0) / (double)frame_count,
+                   g_resamp_ratio_bias * 100.0);
+        }
+        if (pace_log) {
+            LARGE_INTEGER now;
+            QueryPerformanceCounter(&now);
+            double gap_ms = (double)(now.QuadPart - pl_last_qpc.QuadPart) * 1000.0 / (double)qpf.QuadPart;
+            pl_last_qpc = now;
+            if (gap_ms < pl_gap_min) pl_gap_min = gap_ms;
+            if (gap_ms > pl_gap_max) pl_gap_max = gap_ms;
+            pl_gap_sum += gap_ms;
+            if (fill_before < pl_fill_before_min) pl_fill_before_min = fill_before;
+            if (fill_before > pl_fill_before_max) pl_fill_before_max = fill_before;
+            pl_fill_before_sum += fill_before;
+            if (fill_after  < pl_fill_after_min)  pl_fill_after_min  = fill_after;
+            if (fill_after  > pl_fill_after_max)  pl_fill_after_max  = fill_after;
+            pl_fill_after_sum  += fill_after;
+            pl_iters++;
+            if (timed_out) pl_timeouts++;
+            double window_ms = (double)(now.QuadPart - pl_window_start.QuadPart) * 1000.0 / (double)qpf.QuadPart;
+            if (window_ms >= 1000.0 && pl_iters > 0) {
+                printf("[pace] %ufps gap min/avg/max=%.1f/%.1f/%.1f ms fill_before(min/avg/max)=%zu/%zu/%zu fill_after=%zu/%zu/%zu bias=%+.4f%%\n",
+                       pl_iters,
+                       pl_gap_min, pl_gap_sum / pl_iters, pl_gap_max,
+                       pl_fill_before_min, pl_fill_before_sum / pl_iters, pl_fill_before_max,
+                       pl_fill_after_min,  pl_fill_after_sum  / pl_iters, pl_fill_after_max,
+                       g_resamp_ratio_bias * 100.0);
+                pl_gap_min = 1e9; pl_gap_max = 0; pl_gap_sum = 0;
+                pl_fill_before_min = (size_t)-1; pl_fill_before_max = 0; pl_fill_before_sum = 0;
+                pl_fill_after_min  = (size_t)-1; pl_fill_after_max  = 0; pl_fill_after_sum  = 0;
+                pl_iters = 0; pl_timeouts = 0;
+                pl_window_start = now;
+            }
+        }
     }
 
-    if (!audio_ok) timeEndPeriod(1);
+    timeEndPeriod(1);
     if (audio_ok) me_audio_shutdown();
     if (g_use_d3d11) me_d3d11_shutdown();
 
