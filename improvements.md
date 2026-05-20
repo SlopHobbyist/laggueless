@@ -4,7 +4,7 @@ General lag-reduction improvements across the project.
 
 1. **Run-ahead for GL cores.** Currently disabled because GPU savestate capture of HW-rendered cores is expensive. Implement via FBO/PBO ring-buffering or `glCopyImageSubData` into a savestate texture pool. This would extend the largest latency win (run-ahead) to hardware-rendered cores.
 
-2. **DXGI 1.3 waitable swap chain.** Use `IDXGISwapChain2::GetFrameLatencyWaitableObject()` + `SetMaximumFrameLatency(1)` to replace the spin-wait tail. Same sub-ms precision, but OS-scheduled wake instead of burning CPU — better thermals on laptops, fewer wasted cycles.
+2. ~~**DXGI 1.3 waitable swap chain.** Use `IDXGISwapChain2::GetFrameLatencyWaitableObject()` + `SetMaximumFrameLatency(1)` to replace the spin-wait tail. Same sub-ms precision, but OS-scheduled wake instead of burning CPU — better thermals on laptops, fewer wasted cycles.~~ ✅ Swap chain now created with `FRAME_LATENCY_WAITABLE_OBJECT`, `SetMaximumFrameLatency(1)`, and the main loop blocks on the waitable handle at the top of each iteration — caps GPU queue depth at 1 without CPU spin. Falls back gracefully on pre-Win8.1 / when the QI fails. QPC deadline pacing kept as the wall-clock master so audio sync is unaffected.
 
 3. **WASAPI exclusive-mode opt-in.** Shared mode floors at the engine period (~10 ms). Exclusive mode can reach ~3 ms. Add an opt-in toggle in [settings.yaml](settings.yaml) for users with dedicated audio hardware.
 

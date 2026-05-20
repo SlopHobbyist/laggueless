@@ -32,4 +32,11 @@ void me_d3d11_upload(const u32 *pixels, unsigned frame_w, unsigned frame_h, unsi
 void me_d3d11_present(int client_w, int client_h, int dx, int dy, int dw, int dh,
                       unsigned frame_w, unsigned frame_h);
 
+/* Block until the swap chain is ready to accept the next Present, with the
+   maximum frame latency clamped to 1. Returns 1 if the wait actually
+   happened (DXGI 1.3+ waitable swap chain available), 0 otherwise so the
+   caller can fall back to its own pacing. `timeout_ms` is forwarded to
+   WaitForSingleObjectEx; use INFINITE if you have no upper bound. */
+int  me_d3d11_wait_for_present(unsigned timeout_ms);
+
 #endif

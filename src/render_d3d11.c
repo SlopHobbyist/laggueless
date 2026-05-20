@@ -37,6 +37,13 @@ static ID3D11RasterizerState    *g_rs  = NULL;
 static UINT g_tex_w = 0, g_tex_h = 0;
 static UINT g_client_w = 0, g_client_h = 0;
 static int  g_allow_tearing = 0;
+/* DXGI 1.3 waitable swap chain. When non-NULL, the main loop can block on
+   this handle in place of the QPC spin-wait tail: the OS wakes us when the
+   swap chain is ready for the next Present (queue depth <= max frame
+   latency), which we set to 1 — that pins CPU one frame ahead of GPU
+   instead of letting it race ahead. NULL on pre-Win8.1 systems or if
+   QueryInterface(IDXGISwapChain2) fails; callers must keep a fallback. */
+static HANDLE g_frame_latency_waitable = NULL;
 
 static int chk(HRESULT hr, const char *where) {
     if (FAILED(hr)) {
@@ -102,12 +109,37 @@ int me_d3d11_init(HWND hwnd, unsigned max_w, unsigned max_h) {
     scd.Scaling     = DXGI_SCALING_STRETCH;
     scd.SwapEffect  = DXGI_SWAP_EFFECT_FLIP_DISCARD;
     scd.AlphaMode   = DXGI_ALPHA_MODE_IGNORE;
-    scd.Flags       = g_allow_tearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
+    scd.Flags       = (g_allow_tearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0)
+                    | DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
 
     hr = IDXGIFactory2_CreateSwapChainForHwnd(factory, (IUnknown *)g_dev, hwnd, &scd, NULL, NULL, &g_sc);
+    if (FAILED(hr)) {
+        /* Win8.0 and some VM/RDP paths reject the waitable flag. Retry
+           without it so we still get a working FLIP_DISCARD chain — the
+           main loop's QPC spin-wait remains the fallback pacing path. */
+        fprintf(stderr, "[d3d11] CreateSwapChainForHwnd with waitable flag failed hr=0x%08lx; retrying without\n",
+                (unsigned long)hr);
+        scd.Flags = g_allow_tearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
+        hr = IDXGIFactory2_CreateSwapChainForHwnd(factory, (IUnknown *)g_dev, hwnd, &scd, NULL, NULL, &g_sc);
+    }
     IDXGIFactory2_MakeWindowAssociation(factory, hwnd, DXGI_MWA_NO_ALT_ENTER);
     IDXGIFactory2_Release(factory);
     if (!chk(hr, "CreateSwapChainForHwnd")) return 1;
+
+    /* If the swap chain supports IDXGISwapChain2, pin max frame latency to 1
+       and grab the waitable handle. SetMaximumFrameLatency only takes effect
+       on chains created with the WAITABLE flag — otherwise it's a no-op. */
+    if (scd.Flags & DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT) {
+        IDXGISwapChain2 *sc2 = NULL;
+        if (SUCCEEDED(IDXGISwapChain1_QueryInterface(g_sc, &IID_IDXGISwapChain2, (void **)&sc2))) {
+            if (SUCCEEDED(IDXGISwapChain2_SetMaximumFrameLatency(sc2, 1))) {
+                g_frame_latency_waitable = IDXGISwapChain2_GetFrameLatencyWaitableObject(sc2);
+            }
+            IDXGISwapChain2_Release(sc2);
+        }
+        printf("[d3d11] frame_latency_waitable=%s\n",
+               g_frame_latency_waitable ? "on (max_latency=1)" : "unavailable");
+    }
 
     if (!create_rtv()) return 1;
 
@@ -211,6 +243,9 @@ void me_d3d11_shutdown(void) {
     if (g_srv) { ID3D11ShaderResourceView_Release(g_srv); g_srv = NULL; }
     if (g_tex) { ID3D11Texture2D_Release(g_tex);        g_tex = NULL; }
     if (g_rtv) { ID3D11RenderTargetView_Release(g_rtv); g_rtv = NULL; }
+    /* Waitable handle is owned by the swap chain — releasing the chain
+       invalidates it. Just drop the reference. */
+    g_frame_latency_waitable = NULL;
     if (g_sc)  { IDXGISwapChain1_Release(g_sc);         g_sc  = NULL; }
     if (g_ctx) { ID3D11DeviceContext_Release(g_ctx);    g_ctx = NULL; }
     if (g_dev) { ID3D11Device_Release(g_dev);           g_dev = NULL; }
@@ -239,7 +274,10 @@ static void resize_if_needed(int cw, int ch) {
     ID3D11RenderTargetView *null_rtv = NULL;
     ID3D11DeviceContext_OMSetRenderTargets(g_ctx, 1, &null_rtv, NULL);
     if (g_rtv) { ID3D11RenderTargetView_Release(g_rtv); g_rtv = NULL; }
-    UINT flags = g_allow_tearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
+    /* Keep the same flags the chain was created with — dropping the waitable
+       flag on resize would invalidate g_frame_latency_waitable. */
+    UINT flags = (g_allow_tearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0)
+               | (g_frame_latency_waitable ? DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT : 0);
     HRESULT hr = IDXGISwapChain1_ResizeBuffers(g_sc, 0, (UINT)cw, (UINT)ch, DXGI_FORMAT_UNKNOWN, flags);
     if (FAILED(hr)) {
         fprintf(stderr, "[d3d11] ResizeBuffers(%d,%d) failed hr=0x%08lx\n",
@@ -311,4 +349,14 @@ void me_d3d11_present(int client_w, int client_h, int dx, int dy, int dw, int dh
 
     UINT flags = g_allow_tearing ? DXGI_PRESENT_ALLOW_TEARING : 0;
     IDXGISwapChain1_Present(g_sc, 0, flags);
+}
+
+int me_d3d11_wait_for_present(unsigned timeout_ms) {
+    if (!g_frame_latency_waitable) return 0;
+    /* bAlertable=FALSE: we don't queue APCs to this thread, so alertable
+       waits just add overhead. WAIT_OBJECT_0 is the only success code we
+       care about; WAIT_TIMEOUT and WAIT_FAILED both fall through to the
+       caller's fallback pacing. */
+    WaitForSingleObjectEx(g_frame_latency_waitable, timeout_ms, FALSE);
+    return 1;
 }

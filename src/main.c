@@ -1160,6 +1160,13 @@ int main(int argc, char **argv) {
     }
 
     while (me_platform_pump()) {
+        /* DXGI 1.3 waitable swap chain backpressure: with max frame latency
+           pinned to 1, this blocks until the previous Present has been
+           consumed by the compositor. Keeps CPU exactly one frame ahead of
+           GPU instead of letting Present queue frames silently. Pre-Win8.1
+           and the GDI present path return 0 here and rely on the QPC tail
+           below for pacing. */
+        if (g_use_d3d11) me_d3d11_wait_for_present(1000);
         const me_kb_binding *hk;
         hk = &g_settings.hk_toggle_fullscreen;
         if (me_platform_key_pressed(hk->vk, hk->ctrl, hk->alt, hk->shift)) {
