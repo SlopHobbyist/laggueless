@@ -9,10 +9,45 @@
 static unsigned char g_pending[256];
 static unsigned char g_held[256];
 
+/* Fullscreen + activation state shared with the cursor-visibility logic below. */
+static struct {
+    int active;
+    DWORD style;
+    DWORD exstyle;
+    RECT  rect;
+} g_fs = {0};
+static int g_app_active = 1;
+static int g_cursor_hidden = 0;
+
+/* ShowCursor maintains an internal counter; only call it when the desired state
+   actually differs from what we last set, so we never stack up hides/shows. */
+static void me_update_cursor_visibility(void) {
+    int should_hide = g_fs.active && g_app_active;
+    if (should_hide && !g_cursor_hidden) {
+        while (ShowCursor(FALSE) >= 0) {}
+        g_cursor_hidden = 1;
+    } else if (!should_hide && g_cursor_hidden) {
+        while (ShowCursor(TRUE) < 0) {}
+        g_cursor_hidden = 0;
+    }
+}
+
 static LRESULT CALLBACK me_wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
         case WM_CLOSE:   PostQuitMessage(0); return 0;
         case WM_DESTROY: PostQuitMessage(0); return 0;
+        case WM_ACTIVATEAPP:
+            g_app_active = wp ? 1 : 0;
+            me_update_cursor_visibility();
+            break;
+        case WM_SETCURSOR:
+            /* While fullscreen + active, suppress the class cursor over the client
+               area so it stays hidden even as the mouse moves. */
+            if (g_fs.active && g_app_active && LOWORD(lp) == HTCLIENT) {
+                SetCursor(NULL);
+                return TRUE;
+            }
+            break;
         case WM_ERASEBKGND: return 1; /* we paint every frame, no background erase */
         case WM_PAINT: {
             PAINTSTRUCT ps;
@@ -88,13 +123,6 @@ void me_platform_request_quit(void) {
 }
 
 /* ---- fullscreen toggle ---------------------------------------------------- */
-static struct {
-    int active;
-    DWORD style;
-    DWORD exstyle;
-    RECT  rect;
-} g_fs = {0};
-
 void me_platform_toggle_fullscreen(HWND hwnd) {
     if (!g_fs.active) {
         g_fs.style   = (DWORD)GetWindowLongA(hwnd, GWL_STYLE);
@@ -112,6 +140,7 @@ void me_platform_toggle_fullscreen(HWND hwnd) {
                      mi.rcMonitor.bottom - mi.rcMonitor.top,
                      SWP_NOOWNERZORDER | SWP_FRAMECHANGED | SWP_SHOWWINDOW);
         g_fs.active = 1;
+        me_update_cursor_visibility();
     } else {
         SetWindowLongA(hwnd, GWL_STYLE,   (LONG)g_fs.style);
         SetWindowLongA(hwnd, GWL_EXSTYLE, (LONG)g_fs.exstyle);
@@ -121,5 +150,6 @@ void me_platform_toggle_fullscreen(HWND hwnd) {
                      g_fs.rect.bottom - g_fs.rect.top,
                      SWP_NOOWNERZORDER | SWP_FRAMECHANGED | SWP_SHOWWINDOW);
         g_fs.active = 0;
+        me_update_cursor_visibility();
     }
 }
