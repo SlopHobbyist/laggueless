@@ -23,6 +23,12 @@ static unsigned long g_video_calls = 0;
 static HWND g_hwnd = NULL;
 static int  g_use_d3d11 = 0;
 
+/* Aspect mode: 0 = 1:1 (square pixels), 1 = 4:3, 2 = 16:9. F1 cycles. */
+static int g_aspect_mode = 0;
+static const char *g_aspect_names[3] = { "1:1", "4:3", "16:9" };
+static const int g_aspect_x[3] = { 1, 4, 16 };
+static const int g_aspect_y[3] = { 1, 3,  9 };
+
 /* ---- log callback --------------------------------------------------------- */
 static void me_log_cb(enum retro_log_level level, const char *fmt, ...) {
     const char *tag = "?";
@@ -215,9 +221,10 @@ static void present(HWND hwnd) {
     int ch = cr.bottom - cr.top;
     if (cw <= 0 || ch <= 0) return;
 
-    /* Integer-scale to 4:3 inside the client area. */
+    /* Integer-scale to the current target aspect inside the client area. */
     i32 rx, ry;
-    me_iscale_ratios(cw, ch, (i32)g_frame_w, (i32)g_frame_h, 4, 3, &rx, &ry);
+    me_iscale_ratios(cw, ch, (i32)g_frame_w, (i32)g_frame_h,
+                     g_aspect_x[g_aspect_mode], g_aspect_y[g_aspect_mode], &rx, &ry);
     int dw = (int)g_frame_w * rx;
     int dh = (int)g_frame_h * ry;
     if (dw > cw) dw = cw;
@@ -415,6 +422,11 @@ int main(int argc, char **argv) {
         if (me_platform_f11_pressed) {
             me_platform_f11_pressed = 0;
             me_platform_toggle_fullscreen(g_hwnd);
+        }
+        if (me_platform_f1_pressed) {
+            me_platform_f1_pressed = 0;
+            g_aspect_mode = (g_aspect_mode + 1) % 3;
+            printf("[aspect] %s\n", g_aspect_names[g_aspect_mode]);
         }
         if (audio_ok) {
             /* Block until the ring buffer has drained back to the target

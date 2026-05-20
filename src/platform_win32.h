@@ -12,5 +12,7 @@ void me_platform_toggle_fullscreen(HWND hwnd);
 
 /* Set to 1 by wndproc on F11; main loop reads & clears. */
 extern volatile int me_platform_f11_pressed;
+/* Set to 1 by wndproc on F1; main loop reads & clears. */
+extern volatile int me_platform_f1_pressed;
 
 #endif

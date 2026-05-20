@@ -3,6 +3,7 @@
 #include "platform_win32.h"
 
 volatile int me_platform_f11_pressed = 0;
+volatile int me_platform_f1_pressed = 0;
 
 static LRESULT CALLBACK me_wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
@@ -18,6 +19,7 @@ static LRESULT CALLBACK me_wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_KEYDOWN:
             if (wp == VK_ESCAPE) PostQuitMessage(0);
             else if (wp == VK_F11) me_platform_f11_pressed = 1;
+            else if (wp == VK_F1)  me_platform_f1_pressed  = 1;
             return 0;
     }
     return DefWindowProcA(h, msg, wp, lp);
