@@ -7,4 +7,10 @@
 HWND me_platform_create_window(const char *title, int w, int h);
 int  me_platform_pump(void); /* returns 0 when WM_QUIT received */
 
+/* Toggle borderless fullscreen on the given window. */
+void me_platform_toggle_fullscreen(HWND hwnd);
+
+/* Set to 1 by wndproc on F11; main loop reads & clears. */
+extern volatile int me_platform_f11_pressed;
+
 #endif

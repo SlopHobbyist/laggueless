@@ -131,20 +131,36 @@ static void present(HWND hwnd) {
     int ch = cr.bottom - cr.top;
     if (cw <= 0 || ch <= 0) return;
 
+    /* Integer-scale to 4:3 inside the client area. */
+    i32 rx, ry;
+    me_iscale_ratios(cw, ch, (i32)g_frame_w, (i32)g_frame_h, 4, 3, &rx, &ry);
+    int dw = (int)g_frame_w * rx;
+    int dh = (int)g_frame_h * ry;
+    if (dw > cw) dw = cw;
+    if (dh > ch) dh = ch;
+    int dx = (cw - dw) / 2;
+    int dy = (ch - dh) / 2;
+
     HDC hdc = GetDC(hwnd);
     if (!hdc) return;
+
+    /* Black bars around the image. */
+    HBRUSH black = (HBRUSH)GetStockObject(BLACK_BRUSH);
+    if (dy > 0)       { RECT r = {0, 0, cw, dy};                   FillRect(hdc, &r, black); }
+    if (dy + dh < ch) { RECT r = {0, dy + dh, cw, ch};             FillRect(hdc, &r, black); }
+    if (dx > 0)       { RECT r = {0, dy, dx, dy + dh};             FillRect(hdc, &r, black); }
+    if (dx + dw < cw) { RECT r = {dx + dw, dy, cw, dy + dh};       FillRect(hdc, &r, black); }
 
     BITMAPINFO bmi = {0};
     bmi.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
     bmi.bmiHeader.biWidth       = (LONG)g_frame_w;
-    bmi.bmiHeader.biHeight      = -(LONG)g_frame_h; /* top-down */
+    bmi.bmiHeader.biHeight      = -(LONG)g_frame_h;
     bmi.bmiHeader.biPlanes      = 1;
     bmi.bmiHeader.biBitCount    = 32;
     bmi.bmiHeader.biCompression = BI_RGB;
 
-    /* Compact the active region into a tightly-packed buffer (StretchDIBits
-       on a wider parent buffer + smaller source rect is unreliable on some GDI
-       paths). */
+    /* Tightly pack the active region (StretchDIBits with src rect smaller
+       than DIB width is unreliable on some GDI paths). */
     static u32 *tight = NULL;
     static size_t tight_cap = 0;
     size_t need = (size_t)g_frame_w * g_frame_h;
@@ -158,17 +174,10 @@ static void present(HWND hwnd) {
             memcpy(tight + y * g_frame_w, g_back + y * g_back_max_w, g_frame_w * sizeof(u32));
         }
         SetStretchBltMode(hdc, COLORONCOLOR);
-        int r = StretchDIBits(hdc,
-                              0, 0, cw, ch,
-                              0, 0, (int)g_frame_w, (int)g_frame_h,
-                              tight, &bmi, DIB_RGB_COLORS, SRCCOPY);
-        if (r == 0 || r == GDI_ERROR) {
-            static int reported = 0;
-            if (!reported) {
-                fprintf(stderr, "[present] StretchDIBits returned %d err=%lu\n", r, GetLastError());
-                reported = 1;
-            }
-        }
+        StretchDIBits(hdc,
+                      dx, dy, dw, dh,
+                      0, 0, (int)g_frame_w, (int)g_frame_h,
+                      tight, &bmi, DIB_RGB_COLORS, SRCCOPY);
     }
 
     ReleaseDC(hwnd, hdc);
@@ -264,6 +273,10 @@ int main(int argc, char **argv) {
     DWORD frame_ms = (DWORD)(1000.0 / fps + 0.5);
 
     while (me_platform_pump()) {
+        if (me_platform_f11_pressed) {
+            me_platform_f11_pressed = 0;
+            me_platform_toggle_fullscreen(g_hwnd);
+        }
         core->retro_run();
         present(g_hwnd);
         Sleep(frame_ms);
