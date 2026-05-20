@@ -44,8 +44,55 @@ static void me_log_cb(enum retro_log_level level, const char *fmt, ...) {
 }
 
 /* ---- environment callback ------------------------------------------------- */
+/* Track which unhandled env cmd IDs we've already logged so the trace doesn't
+   spam the same call hundreds of times per second. */
+static unsigned char g_env_seen[256];
+static int g_env_trace = 0; /* set by --env-trace flag */
+
+/* Core options storage. SET_VARIABLES hands us a { key, "Desc; v1|v2|v3" }
+   array terminated by { NULL, NULL }. At SET time we walk it once, strdup
+   each default ("v1") into a parallel array. GET_VARIABLE then returns the
+   precomputed default string. */
+struct me_var { char *key; char *def_value; };
+static struct me_var *g_vars = NULL;
+static size_t g_var_count = 0;
+
+static void me_vars_set(const struct retro_variable *src) {
+    /* Free any previous set (some cores re-declare on retry). */
+    for (size_t i = 0; i < g_var_count; i++) {
+        free(g_vars[i].key); free(g_vars[i].def_value);
+    }
+    free(g_vars); g_vars = NULL; g_var_count = 0;
+    if (!src) return;
+    size_t n = 0; while (src[n].key) n++;
+    g_vars = (struct me_var *)calloc(n, sizeof(*g_vars));
+    if (!g_vars) return;
+    g_var_count = n;
+    for (size_t i = 0; i < n; i++) {
+        g_vars[i].key = _strdup(src[i].key);
+        const char *val = src[i].value ? src[i].value : "";
+        const char *semi = strchr(val, ';');
+        const char *p = semi ? semi + 1 : val;
+        while (*p == ' ') p++;
+        size_t len = 0; while (p[len] && p[len] != '|') len++;
+        char *d = (char *)malloc(len + 1);
+        if (d) { memcpy(d, p, len); d[len] = '\0'; }
+        g_vars[i].def_value = d;
+    }
+}
+
+static const char *me_var_default_for(const char *key) {
+    if (!key) return NULL;
+    for (size_t i = 0; i < g_var_count; i++) {
+        if (g_vars[i].key && strcmp(g_vars[i].key, key) == 0) return g_vars[i].def_value;
+    }
+    return NULL;
+}
+
 static bool me_environment_cb(unsigned cmd, void *data) {
-    switch (cmd) {
+    /* The "experimental" bit is set on some env IDs; mask it for matching. */
+    unsigned base = cmd & ~RETRO_ENVIRONMENT_EXPERIMENTAL;
+    switch (base) {
         case RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY: {
             static const char *sysdir = ".";
             if (data) *(const char **)data = sysdir;
@@ -72,10 +119,50 @@ static bool me_environment_cb(unsigned cmd, void *data) {
             return true;
         }
         case RETRO_ENVIRONMENT_GET_VARIABLE: {
-            if (data) ((struct retro_variable *)data)->value = NULL;
-            return false;
+            struct retro_variable *v = (struct retro_variable *)data;
+            if (!v) return false;
+            v->value = me_var_default_for(v->key);
+            return v->value != NULL;
+        }
+        case RETRO_ENVIRONMENT_SET_VARIABLES: {     /* 16 */
+            const struct retro_variable *arr = (const struct retro_variable *)data;
+            if (g_env_trace) {
+                fprintf(stderr, "[env] SET_VARIABLES data=%p\n", (const void *)arr); fflush(stderr);
+                if (arr) {
+                    for (const struct retro_variable *v = arr; v->key; v++) {
+                        fprintf(stderr, "[env]   key=%s value=%s\n",
+                                v->key, v->value ? v->value : "(null)");
+                    }
+                    fflush(stderr);
+                }
+            }
+            me_vars_set(arr);
+            if (g_env_trace) { fprintf(stderr, "[env] SET_VARIABLES stored %zu\n", g_var_count); fflush(stderr); }
+            return true;
+        }
+        case RETRO_ENVIRONMENT_SET_CONTROLLER_INFO:
+            if (g_env_trace) { fprintf(stderr, "[env] SET_CONTROLLER_INFO -> true\n"); fflush(stderr); }
+            return true;  /* 35 */
+        case RETRO_ENVIRONMENT_SET_CONTENT_INFO_OVERRIDE:
+            /* We don't actually apply the override (we use the original
+               need_fullpath from get_system_info), so report false. Saying
+               true puts cores into a state where they expect us to honor it. */
+            if (g_env_trace) { fprintf(stderr, "[env] SET_CONTENT_INFO_OVERRIDE -> false\n"); fflush(stderr); }
+            return false; /* 65 */
+        /* Report we only support legacy core options (v0). Cores using newer
+           option formats fall back to v0 SET_VARIABLES, which we accept above. */
+        case RETRO_ENVIRONMENT_GET_CORE_OPTIONS_VERSION: { /* 52 */
+            if (data) *(unsigned *)data = 0;
+            if (g_env_trace) { fprintf(stderr, "[env] GET_CORE_OPTIONS_VERSION -> 0\n"); fflush(stderr); }
+            return true;
         }
         default:
+            if (g_env_trace && base < 256 && !g_env_seen[base]) {
+                g_env_seen[base] = 1;
+                fprintf(stderr, "[env] unhandled cmd %u%s -> false\n",
+                        base, (cmd & RETRO_ENVIRONMENT_EXPERIMENTAL) ? " (experimental)" : "");
+                fflush(stderr);
+            }
             return false;
     }
 }
@@ -296,7 +383,17 @@ static unsigned char *slurp(const char *path, size_t *out_size) {
     return buf;
 }
 
+static LONG WINAPI me_unhandled_exception(EXCEPTION_POINTERS *ep) {
+    DWORD code = ep && ep->ExceptionRecord ? ep->ExceptionRecord->ExceptionCode : 0;
+    void *addr = ep && ep->ExceptionRecord ? ep->ExceptionRecord->ExceptionAddress : NULL;
+    fprintf(stderr, "[crash] unhandled exception 0x%08lx at %p\n",
+            (unsigned long)code, addr);
+    fflush(stderr);
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+
 int main(int argc, char **argv) {
+    SetUnhandledExceptionFilter(me_unhandled_exception);
     int no_audio = 0;
     int force_gdi = 0;
     int pace_log = 0;
@@ -308,6 +405,7 @@ int main(int argc, char **argv) {
         else if (strcmp(argv[i], "--gdi")      == 0) force_gdi = 1;
         else if (strcmp(argv[i], "--pace-log") == 0) pace_log  = 1;
         else if (strcmp(argv[i], "--timing-log") == 0) timing_log = 1;
+        else if (strcmp(argv[i], "--env-trace") == 0) g_env_trace = 1;
         else if (argv[i][0] == '-') {
             fprintf(stderr, "unknown flag: %s\n", argv[i]); return 1;
         } else if (npos < 2) {
@@ -317,7 +415,7 @@ int main(int argc, char **argv) {
         }
     }
     if (npos < 2) {
-        fprintf(stderr, "usage: %s [--no-audio] [--gdi] [--pace-log] [--timing-log] <core.dll> <rom>\n", argv[0]);
+        fprintf(stderr, "usage: %s [--no-audio] [--gdi] [--pace-log] [--timing-log] [--env-trace] <core.dll> <rom>\n", argv[0]);
         return 1;
     }
     const char *core_path = positional[0];
@@ -337,14 +435,24 @@ int main(int argc, char **argv) {
            info.valid_extensions ? info.valid_extensions : "?",
            (int)info.need_fullpath);
 
+    fprintf(stderr, "[load] set_environment\n"); fflush(stderr);
     core->retro_set_environment(me_environment_cb);
-    core->retro_set_video_refresh(me_video_refresh_cb);
-    core->retro_set_audio_sample(me_audio_sample_cb);
-    core->retro_set_audio_sample_batch(me_audio_sample_batch_cb);
-    core->retro_set_input_poll(me_input_poll_cb);
-    core->retro_set_input_state(me_input_state_cb);
-
+    /* Some cores (Mesen) allocate internal state in retro_init() that the
+       callback setters dereference. Call retro_init before the setters.
+       Compliant cores treat the setters as pointer stores so order is safe. */
+    fprintf(stderr, "[load] retro_init()\n"); fflush(stderr);
     core->retro_init();
+    fprintf(stderr, "[load] retro_init returned\n"); fflush(stderr);
+    fprintf(stderr, "[load] set_video_refresh\n"); fflush(stderr);
+    core->retro_set_video_refresh(me_video_refresh_cb);
+    fprintf(stderr, "[load] set_audio_sample\n"); fflush(stderr);
+    core->retro_set_audio_sample(me_audio_sample_cb);
+    fprintf(stderr, "[load] set_audio_sample_batch\n"); fflush(stderr);
+    core->retro_set_audio_sample_batch(me_audio_sample_batch_cb);
+    fprintf(stderr, "[load] set_input_poll\n"); fflush(stderr);
+    core->retro_set_input_poll(me_input_poll_cb);
+    fprintf(stderr, "[load] set_input_state\n"); fflush(stderr);
+    core->retro_set_input_state(me_input_state_cb);
 
     struct retro_game_info game = {0};
     game.path = rom_path;
@@ -356,9 +464,16 @@ int main(int argc, char **argv) {
         game.data = rom_data;
         game.size = rom_size;
     }
+    fprintf(stderr, "[load] retro_load_game(path=%s, data=%p, size=%zu)\n",
+            game.path ? game.path : "(null)", game.data, game.size);
+    fflush(stderr);
 
-    if (!core->retro_load_game(&game)) {
+    bool loaded = core->retro_load_game(&game);
+    fprintf(stderr, "[load] retro_load_game -> %s\n", loaded ? "true" : "false");
+    fflush(stderr);
+    if (!loaded) {
         fprintf(stderr, "retro_load_game failed\n");
+        fflush(stderr);
         return 1;
     }
 
@@ -469,18 +584,17 @@ int main(int argc, char **argv) {
             if (pace_log) fill_after = fill;
             /* Normalized error: -1 = ring empty, 0 = at target, +1 = double target. */
             double err = ((double)fill - (double)target_buffered) / (double)target_buffered;
-            /* Integral term: very small per-frame adjustment. At 60 fps, full-
-               scale error (|err|=1) shifts bias by 6e-5/sec — converges to the
-               true steady-state mismatch over ~30 s without oscillating. */
+            /* Integral term: tracks the true core-vs-device clock mismatch.
+               Bound to ±0.1% (~1.7 cents) — observed real mismatch is ~0.03%
+               so 3x headroom is plenty and pitch stays inaudible. */
             g_resamp_ratio_bias += 1.0e-6 * err;
-            if (g_resamp_ratio_bias >  0.005) g_resamp_ratio_bias =  0.005;
-            if (g_resamp_ratio_bias < -0.005) g_resamp_ratio_bias = -0.005;
-            /* Proportional term: applied to step *this frame only*, not
-               persisted. Provides fast disturbance rejection without permanent
-               pitch shift. Clamped tightly. */
-            drc_p_term = 0.0005 * err;
-            if (drc_p_term >  0.0015) drc_p_term =  0.0015;
-            if (drc_p_term < -0.0015) drc_p_term = -0.0015;
+            if (g_resamp_ratio_bias >  0.001) g_resamp_ratio_bias =  0.001;
+            if (g_resamp_ratio_bias < -0.001) g_resamp_ratio_bias = -0.001;
+            /* Proportional term: very gentle for inaudible transient response.
+               Max ±0.05% (~0.9 cents) and applied only this frame. */
+            drc_p_term = 0.0001 * err;
+            if (drc_p_term >  0.0005) drc_p_term =  0.0005;
+            if (drc_p_term < -0.0005) drc_p_term = -0.0005;
         }
         g_resamp_p_bias = drc_p_term;
 
