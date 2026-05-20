@@ -17,6 +17,11 @@ video:
 
 audio:
   no_audio: false        # Changes frame timing on some cores/graphics apis
+  exclusive_mode: true  # WASAPI exclusive mode: targets ~3 ms latency instead of ~10 ms.
+                         # Requires dedicated audio hardware; the audio device is claimed
+                         # entirely (system sounds muted while running). Falls back to
+                         # shared mode automatically if the device rejects it.
+                         # CLI equivalent: --exclusive-audio
 
 # Run-ahead: reduces input latency by running the core extra frames ahead each
 # iteration and displaying the future frame. The displayed frame is what the

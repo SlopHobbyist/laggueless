@@ -64,6 +64,7 @@ typedef struct {
 
     /* audio */
     int no_audio;
+    int audio_exclusive; /* opt-in: WASAPI exclusive mode (~3 ms vs ~10 ms latency) */
 
     /* run-ahead: number of frames to simulate ahead each iteration. 0 disables.
        Reduces visible input latency by displaying a future frame. Each ghost

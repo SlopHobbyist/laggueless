@@ -4,10 +4,12 @@
 #include "types.h"
 #include <stddef.h>
 
-/* Initialize a WASAPI shared-mode render stream. The stream always runs at the
-   device's mix-format sample rate (returned via *out_device_rate). Returns 0
-   on success, nonzero on failure. */
-int  me_audio_init(unsigned *out_device_rate);
+/* Initialize a WASAPI render stream. If want_exclusive is nonzero the function
+   attempts AUDCLNT_SHAREMODE_EXCLUSIVE (target ~3 ms latency); on failure it
+   falls back to shared mode automatically. The actual mode used is printed to
+   stdout. *out_device_rate receives the device sample rate. Returns 0 on
+   success, nonzero on failure. */
+int  me_audio_init(unsigned *out_device_rate, int want_exclusive);
 void me_audio_shutdown(void);
 
 unsigned me_audio_device_rate(void);

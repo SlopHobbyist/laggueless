@@ -866,8 +866,9 @@ int main(int argc, char **argv) {
        then CLI flags override YAML. */
     me_settings_defaults(&g_settings);
     me_settings_load("settings.yaml", &g_settings);
-    int no_audio    = g_settings.no_audio;
-    int force_gdi   = g_settings.force_gdi;
+    int no_audio       = g_settings.no_audio;
+    int audio_exclusive = g_settings.audio_exclusive;
+    int force_gdi      = g_settings.force_gdi;
     int force_d3d11 = g_settings.force_d3d11;
     int pace_log    = g_settings.pace_log;
     int timing_log  = g_settings.timing_log;
@@ -880,6 +881,7 @@ int main(int argc, char **argv) {
     const char *exe = argv[0] ? argv[0] : "laggueless.exe";
     for (int i = 1; i < argc; i++) {
         if      (strcmp(argv[i], "--no-audio") == 0) no_audio  = 1;
+        else if (strcmp(argv[i], "--exclusive-audio") == 0) audio_exclusive = 1;
         else if (strcmp(argv[i], "--gdi")      == 0) force_gdi = 1;
         else if (strcmp(argv[i], "--d3d11")    == 0) force_d3d11 = 1;
         else if (strcmp(argv[i], "--pace-log") == 0) pace_log  = 1;
@@ -906,6 +908,8 @@ int main(int argc, char **argv) {
                 "options:\n"
                 "  -h, --help, -?, /?, /help    show this help and exit\n"
                 "  --no-audio                   disable audio output\n"
+                "  --exclusive-audio            opt-in WASAPI exclusive mode (~3 ms vs ~10 ms)\n"
+                "                                 falls back to shared if device rejects it\n"
                 "  --gdi                        force GDI for all cores (overrides --d3d11)\n"
                 "  --d3d11                      use D3D11 present path for 2D cores too\n"
                 "                                 (enables VRR / lower latency, but may tear\n"
@@ -1153,7 +1157,7 @@ int main(int argc, char **argv) {
         printf("[audio] disabled via --no-audio; using Sleep-based pacing\n");
         g_dev_rate = g_core_rate;
     } else {
-        audio_ok = (me_audio_init(&g_dev_rate) == 0);
+        audio_ok = (me_audio_init(&g_dev_rate, audio_exclusive) == 0);
         if (!audio_ok) {
             fprintf(stderr, "[audio] init failed; falling back to Sleep pacing\n");
             g_dev_rate = g_core_rate;
