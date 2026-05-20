@@ -490,6 +490,17 @@ static void present(HWND hwnd) {
     int dx = (cw - dw) / 2;
     int dy = (ch - dh) / 2;
 
+    /* D3D11 flip-model path: only for HW (GL) cores. Software cores keep
+       the GDI path below — DWM composites it at the desktop refresh, so
+       no tearing on a non-VRR display, and the latency is fine. HW cores
+       must use D3D11 because the interop fast path (Step 7b) shares a GPU
+       texture between GL and D3D11. */
+    if (g_use_d3d11 && g_hw_render_accepted) {
+        me_d3d11_upload(g_back, g_frame_w, g_frame_h, g_back_max_w);
+        me_d3d11_present(cw, ch, dx, dy, dw, dh, g_frame_w, g_frame_h);
+        return;
+    }
+
     HDC hdc = GetDC(hwnd);
     if (!hdc) return;
 
@@ -734,14 +745,16 @@ int main(int argc, char **argv) {
     g_hwnd = me_platform_create_window("multi-emulator", win_w, win_h);
     if (!g_hwnd) { fprintf(stderr, "window create failed\n"); return 1; }
 
-    /* Try D3D11 flip-model unless the user forced GDI. */
-    if (!force_gdi) {
+    /* D3D11 flip-model is only used for HW (GL) cores. Software cores stay
+       on GDI: lower visible tearing on non-VRR displays and the user-tested
+       latency is good. --gdi still forces GDI for everything. */
+    if (!force_gdi && g_hw_render_accepted) {
         if (me_d3d11_init(g_hwnd, g_back_max_w, g_back_max_h) == 0) {
             g_use_d3d11 = 1;
         } else {
             fprintf(stderr, "[render] D3D11 init failed, falling back to GDI\n");
         }
-    } else {
+    } else if (force_gdi) {
         printf("[render] --gdi forced\n");
     }
 

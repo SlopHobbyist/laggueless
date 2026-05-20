@@ -210,11 +210,19 @@ void me_d3d11_present(int client_w, int client_h, int dx, int dy, int dw, int dh
     float black[4] = { 0, 0, 0, 1 };
     ID3D11DeviceContext_ClearRenderTargetView(g_ctx, g_rtv, black);
 
-    /* dst rect (pixels, top-left origin) → NDC (bottom-left origin). */
+    /* dst rect (pixels, top-left origin) → NDC (bottom-left origin).
+       The shader lerps UV alongside NDC position (uv.y=0 at rect.y,
+       uv.y=1 at rect.w). For top-down source textures (which is what
+       both the software cores and the GL readback produce), we need
+       uv.y=0 at the TOP of the screen — i.e. put the higher NDC y in
+       rect.y. So feed (top, bottom) into (rect.y, rect.w), not the
+       intuitive (bottom, top). */
     float x0 =        (float)dx              / (float)g_client_w * 2.0f - 1.0f;
     float x1 =        (float)(dx + dw)       / (float)g_client_w * 2.0f - 1.0f;
-    float y0 = 1.0f - (float)(dy + dh)       / (float)g_client_h * 2.0f;
-    float y1 = 1.0f - (float)dy              / (float)g_client_h * 2.0f;
+    float y_top    = 1.0f - (float)dy        / (float)g_client_h * 2.0f;
+    float y_bottom = 1.0f - (float)(dy + dh) / (float)g_client_h * 2.0f;
+    float y0 = y_top;     /* uv.y = 0 lands here  (texture top row) */
+    float y1 = y_bottom;  /* uv.y = 1 lands here  (texture bottom row) */
 
     float u_scale = (float)frame_w / (float)g_tex_w;
     float v_scale = (float)frame_h / (float)g_tex_h;
