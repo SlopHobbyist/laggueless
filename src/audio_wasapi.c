@@ -126,13 +126,11 @@ static int try_exclusive(WAVEFORMATEX *mix_fmt) {
     REFERENCE_TIME default_period = 0, min_period = 0;
     if (FAILED(IAudioClient_GetDevicePeriod(g_ac, &default_period, &min_period))) return 1;
 
-    /* Target ~10 ms — matches the shared-mode engine period and gives the
-       emulation loop (16.6 ms/frame) enough headroom to keep the ring fed.
-       3 ms sounds better on paper but our push granularity is one emulation
-       frame (~16 ms), so a 3 ms drain window starves every other wakeup and
-       produces gaps/echoing. 10 ms keeps the drain period well below the push
-       burst while staying above the device minimum on all common hardware. */
-    REFERENCE_TIME period = 100000; /* 10 ms in 100 ns units */
+    /* Use the device's default shared-mode period as our exclusive period.
+       This is typically 10 ms, which the driver is guaranteed to support.
+       Smaller periods (3 ms) cause starvation because our push granularity
+       is one emulation frame (~16.6 ms) — we can't feed a 3 ms drain. */
+    REFERENCE_TIME period = default_period;
     if (period < min_period) period = min_period;
 
     WORD ch   = (WORD)mix_fmt->nChannels;
@@ -213,34 +211,12 @@ static DWORD WINAPI audio_thread_exclusive(LPVOID arg) {
        uniformly so the ring read pointer stays in sync from frame 0. */
     IAudioClient_Start(g_ac);
 
-    /* Hysteresis to avoid starving mid-burst:
-       - When the ring drops below buf_frames, enter "priming" state and output
-         silence until buf_frames*3 have accumulated (~one emulation frame worth).
-       - Once primed, consume normally until the ring empties again.
-       This keeps the exclusive thread from consuming the last few samples of a
-       burst and then outputting silence for the rest of the hardware period. */
-    int priming = 1; /* start in priming state; wait for initial fill */
-    size_t prime_high = buf_frames * 3; /* start consuming above this */
-    size_t prime_low  = buf_frames;     /* re-enter priming below this */
-
     while (!g_quit) {
         DWORD w = WaitForSingleObject(g_ev, 200);
         if (w != WAIT_OBJECT_0) continue;
 
-        EnterCriticalSection(&g_ring_cs);
-        size_t available = ring_used();
-        if (priming && available >= prime_high) priming = 0;
-        if (!priming && available < prime_low)  priming = 1;
-        LeaveCriticalSection(&g_ring_cs);
-
         BYTE *dst = NULL;
         if (FAILED(IAudioRenderClient_GetBuffer(g_rc, buf_frames, &dst)) || !dst) continue;
-
-        if (priming) {
-            memset(dst, 0, buf_frames * frame_bytes);
-            IAudioRenderClient_ReleaseBuffer(g_rc, buf_frames, 0);
-            continue;
-        }
 
         unsigned ch = g_device_channels;
         EnterCriticalSection(&g_ring_cs);
