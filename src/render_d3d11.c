@@ -184,10 +184,16 @@ void me_d3d11_upload(const u32 *pixels, unsigned frame_w, unsigned frame_h, unsi
 static void resize_if_needed(int cw, int ch) {
     if (cw <= 0 || ch <= 0) return;
     if ((UINT)cw == g_client_w && (UINT)ch == g_client_h) return;
+    /* Unbind RTV from the pipeline before releasing it, otherwise the swap
+       chain still holds a reference and ResizeBuffers fails silently. */
+    ID3D11RenderTargetView *null_rtv = NULL;
+    ID3D11DeviceContext_OMSetRenderTargets(g_ctx, 1, &null_rtv, NULL);
     if (g_rtv) { ID3D11RenderTargetView_Release(g_rtv); g_rtv = NULL; }
     UINT flags = g_allow_tearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
-    if (FAILED(IDXGISwapChain1_ResizeBuffers(g_sc, 0, (UINT)cw, (UINT)ch, DXGI_FORMAT_UNKNOWN, flags))) {
-        fprintf(stderr, "[d3d11] ResizeBuffers failed\n");
+    HRESULT hr = IDXGISwapChain1_ResizeBuffers(g_sc, 0, (UINT)cw, (UINT)ch, DXGI_FORMAT_UNKNOWN, flags);
+    if (FAILED(hr)) {
+        fprintf(stderr, "[d3d11] ResizeBuffers(%d,%d) failed hr=0x%08lx\n",
+                cw, ch, (unsigned long)hr);
         return;
     }
     g_client_w = (UINT)cw;

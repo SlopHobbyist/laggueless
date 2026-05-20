@@ -287,18 +287,25 @@ static unsigned char *slurp(const char *path, size_t *out_size) {
 int main(int argc, char **argv) {
     int no_audio = 0;
     int force_gdi = 0;
-    int pos = 1;
-    while (pos < argc && argv[pos][0] == '-') {
-        if      (strcmp(argv[pos], "--no-audio") == 0) { no_audio  = 1; pos++; }
-        else if (strcmp(argv[pos], "--gdi")      == 0) { force_gdi = 1; pos++; }
-        else { fprintf(stderr, "unknown flag: %s\n", argv[pos]); return 1; }
+    const char *positional[2] = { NULL, NULL };
+    int npos = 0;
+    for (int i = 1; i < argc; i++) {
+        if      (strcmp(argv[i], "--no-audio") == 0) no_audio  = 1;
+        else if (strcmp(argv[i], "--gdi")      == 0) force_gdi = 1;
+        else if (argv[i][0] == '-') {
+            fprintf(stderr, "unknown flag: %s\n", argv[i]); return 1;
+        } else if (npos < 2) {
+            positional[npos++] = argv[i];
+        } else {
+            fprintf(stderr, "extra argument: %s\n", argv[i]); return 1;
+        }
     }
-    if (argc - pos < 2) {
+    if (npos < 2) {
         fprintf(stderr, "usage: %s [--no-audio] [--gdi] <core.dll> <rom>\n", argv[0]);
         return 1;
     }
-    const char *core_path = argv[pos];
-    const char *rom_path  = argv[pos + 1];
+    const char *core_path = positional[0];
+    const char *rom_path  = positional[1];
 
     me_core *core = me_core_load(core_path);
     if (!core) { fprintf(stderr, "failed to load core: %s\n", core_path); return 1; }
