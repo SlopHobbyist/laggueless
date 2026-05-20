@@ -284,7 +284,6 @@ int me_settings_load(const char *path, me_settings *out) {
     yaml_node_t *audio = map_get(&doc, root, "audio");
     if (audio) {
         out->no_audio        = scalar_bool(map_get(&doc, audio, "no_audio"),       out->no_audio);
-        out->audio_exclusive = scalar_bool(map_get(&doc, audio, "exclusive_mode"), out->audio_exclusive);
     }
 
     /* system */

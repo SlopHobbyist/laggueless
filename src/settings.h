@@ -64,7 +64,6 @@ typedef struct {
 
     /* audio */
     int no_audio;
-    int audio_exclusive; /* opt-in: WASAPI exclusive mode (~3 ms vs ~10 ms latency) */
 
     /* thread affinity: pin emulation and audio threads to isolated cores.
        Reduces context-switch jitter on hybrid CPUs (Alder Lake+, Ryzen). */

@@ -17,11 +17,6 @@ video:
 
 audio:
   no_audio: false        # Changes frame timing on some cores/graphics apis
-  exclusive_mode: false  # WASAPI exclusive mode: targets ~3 ms latency instead of ~10 ms.
-                         # Requires dedicated audio hardware; the audio device is claimed
-                         # entirely (system sounds muted while running). Falls back to
-                         # shared mode automatically if the device rejects it.
-                         # CLI equivalent: --exclusive-audio
 
 system:
   thread_affinity: false    # Pin the emulation thread to P-cores and the audio thread
