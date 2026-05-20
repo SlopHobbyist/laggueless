@@ -444,22 +444,62 @@ int main(int argc, char **argv) {
     int timing_log = 0;
     const char *positional[2] = { NULL, NULL };
     int npos = 0;
+    const char *exe = argv[0] ? argv[0] : "multi-emulator.exe";
     for (int i = 1; i < argc; i++) {
         if      (strcmp(argv[i], "--no-audio") == 0) no_audio  = 1;
         else if (strcmp(argv[i], "--gdi")      == 0) force_gdi = 1;
         else if (strcmp(argv[i], "--pace-log") == 0) pace_log  = 1;
         else if (strcmp(argv[i], "--timing-log") == 0) timing_log = 1;
         else if (strcmp(argv[i], "--env-trace") == 0) g_env_trace = 1;
+        else if (strcmp(argv[i], "-h")      == 0 || strcmp(argv[i], "--h")     == 0 ||
+                strcmp(argv[i], "-help")    == 0 || strcmp(argv[i], "--help")   == 0 ||
+                strcmp(argv[i], "---help")  == 0 || strcmp(argv[i], "-Help")    == 0 ||
+                strcmp(argv[i], "--Help")   == 0 || strcmp(argv[i], "-HELP")    == 0 ||
+                strcmp(argv[i], "--HELP")   == 0 || strcmp(argv[i], "/h")       == 0 ||
+                strcmp(argv[i], "/H")       == 0 || strcmp(argv[i], "/help")    == 0 ||
+                strcmp(argv[i], "/Help")    == 0 || strcmp(argv[i], "/HELP")    == 0 ||
+                strcmp(argv[i], "-?")       == 0 || strcmp(argv[i], "--?")      == 0 ||
+                strcmp(argv[i], "/?")       == 0 || strcmp(argv[i], "?")        == 0 ||
+                strcmp(argv[i], "help")     == 0 || strcmp(argv[i], "HELP")     == 0 ||
+                strcmp(argv[i], "Help")     == 0 || strcmp(argv[i], "-usage")   == 0 ||
+                strcmp(argv[i], "--usage")  == 0 || strcmp(argv[i], "/usage")   == 0) {
+            printf(
+                "multi-emulator - libretro core front-end\n"
+                "\n"
+                "usage: %s [options] <core.dll> <rom>\n"
+                "\n"
+                "options:\n"
+                "  -h, --help, -?, /?, /help    show this help and exit\n"
+                "  --no-audio                   disable audio output\n"
+                "  --gdi                        force GDI rendering (skip D3D11)\n"
+                "  --pace-log                   log audio pacing diagnostics\n"
+                "  --timing-log                 log frame timing diagnostics\n"
+                "  --env-trace                  log libretro environment calls\n"
+                "\n"
+                "arguments:\n"
+                "  <core.dll>   path to a libretro core DLL (see example-cores/)\n"
+                "  <rom>        path to a ROM file the core supports\n"
+                "\n"
+                "hotkeys (while running):\n"
+                "  F1   cycle aspect ratio (1:1 / 4:3 / 16:9)\n"
+                "  F11  toggle fullscreen\n"
+                "\n"
+                "example:\n"
+                "  %s example-cores\\mesen_libretro.dll example-roms\\\"Super Mario Bros. (World).nes\"\n",
+                exe, exe);
+            return 0;
+        }
         else if (argv[i][0] == '-') {
-            fprintf(stderr, "unknown flag: %s\n", argv[i]); return 1;
+            fprintf(stderr, "unknown flag: %s (try --help)\n", argv[i]); return 1;
         } else if (npos < 2) {
             positional[npos++] = argv[i];
         } else {
-            fprintf(stderr, "extra argument: %s\n", argv[i]); return 1;
+            fprintf(stderr, "extra argument: %s (try --help)\n", argv[i]); return 1;
         }
     }
     if (npos < 2) {
-        fprintf(stderr, "usage: %s [--no-audio] [--gdi] [--pace-log] [--timing-log] [--env-trace] <core.dll> <rom>\n", argv[0]);
+        fprintf(stderr, "usage: %s [options] <core.dll> <rom>\n", exe);
+        fprintf(stderr, "try '%s --help' for more information\n", exe);
         return 1;
     }
     const char *core_path = positional[0];
