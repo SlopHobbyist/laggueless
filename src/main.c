@@ -263,21 +263,9 @@ int main(int argc, char **argv) {
     double fps = av.timing.fps > 1.0 ? av.timing.fps : 60.0;
     DWORD frame_ms = (DWORD)(1000.0 / fps + 0.5);
 
-    unsigned long frames = 0;
-    DWORD last_report = GetTickCount();
     while (me_platform_pump()) {
         core->retro_run();
         present(g_hwnd);
-        frames++;
-        DWORD now = GetTickCount();
-        if (now - last_report >= 1000) {
-            RECT cr; GetClientRect(g_hwnd, &cr);
-            printf("[run] fps=%lu vr=%lu dims=%ux%u client=%ldx%ld back[0]=0x%08x\n",
-                   frames, g_video_calls, g_frame_w, g_frame_h,
-                   cr.right - cr.left, cr.bottom - cr.top, g_back[0]);
-            frames = 0;
-            last_report = now;
-        }
         Sleep(frame_ms);
     }
 
