@@ -128,10 +128,15 @@ static void me_input_poll_cb(void) {
         memset(g_pad1, 0, sizeof(g_pad1));
         return;
     }
-    g_pad1[RETRO_DEVICE_ID_JOYPAD_UP]     = key_down(VK_UP);
-    g_pad1[RETRO_DEVICE_ID_JOYPAD_DOWN]   = key_down(VK_DOWN);
-    g_pad1[RETRO_DEVICE_ID_JOYPAD_LEFT]   = key_down(VK_LEFT);
-    g_pad1[RETRO_DEVICE_ID_JOYPAD_RIGHT]  = key_down(VK_RIGHT);
+    int up = key_down(VK_UP),   down  = key_down(VK_DOWN);
+    int lf = key_down(VK_LEFT), right = key_down(VK_RIGHT);
+    /* SOCD: opposing directions cancel to neutral. */
+    if (up && down)  { up = down = 0; }
+    if (lf && right) { lf = right = 0; }
+    g_pad1[RETRO_DEVICE_ID_JOYPAD_UP]     = up;
+    g_pad1[RETRO_DEVICE_ID_JOYPAD_DOWN]   = down;
+    g_pad1[RETRO_DEVICE_ID_JOYPAD_LEFT]   = lf;
+    g_pad1[RETRO_DEVICE_ID_JOYPAD_RIGHT]  = right;
     g_pad1[RETRO_DEVICE_ID_JOYPAD_B]      = key_down('Z');
     g_pad1[RETRO_DEVICE_ID_JOYPAD_A]      = key_down('X');
     g_pad1[RETRO_DEVICE_ID_JOYPAD_Y]      = key_down('A');
