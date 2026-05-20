@@ -128,14 +128,18 @@ static unsigned g_dev_rate  = 0;
 static int      g_audio_active = 0; /* 1 once me_audio_init has succeeded */
 static double   g_resamp_phase = 0.0; /* 0..1 position between prev and next input frame */
 static int16_t  g_resamp_prev_l = 0, g_resamp_prev_r = 0;
-/* Dynamic rate control: small bias on the resampler ratio so the ring
-   converges to target depth without skipping/duplicating frames. Bounded to
-   ±0.5% = ~8 cents of pitch shift, well below audibility. */
-static double   g_resamp_ratio_bias = 0.0;
+/* Dynamic rate control: integral bias (slow, persistent — tracks the true
+   core-vs-device clock offset) plus a proportional bias (small, transient —
+   set once per video frame for disturbance rejection). Total |bias| ≤ 0.65%
+   = ~11 cents pitch shift, below audibility. Frames are never skipped or
+   duplicated to maintain sync. */
+static double   g_resamp_ratio_bias = 0.0; /* integral term, persisted */
+static double   g_resamp_p_bias     = 0.0; /* proportional, updated per frame */
 
 static void resample_and_push(const int16_t *in, size_t in_frames) {
     if (!g_audio_active || !g_dev_rate || !g_core_rate || in_frames == 0) return;
-    double step = ((double)g_core_rate / (double)g_dev_rate) * (1.0 + g_resamp_ratio_bias);
+    double step = ((double)g_core_rate / (double)g_dev_rate)
+                  * (1.0 + g_resamp_ratio_bias + g_resamp_p_bias);
     enum { CHUNK = 512 };
     int16_t out[CHUNK * 2];
     size_t out_n = 0;
@@ -454,22 +458,31 @@ int main(int argc, char **argv) {
         core->retro_run();
         present(g_hwnd);
 
-        /* Dynamic rate control: nudge resampler ratio toward keeping the ring
-           at target_buffered. Bias ∈ [-0.005, +0.005] = ±0.5% pitch. We update
-           once per video frame; the correction is gentle so audio doesn't
-           audibly wobble. */
+        /* Dynamic rate control: PI controller on ring-fill error. The integral
+           term `g_resamp_ratio_bias` absorbs the long-term core-vs-device
+           clock mismatch; the proportional term adds a tiny instantaneous
+           response to keep the ring near target. Bias clamped to ±0.5% so
+           pitch shift stays below audibility (~8 cents). */
+        double drc_p_term = 0.0;
         if (audio_ok) {
             size_t fill = ME_RING_TOTAL - me_audio_writable_frames();
             if (pace_log) fill_after = fill;
-            /* Error in frames, positive = too much buffered. Normalize by
-               target so the gain is rate-independent. */
+            /* Normalized error: -1 = ring empty, 0 = at target, +1 = double target. */
             double err = ((double)fill - (double)target_buffered) / (double)target_buffered;
-            /* Proportional control with tight bounds. Gain 0.0005 means a 100%
-               fill error pulls bias by 0.0005/frame; converges over ~1 second. */
-            g_resamp_ratio_bias += 0.0005 * err;
+            /* Integral term: very small per-frame adjustment. At 60 fps, full-
+               scale error (|err|=1) shifts bias by 6e-5/sec — converges to the
+               true steady-state mismatch over ~30 s without oscillating. */
+            g_resamp_ratio_bias += 1.0e-6 * err;
             if (g_resamp_ratio_bias >  0.005) g_resamp_ratio_bias =  0.005;
             if (g_resamp_ratio_bias < -0.005) g_resamp_ratio_bias = -0.005;
+            /* Proportional term: applied to step *this frame only*, not
+               persisted. Provides fast disturbance rejection without permanent
+               pitch shift. Clamped tightly. */
+            drc_p_term = 0.0005 * err;
+            if (drc_p_term >  0.0015) drc_p_term =  0.0015;
+            if (drc_p_term < -0.0015) drc_p_term = -0.0015;
         }
+        g_resamp_p_bias = drc_p_term;
 
         /* QPC absolute-deadline pace. Frame N must land at qstart + N*period.
            Sleep most of the wait at 1ms resolution, then spin the last bit. */
