@@ -115,10 +115,38 @@ static void me_audio_sample_cb(int16_t l, int16_t r) { (void)l; (void)r; }
 static size_t me_audio_sample_batch_cb(const int16_t *data, size_t frames) {
     (void)data; return frames;
 }
-static void me_input_poll_cb(void) {}
+/* Player 1 RetroPad state, refreshed in input_poll. */
+static int16_t g_pad1[16];
+
+static int key_down(int vk) {
+    return (GetAsyncKeyState(vk) & 0x8000) ? 1 : 0;
+}
+
+static void me_input_poll_cb(void) {
+    /* Don't read keys when our window isn't foreground. */
+    if (GetForegroundWindow() != g_hwnd) {
+        memset(g_pad1, 0, sizeof(g_pad1));
+        return;
+    }
+    g_pad1[RETRO_DEVICE_ID_JOYPAD_UP]     = key_down(VK_UP);
+    g_pad1[RETRO_DEVICE_ID_JOYPAD_DOWN]   = key_down(VK_DOWN);
+    g_pad1[RETRO_DEVICE_ID_JOYPAD_LEFT]   = key_down(VK_LEFT);
+    g_pad1[RETRO_DEVICE_ID_JOYPAD_RIGHT]  = key_down(VK_RIGHT);
+    g_pad1[RETRO_DEVICE_ID_JOYPAD_B]      = key_down('Z');
+    g_pad1[RETRO_DEVICE_ID_JOYPAD_A]      = key_down('X');
+    g_pad1[RETRO_DEVICE_ID_JOYPAD_Y]      = key_down('A');
+    g_pad1[RETRO_DEVICE_ID_JOYPAD_X]      = key_down('S');
+    g_pad1[RETRO_DEVICE_ID_JOYPAD_START]  = key_down(VK_RETURN);
+    g_pad1[RETRO_DEVICE_ID_JOYPAD_SELECT] = key_down(VK_RSHIFT);
+    g_pad1[RETRO_DEVICE_ID_JOYPAD_L]      = key_down('Q');
+    g_pad1[RETRO_DEVICE_ID_JOYPAD_R]      = key_down('W');
+}
+
 static int16_t me_input_state_cb(unsigned port, unsigned device, unsigned index, unsigned id) {
-    (void)port; (void)device; (void)index; (void)id;
-    return 0;
+    (void)index;
+    if (port != 0 || device != RETRO_DEVICE_JOYPAD) return 0;
+    if (id >= sizeof(g_pad1) / sizeof(g_pad1[0])) return 0;
+    return g_pad1[id];
 }
 
 /* ---- present -------------------------------------------------------------- */
