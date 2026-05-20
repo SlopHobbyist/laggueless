@@ -1,4 +1,4 @@
-# Laggueless
+# Laggueless (RetroArch alternative)
 
 > **Note**: This entire project was written by AI (Claude Code: Sonnet 4.5, and Antigravity: Gemini 3 Pro (High)). All code, architecture decisions, and implementation details were generated through AI assistance.
 >
