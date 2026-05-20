@@ -213,12 +213,34 @@ static DWORD WINAPI audio_thread_exclusive(LPVOID arg) {
        uniformly so the ring read pointer stays in sync from frame 0. */
     IAudioClient_Start(g_ac);
 
+    /* Hysteresis to avoid starving mid-burst:
+       - When the ring drops below buf_frames, enter "priming" state and output
+         silence until buf_frames*3 have accumulated (~one emulation frame worth).
+       - Once primed, consume normally until the ring empties again.
+       This keeps the exclusive thread from consuming the last few samples of a
+       burst and then outputting silence for the rest of the hardware period. */
+    int priming = 1; /* start in priming state; wait for initial fill */
+    size_t prime_high = buf_frames * 3; /* start consuming above this */
+    size_t prime_low  = buf_frames;     /* re-enter priming below this */
+
     while (!g_quit) {
         DWORD w = WaitForSingleObject(g_ev, 200);
         if (w != WAIT_OBJECT_0) continue;
 
+        EnterCriticalSection(&g_ring_cs);
+        size_t available = ring_used();
+        if (priming && available >= prime_high) priming = 0;
+        if (!priming && available < prime_low)  priming = 1;
+        LeaveCriticalSection(&g_ring_cs);
+
         BYTE *dst = NULL;
         if (FAILED(IAudioRenderClient_GetBuffer(g_rc, buf_frames, &dst)) || !dst) continue;
+
+        if (priming) {
+            memset(dst, 0, buf_frames * frame_bytes);
+            IAudioRenderClient_ReleaseBuffer(g_rc, buf_frames, 0);
+            continue;
+        }
 
         unsigned ch = g_device_channels;
         EnterCriticalSection(&g_ring_cs);
