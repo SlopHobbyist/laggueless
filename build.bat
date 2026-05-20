@@ -29,6 +29,21 @@ REM ---- flags -----------------------------------------------------------------
 set "CFLAGS=-std=c11 -O2 -g -Wall -Wextra -Wshadow -Wno-unused-parameter -I%SRC% -I%ROOT%include"
 set "LDFLAGS=-lgdi32 -luser32 -lopengl32 -lkernel32 -lole32 -luuid -lwinmm -lavrt -ld3d11 -ldxgi -lyaml"
 
+REM ---- Vulkan SDK (optional) -------------------------------------------------
+REM If VULKAN_SDK env var is set, compile with ME_HAVE_VULKAN=1 and link
+REM vulkan-1. Otherwise the --vulkan flag will be present but report unavailable.
+if defined VULKAN_SDK (
+    if exist "%VULKAN_SDK%\Include\vulkan\vulkan.h" (
+        echo [build] Vulkan SDK: %VULKAN_SDK%
+        set "CFLAGS=%CFLAGS% -DME_HAVE_VULKAN=1 -I%VULKAN_SDK%\Include"
+        set "LDFLAGS=%LDFLAGS% -L%VULKAN_SDK%\Lib -lvulkan-1"
+    ) else (
+        echo [build] VULKAN_SDK is set but vulkan.h not found at %VULKAN_SDK%\Include\vulkan\vulkan.h - building without Vulkan.
+    )
+) else (
+    echo [build] VULKAN_SDK not set - building without Vulkan ^(--vulkan will be unavailable^).
+)
+
 REM ---- collect sources -------------------------------------------------------
 set "SOURCES="
 for %%F in ("%SRC%\*.c") do set "SOURCES=!SOURCES! "%%F""

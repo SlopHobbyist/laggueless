@@ -24,6 +24,7 @@ static unsigned long g_video_calls = 0;
 
 static HWND g_hwnd = NULL;
 static int  g_use_d3d11 = 0;
+static int  g_force_vulkan = 0; /* --vulkan requested on the CLI */
 
 /* Latency telemetry: timestamp of the most recent input poll callback. Read
    by the main loop to split retro_run() into "before poll" and "after poll"
@@ -982,6 +983,7 @@ int main(int argc, char **argv) {
         else if (strcmp(argv[i], "--thread-affinity") == 0) g_settings.thread_affinity = 1;
         else if (strcmp(argv[i], "--gdi")      == 0) force_gdi = 1;
         else if (strcmp(argv[i], "--d3d11")    == 0) force_d3d11 = 1;
+        else if (strcmp(argv[i], "--vulkan")   == 0) g_force_vulkan = 1;
         else if (strcmp(argv[i], "--pace-log") == 0) pace_log  = 1;
         else if (strcmp(argv[i], "--timing-log") == 0) timing_log = 1;
         else if (strcmp(argv[i], "--latency-log") == 0) latency_log = 1;
@@ -1012,6 +1014,8 @@ int main(int argc, char **argv) {
                 "  --d3d11                      use D3D11 present path for 2D cores too\n"
                 "                                 (enables VRR / lower latency, but may tear\n"
                 "                                  on non-GSync/FreeSync displays)\n"
+                "  --vulkan                     use the Vulkan present path (work in progress;\n"
+                "                                 required for LSFG frame generation)\n"
                 "  --pace-log                   log audio pacing diagnostics\n"
                 "  --timing-log                 log frame timing diagnostics\n"
                 "  --latency-log                log per-stage latency (poll/core/present/wait)\n"
@@ -1198,6 +1202,14 @@ int main(int argc, char **argv) {
         }
     } else if (force_gdi) {
         printf("[render] --gdi forced\n");
+    }
+
+    if (g_force_vulkan) {
+#ifdef ME_HAVE_VULKAN
+        printf("[render] --vulkan requested (Vulkan path not yet implemented, falling back to default render path)\n");
+#else
+        printf("[render] --vulkan requested but build has no Vulkan support (set VULKAN_SDK and rebuild)\n");
+#endif
     }
 
     /* Try the WGL_NV_DX_interop2 zero-copy transport. If it fails (driver
