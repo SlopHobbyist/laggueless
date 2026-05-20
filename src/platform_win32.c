@@ -6,6 +6,13 @@ static LRESULT CALLBACK me_wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
         case WM_CLOSE:   PostQuitMessage(0); return 0;
         case WM_DESTROY: PostQuitMessage(0); return 0;
+        case WM_ERASEBKGND: return 1; /* we paint every frame, no background erase */
+        case WM_PAINT: {
+            PAINTSTRUCT ps;
+            BeginPaint(h, &ps);
+            EndPaint(h, &ps);
+            return 0;
+        }
         case WM_KEYDOWN:
             if (wp == VK_ESCAPE) PostQuitMessage(0);
             return 0;

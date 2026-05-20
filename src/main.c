@@ -103,10 +103,8 @@ static void convert_rgb565(const u16 *src, size_t pitch_bytes, unsigned w, unsig
 static void me_video_refresh_cb(const void *data, unsigned w, unsigned h, size_t pitch) {
     g_video_calls++;
     if (!data || !g_back) return;
-    if (w > g_back_max_w || h > g_back_max_h) return; /* skip frames bigger than allocation */
-    /* DEBUG: don't update frame dims/buffer — keep test pattern visible. */
-    (void)pitch; (void)w; (void)h;
-    return;
+    if (w > g_back_max_w || h > g_back_max_h) return;
+    g_frame_w = w; g_frame_h = h;
     if (g_pixel_format == RETRO_PIXEL_FORMAT_XRGB8888) {
         convert_xrgb8888((const u32 *)data, pitch, w, h);
     } else if (g_pixel_format == RETRO_PIXEL_FORMAT_RGB565) {
@@ -134,20 +132,44 @@ static void present(HWND hwnd) {
     if (cw <= 0 || ch <= 0) return;
 
     HDC hdc = GetDC(hwnd);
+    if (!hdc) return;
 
     BITMAPINFO bmi = {0};
     bmi.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
-    bmi.bmiHeader.biWidth       = (LONG)g_back_max_w;
-    bmi.bmiHeader.biHeight      = -(LONG)g_back_max_h; /* top-down */
+    bmi.bmiHeader.biWidth       = (LONG)g_frame_w;
+    bmi.bmiHeader.biHeight      = -(LONG)g_frame_h; /* top-down */
     bmi.bmiHeader.biPlanes      = 1;
     bmi.bmiHeader.biBitCount    = 32;
     bmi.bmiHeader.biCompression = BI_RGB;
 
-    SetStretchBltMode(hdc, COLORONCOLOR);
-    StretchDIBits(hdc,
-                  0, 0, cw, ch,
-                  0, 0, (int)g_frame_w, (int)g_frame_h,
-                  g_back, &bmi, DIB_RGB_COLORS, SRCCOPY);
+    /* Compact the active region into a tightly-packed buffer (StretchDIBits
+       on a wider parent buffer + smaller source rect is unreliable on some GDI
+       paths). */
+    static u32 *tight = NULL;
+    static size_t tight_cap = 0;
+    size_t need = (size_t)g_frame_w * g_frame_h;
+    if (need > tight_cap) {
+        free(tight);
+        tight = (u32 *)malloc(need * sizeof(u32));
+        tight_cap = need;
+    }
+    if (tight) {
+        for (unsigned y = 0; y < g_frame_h; y++) {
+            memcpy(tight + y * g_frame_w, g_back + y * g_back_max_w, g_frame_w * sizeof(u32));
+        }
+        SetStretchBltMode(hdc, COLORONCOLOR);
+        int r = StretchDIBits(hdc,
+                              0, 0, cw, ch,
+                              0, 0, (int)g_frame_w, (int)g_frame_h,
+                              tight, &bmi, DIB_RGB_COLORS, SRCCOPY);
+        if (r == 0 || r == GDI_ERROR) {
+            static int reported = 0;
+            if (!reported) {
+                fprintf(stderr, "[present] StretchDIBits returned %d err=%lu\n", r, GetLastError());
+                reported = 1;
+            }
+        }
+    }
 
     ReleaseDC(hwnd, hdc);
 }
@@ -229,15 +251,6 @@ int main(int argc, char **argv) {
     g_frame_w = av.geometry.base_width;
     g_frame_h = av.geometry.base_height;
 
-    /* DEBUG: fill backbuffer with a magenta/cyan checkerboard so we can tell if
-       present() works independent of the core's video output. */
-    for (unsigned y = 0; y < g_back_max_h; y++) {
-        for (unsigned x = 0; x < g_back_max_w; x++) {
-            int c = ((x >> 4) ^ (y >> 4)) & 1;
-            g_back[y * g_back_max_w + x] = c ? 0x00FF00FF : 0x0000FFFF;
-        }
-    }
-
     /* Create window sized to a reasonable 2× of base geometry. */
     int win_w = (int)(av.geometry.base_width  * 2);
     int win_h = (int)(av.geometry.base_height * 2);
@@ -258,8 +271,10 @@ int main(int argc, char **argv) {
         frames++;
         DWORD now = GetTickCount();
         if (now - last_report >= 1000) {
-            printf("[run] frames/s=%lu video_refresh=%lu frame_dims=%ux%u back=%p\n",
-                   frames, g_video_calls, g_frame_w, g_frame_h, (void *)g_back);
+            RECT cr; GetClientRect(g_hwnd, &cr);
+            printf("[run] fps=%lu vr=%lu dims=%ux%u client=%ldx%ld back[0]=0x%08x\n",
+                   frames, g_video_calls, g_frame_w, g_frame_h,
+                   cr.right - cr.left, cr.bottom - cr.top, g_back[0]);
             frames = 0;
             last_report = now;
         }
