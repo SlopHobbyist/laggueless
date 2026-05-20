@@ -17,14 +17,14 @@ video:
 
 audio:
   no_audio: false        # Changes frame timing on some cores/graphics apis
-  exclusive_mode: true  # WASAPI exclusive mode: targets ~3 ms latency instead of ~10 ms.
+  exclusive_mode: false  # WASAPI exclusive mode: targets ~3 ms latency instead of ~10 ms.
                          # Requires dedicated audio hardware; the audio device is claimed
                          # entirely (system sounds muted while running). Falls back to
                          # shared mode automatically if the device rejects it.
                          # CLI equivalent: --exclusive-audio
 
 system:
-  thread_affinity: true    # Pin the emulation thread to P-cores and the audio thread
+  thread_affinity: false    # Pin the emulation thread to P-cores and the audio thread
                             # to a separate core (reduces context-switch jitter on Intel
                             # Alder Lake+, AMD hybrid CPUs). Both threads also get
                             # elevated OS priority (HIGHEST for emu, TIME_CRITICAL for
