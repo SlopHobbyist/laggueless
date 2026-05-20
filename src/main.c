@@ -6,6 +6,7 @@
 #include "platform_win32.h"
 #include "integer_scaling.h"
 #include "core_loader.h"
+#include "audio_wasapi.h"
 #include "libretro.h"
 
 /* ---- global state for callbacks (single core, single ROM) ----------------- */
@@ -111,9 +112,13 @@ static void me_video_refresh_cb(const void *data, unsigned w, unsigned h, size_t
         convert_rgb565((const u16 *)data, pitch, w, h);
     }
 }
-static void me_audio_sample_cb(int16_t l, int16_t r) { (void)l; (void)r; }
+static void me_audio_sample_cb(int16_t l, int16_t r) {
+    int16_t pair[2] = { l, r };
+    me_audio_push(pair, 1);
+}
 static size_t me_audio_sample_batch_cb(const int16_t *data, size_t frames) {
-    (void)data; return frames;
+    me_audio_push(data, frames);
+    return frames;
 }
 /* Player 1 RetroPad state, refreshed in input_poll. */
 static int16_t g_pad1[16];
@@ -301,19 +306,33 @@ int main(int argc, char **argv) {
     g_hwnd = me_platform_create_window("multi-emulator", win_w, win_h);
     if (!g_hwnd) { fprintf(stderr, "window create failed\n"); return 1; }
 
-    /* Frame pacing via Sleep. Real pacing in step 6. */
+    /* Audio drives pacing: only run a frame when there's room for one frame's
+       worth of audio in the ring buffer. */
+    unsigned audio_rate = (unsigned)(av.timing.sample_rate > 0 ? av.timing.sample_rate : 48000);
     double fps = av.timing.fps > 1.0 ? av.timing.fps : 60.0;
-    DWORD frame_ms = (DWORD)(1000.0 / fps + 0.5);
+    size_t frame_audio = (size_t)(audio_rate / fps + 0.5);
+    int audio_ok = (me_audio_init(audio_rate) == 0);
+    if (!audio_ok) {
+        fprintf(stderr, "[audio] init failed; falling back to Sleep pacing\n");
+    }
+    DWORD fallback_ms = (DWORD)(1000.0 / fps + 0.5);
 
     while (me_platform_pump()) {
         if (me_platform_f11_pressed) {
             me_platform_f11_pressed = 0;
             me_platform_toggle_fullscreen(g_hwnd);
         }
+        if (audio_ok) {
+            /* Block (with timeout to keep the message pump alive) until the
+               ring buffer has room for one frame of audio. */
+            me_audio_wait_writable(frame_audio, 100);
+        }
         core->retro_run();
         present(g_hwnd);
-        Sleep(frame_ms);
+        if (!audio_ok) Sleep(fallback_ms);
     }
+
+    if (audio_ok) me_audio_shutdown();
 
     core->retro_unload_game();
     core->retro_deinit();

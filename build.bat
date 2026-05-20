@@ -27,7 +27,7 @@ if not exist "%BUILD%" mkdir "%BUILD%"
 
 REM ---- flags -----------------------------------------------------------------
 set "CFLAGS=-std=c11 -O2 -g -Wall -Wextra -Wshadow -Wno-unused-parameter -I%SRC% -I%ROOT%include"
-set "LDFLAGS=-lgdi32 -luser32 -lopengl32 -lkernel32"
+set "LDFLAGS=-lgdi32 -luser32 -lopengl32 -lkernel32 -lole32 -luuid"
 
 REM ---- collect sources -------------------------------------------------------
 set "SOURCES="
