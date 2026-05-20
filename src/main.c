@@ -347,10 +347,20 @@ static void me_video_refresh_cb(const void *data, unsigned w, unsigned h, size_t
        flip-Y to the D3D11 shader (or we flip during the readback). */
     if (data == RETRO_HW_FRAME_BUFFER_VALID) {
         if (!g_hw_render_accepted) return;
-        /* Read into a tightly-packed scratch buffer, then copy row-flipped
-           into g_back (which is laid out top-down at g_back_max_w stride).
-           A shader-side flip would avoid this copy, but it's a few hundred
-           microseconds on modern CPUs at N64 resolutions. */
+        /* Interop path: the core wrote straight into the D3D11 shared
+           texture. Nothing for us to do here — present() will sample
+           that texture directly via the shared SRV.
+
+           One snag: GL coords are bottom-up but our D3D11 shader assumes
+           top-down. Without interop we flip during readback. With interop
+           the image would be upside-down. Solution: tell the D3D11 path
+           to flip Y when sampling the shared SRV. We can't reuse the
+           swap-y trick from software cores because the *sampled texture*
+           orientation differs between the two paths, not the destination.
+           Handled below in the cbuffer math (see render_d3d11.c). */
+        if (me_gl_interop_active()) return;
+        /* Readback fallback. Read into a tightly-packed scratch buffer,
+           then copy row-flipped into g_back (top-down @ g_back_max_w stride). */
         static unsigned char *scratch = NULL;
         static size_t scratch_cap = 0;
         size_t need = (size_t)w * h * 4;
@@ -490,12 +500,11 @@ static void present(HWND hwnd) {
     int dx = (cw - dw) / 2;
     int dy = (ch - dh) / 2;
 
-    /* D3D11 flip-model path: only for HW (GL) cores. Software cores keep
-       the GDI path below — DWM composites it at the desktop refresh, so
-       no tearing on a non-VRR display, and the latency is fine. HW cores
-       must use D3D11 because the interop fast path (Step 7b) shares a GPU
-       texture between GL and D3D11. */
-    if (g_use_d3d11 && g_hw_render_accepted) {
+    /* D3D11 flip-model path: HW (GL) cores always, software cores when the
+       user opts in via --d3d11. Software cores default to GDI because DWM
+       composites it at the desktop refresh — no visible tearing on a
+       non-VRR display, and frame-perfect inputs land as expected. */
+    if (g_use_d3d11) {
         me_d3d11_upload(g_back, g_frame_w, g_frame_h, g_back_max_w);
         me_d3d11_present(cw, ch, dx, dy, dw, dh, g_frame_w, g_frame_h);
         return;
@@ -584,6 +593,7 @@ int main(int argc, char **argv) {
     SetUnhandledExceptionFilter(me_unhandled_exception);
     int no_audio = 0;
     int force_gdi = 0;
+    int force_d3d11 = 0;  /* opts software cores into the D3D11 present path */
     int pace_log = 0;
     int timing_log = 0;
     const char *positional[2] = { NULL, NULL };
@@ -592,6 +602,7 @@ int main(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
         if      (strcmp(argv[i], "--no-audio") == 0) no_audio  = 1;
         else if (strcmp(argv[i], "--gdi")      == 0) force_gdi = 1;
+        else if (strcmp(argv[i], "--d3d11")    == 0) force_d3d11 = 1;
         else if (strcmp(argv[i], "--pace-log") == 0) pace_log  = 1;
         else if (strcmp(argv[i], "--timing-log") == 0) timing_log = 1;
         else if (strcmp(argv[i], "--env-trace") == 0) g_env_trace = 1;
@@ -615,7 +626,10 @@ int main(int argc, char **argv) {
                 "options:\n"
                 "  -h, --help, -?, /?, /help    show this help and exit\n"
                 "  --no-audio                   disable audio output\n"
-                "  --gdi                        force GDI rendering (skip D3D11)\n"
+                "  --gdi                        force GDI for all cores (overrides --d3d11)\n"
+                "  --d3d11                      use D3D11 present path for 2D cores too\n"
+                "                                 (enables VRR / lower latency, but may tear\n"
+                "                                  on non-GSync/FreeSync displays)\n"
                 "  --pace-log                   log audio pacing diagnostics\n"
                 "  --timing-log                 log frame timing diagnostics\n"
                 "  --env-trace                  log libretro environment calls\n"
@@ -745,10 +759,10 @@ int main(int argc, char **argv) {
     g_hwnd = me_platform_create_window("multi-emulator", win_w, win_h);
     if (!g_hwnd) { fprintf(stderr, "window create failed\n"); return 1; }
 
-    /* D3D11 flip-model is only used for HW (GL) cores. Software cores stay
-       on GDI: lower visible tearing on non-VRR displays and the user-tested
-       latency is good. --gdi still forces GDI for everything. */
-    if (!force_gdi && g_hw_render_accepted) {
+    /* D3D11 flip-model is used for HW (GL) cores by default and for software
+       cores when --d3d11 is set. Otherwise software cores stay on GDI: lower
+       visible tearing on non-VRR displays. --gdi overrides everything. */
+    if (!force_gdi && (g_hw_render_accepted || force_d3d11)) {
         if (me_d3d11_init(g_hwnd, g_back_max_w, g_back_max_h) == 0) {
             g_use_d3d11 = 1;
         } else {
@@ -756,6 +770,19 @@ int main(int argc, char **argv) {
         }
     } else if (force_gdi) {
         printf("[render] --gdi forced\n");
+    }
+
+    /* Try the WGL_NV_DX_interop2 zero-copy transport. If it fails (driver
+       doesn't support it, or registration errors), the readback path stays
+       in effect — no functional regression, just slightly higher transport
+       cost. */
+    if (g_use_d3d11 && g_hw_render_accepted) {
+        void *shared = me_d3d11_create_shared_texture(g_back_max_w, g_back_max_h);
+        if (shared) {
+            if (me_gl_interop_attach(me_d3d11_get_device(), shared) == 0) {
+                me_d3d11_use_shared(1);
+            }
+        }
     }
 
     /* Audio drives pacing. WASAPI runs at the device's mix rate; we resample
@@ -819,8 +846,14 @@ int main(int argc, char **argv) {
 
         /* GL is per-thread; make sure our context is current on this thread
            before the core does any GL work. Cheap if already current. */
-        if (g_hw_render_accepted) me_gl_make_current();
+        if (g_hw_render_accepted) {
+            me_gl_make_current();
+            /* Interop: lock the shared texture so GL has exclusive access
+               while the core renders. No-op if interop is inactive. */
+            me_gl_interop_lock();
+        }
         core->retro_run();
+        if (g_hw_render_accepted) me_gl_interop_unlock();
         present(g_hwnd);
 
         /* Dynamic rate control: PI controller on ring-fill error. The integral

@@ -9,6 +9,20 @@
 int  me_d3d11_init(HWND hwnd, unsigned max_w, unsigned max_h);
 void me_d3d11_shutdown(void);
 
+/* Accessors for the WGL_NV_DX_interop2 path. Returned as void* so callers
+   don't need d3d11.h; the interop layer just passes them back through to
+   WGL entry points. NULL if not initialised. */
+void *me_d3d11_get_device(void);
+void *me_d3d11_get_texture(void);
+
+/* Create a second internal texture flagged D3D11_RESOURCE_MISC_SHARED so
+   WGL_NV_DX_interop2 can register it. After this returns non-NULL, the
+   interop layer registers the returned texture with GL; me_d3d11_present
+   samples from it instead of the upload texture while me_d3d11_use_shared(1)
+   is in effect. */
+void *me_d3d11_create_shared_texture(unsigned w, unsigned h);
+void  me_d3d11_use_shared(int yes);
+
 /* Upload BGRX8 pixel data covering (0,0)-(frame_w,frame_h) from a buffer of
    stride `max_w` pixels (the GDI backbuffer layout from main.c). */
 void me_d3d11_upload(const u32 *pixels, unsigned frame_w, unsigned frame_h, unsigned max_w);

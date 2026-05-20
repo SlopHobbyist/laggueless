@@ -46,6 +46,23 @@ unsigned me_gl_fbo_color_tex(void);
    readback transport path (Step 4). out_buf must hold w*h*4 bytes. */
 void me_gl_fbo_readback_bgra(unsigned w, unsigned h, void *out_buf);
 
+/* Try to switch the FBO's color attachment over to a D3D11 shared texture
+   via WGL_NV_DX_interop2 (zero-copy transport, Step 7b).
+   d3d_device must be ID3D11Device*; d3d_tex must be the SHARED-flagged
+   D3D11 texture obtained from me_d3d11_create_shared_texture().
+   Returns 0 on success. On any failure (unsupported, registration error)
+   returns nonzero and the readback path stays in effect. */
+int me_gl_interop_attach(void *d3d_device, void *d3d_tex);
+
+/* Per-frame bracketing for interop. lock before retro_run (GL gets
+   exclusive access), unlock after (D3D11 can now sample). No-op if
+   interop wasn't enabled. */
+void me_gl_interop_lock(void);
+void me_gl_interop_unlock(void);
+
+/* Is interop currently in use? Lets the video callback skip the readback. */
+int me_gl_interop_active(void);
+
 /* Tear everything down. */
 void me_gl_shutdown(void);
 

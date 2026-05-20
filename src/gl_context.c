@@ -91,6 +91,44 @@ static struct {
 static GLuint g_fbo = 0, g_color_tex = 0, g_depth_rbo = 0;
 static unsigned g_fbo_w = 0, g_fbo_h = 0;
 
+/* WGL_NV_DX_interop2 — runtime-resolved.
+
+   The flow:
+     1. wglDXOpenDeviceNV(d3d_device) -> opaque interop device handle
+     2. Generate a fresh GL texture name (g_interop_gl_tex)
+     3. wglDXRegisterObjectNV(dev, d3d_tex, gl_tex, GL_TEXTURE_2D,
+                              WGL_ACCESS_WRITE_DISCARD_NV) -> object handle
+     4. Detach the old color texture from the FBO, attach gl_tex
+     5. Each frame: LockObjects -> render -> UnlockObjects
+
+   When unlocked, D3D11 can sample gl_tex's backing memory via the SRV
+   it created earlier; when locked, GL has exclusive access. */
+#define WGL_ACCESS_READ_ONLY_NV     0x00000000
+#define WGL_ACCESS_READ_WRITE_NV    0x00000001
+#define WGL_ACCESS_WRITE_DISCARD_NV 0x00000002
+
+typedef HANDLE (WINAPI *PFN_wglDXOpenDeviceNV)(void *);
+typedef BOOL   (WINAPI *PFN_wglDXCloseDeviceNV)(HANDLE);
+typedef HANDLE (WINAPI *PFN_wglDXRegisterObjectNV)(HANDLE, void *, GLuint, GLenum, GLenum);
+typedef BOOL   (WINAPI *PFN_wglDXUnregisterObjectNV)(HANDLE, HANDLE);
+typedef BOOL   (WINAPI *PFN_wglDXLockObjectsNV)(HANDLE, GLint, HANDLE *);
+typedef BOOL   (WINAPI *PFN_wglDXUnlockObjectsNV)(HANDLE, GLint, HANDLE *);
+
+static struct {
+    PFN_wglDXOpenDeviceNV       Open;
+    PFN_wglDXCloseDeviceNV      Close;
+    PFN_wglDXRegisterObjectNV   Register;
+    PFN_wglDXUnregisterObjectNV Unregister;
+    PFN_wglDXLockObjectsNV      Lock;
+    PFN_wglDXUnlockObjectsNV    Unlock;
+} wgldx;
+
+static HANDLE g_interop_dev      = NULL;  /* from wglDXOpenDeviceNV */
+static HANDLE g_interop_object   = NULL;  /* from wglDXRegisterObjectNV */
+static GLuint g_interop_gl_tex   = 0;     /* GL name bound to the D3D11 tex */
+static int    g_interop_active   = 0;
+static int    g_interop_locked   = 0;
+
 static HMODULE g_opengl32 = NULL;
 static HWND    g_hwnd     = NULL;
 static HDC     g_hdc      = NULL;
@@ -368,9 +406,109 @@ void me_gl_fbo_readback_bgra(unsigned w, unsigned h, void *out_buf) {
     gl.BindFramebuffer(GL_READ_FRAMEBUFFER, 0);
 }
 
+int me_gl_interop_attach(void *d3d_device, void *d3d_tex) {
+    if (g_interop_active) return 0;
+    if (!g_glrc || !g_fbo || !d3d_device || !d3d_tex) return 1;
+    if (me_gl_make_current() != 0) return 1;
+
+    /* Resolve the six WGL_NV_DX_interop2 entry points up front. wglGet
+       returns NULL when the driver doesn't support the extension. */
+    wgldx.Open       = (PFN_wglDXOpenDeviceNV)      me_gl_get_proc_address("wglDXOpenDeviceNV");
+    wgldx.Close      = (PFN_wglDXCloseDeviceNV)     me_gl_get_proc_address("wglDXCloseDeviceNV");
+    wgldx.Register   = (PFN_wglDXRegisterObjectNV)  me_gl_get_proc_address("wglDXRegisterObjectNV");
+    wgldx.Unregister = (PFN_wglDXUnregisterObjectNV)me_gl_get_proc_address("wglDXUnregisterObjectNV");
+    wgldx.Lock       = (PFN_wglDXLockObjectsNV)     me_gl_get_proc_address("wglDXLockObjectsNV");
+    wgldx.Unlock     = (PFN_wglDXUnlockObjectsNV)   me_gl_get_proc_address("wglDXUnlockObjectsNV");
+    if (!wgldx.Open || !wgldx.Register || !wgldx.Lock || !wgldx.Unlock) {
+        fprintf(stderr, "[gl] WGL_NV_DX_interop2 not available on this driver\n");
+        return 1;
+    }
+
+    g_interop_dev = wgldx.Open(d3d_device);
+    if (!g_interop_dev) {
+        fprintf(stderr, "[gl] wglDXOpenDeviceNV failed (err=%lu)\n", GetLastError());
+        return 1;
+    }
+
+    /* Fresh GL texture name — the WGL extension wants an unused name; it
+       takes ownership and binds it to the D3D11 texture's memory. We do
+       NOT call glTexImage2D on it. */
+    gl.GenTextures(1, &g_interop_gl_tex);
+
+    g_interop_object = wgldx.Register(g_interop_dev, d3d_tex, g_interop_gl_tex,
+                                      GL_TEXTURE_2D, WGL_ACCESS_WRITE_DISCARD_NV);
+    if (!g_interop_object) {
+        fprintf(stderr, "[gl] wglDXRegisterObjectNV failed (err=%lu)\n", GetLastError());
+        gl.DeleteTextures(1, &g_interop_gl_tex); g_interop_gl_tex = 0;
+        wgldx.Close(g_interop_dev); g_interop_dev = NULL;
+        return 1;
+    }
+
+    /* Swap the FBO's color attachment over to the interop texture. The
+       core's get_current_framebuffer keeps returning g_fbo; what's behind
+       the attachment changes underneath it.
+
+       Spec requires the texture to be LOCKED before any GL operation that
+       touches it, INCLUDING framebufferTexture2D. So lock briefly. */
+    HANDLE objs[1] = { g_interop_object };
+    if (!wgldx.Lock(g_interop_dev, 1, objs)) {
+        fprintf(stderr, "[gl] wglDXLockObjectsNV (attach) failed (err=%lu)\n", GetLastError());
+        wgldx.Unregister(g_interop_dev, g_interop_object); g_interop_object = NULL;
+        gl.DeleteTextures(1, &g_interop_gl_tex); g_interop_gl_tex = 0;
+        wgldx.Close(g_interop_dev); g_interop_dev = NULL;
+        return 1;
+    }
+    gl.BindFramebuffer(GL_FRAMEBUFFER, g_fbo);
+    gl.FramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                            GL_TEXTURE_2D, g_interop_gl_tex, 0);
+    GLenum st = gl.CheckFramebufferStatus(GL_FRAMEBUFFER);
+    gl.BindFramebuffer(GL_FRAMEBUFFER, 0);
+    wgldx.Unlock(g_interop_dev, 1, objs);
+
+    if (st != GL_FRAMEBUFFER_COMPLETE) {
+        fprintf(stderr, "[gl] interop FBO incomplete after attach (0x%04x)\n", st);
+        wgldx.Unregister(g_interop_dev, g_interop_object); g_interop_object = NULL;
+        gl.DeleteTextures(1, &g_interop_gl_tex); g_interop_gl_tex = 0;
+        wgldx.Close(g_interop_dev); g_interop_dev = NULL;
+        /* Restore old color attachment so the readback path still works. */
+        gl.BindFramebuffer(GL_FRAMEBUFFER, g_fbo);
+        gl.FramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                GL_TEXTURE_2D, g_color_tex, 0);
+        gl.BindFramebuffer(GL_FRAMEBUFFER, 0);
+        return 1;
+    }
+
+    g_interop_active = 1;
+    fprintf(stderr, "[gl] WGL_NV_DX_interop2 enabled (zero-copy transport)\n");
+    fflush(stderr);
+    return 0;
+}
+
+void me_gl_interop_lock(void) {
+    if (!g_interop_active || g_interop_locked) return;
+    HANDLE objs[1] = { g_interop_object };
+    if (wgldx.Lock(g_interop_dev, 1, objs)) g_interop_locked = 1;
+}
+
+void me_gl_interop_unlock(void) {
+    if (!g_interop_active || !g_interop_locked) return;
+    HANDLE objs[1] = { g_interop_object };
+    if (wgldx.Unlock(g_interop_dev, 1, objs)) g_interop_locked = 0;
+}
+
+int me_gl_interop_active(void) { return g_interop_active; }
+
 void me_gl_shutdown(void) {
     if (g_glrc && gl.DeleteFramebuffers) {
         wglMakeCurrent(g_hdc, g_glrc);
+        if (g_interop_active) {
+            if (g_interop_locked) me_gl_interop_unlock();
+            if (g_interop_object) wgldx.Unregister(g_interop_dev, g_interop_object);
+            if (g_interop_gl_tex) gl.DeleteTextures(1, &g_interop_gl_tex);
+            if (g_interop_dev)    wgldx.Close(g_interop_dev);
+            g_interop_object = NULL; g_interop_gl_tex = 0; g_interop_dev = NULL;
+            g_interop_active = 0;
+        }
         if (g_fbo)       { gl.DeleteFramebuffers(1, &g_fbo);       g_fbo = 0; }
         if (g_color_tex) { gl.DeleteTextures(1, &g_color_tex);     g_color_tex = 0; }
         if (g_depth_rbo) { gl.DeleteRenderbuffers(1, &g_depth_rbo); g_depth_rbo = 0; }

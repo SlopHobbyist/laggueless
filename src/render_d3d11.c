@@ -22,6 +22,12 @@ static IDXGISwapChain1          *g_sc  = NULL;
 static ID3D11RenderTargetView   *g_rtv = NULL;
 static ID3D11Texture2D          *g_tex = NULL;
 static ID3D11ShaderResourceView *g_srv = NULL;
+/* Second texture/SRV used only by the GL interop path (Step 7b). Created
+   with MISC_SHARED so WGL_NV_DX_interop2 can register it. me_d3d11_present
+   binds g_srv_shared when g_use_shared is set; otherwise g_srv. */
+static ID3D11Texture2D          *g_tex_shared = NULL;
+static ID3D11ShaderResourceView *g_srv_shared = NULL;
+static int                       g_use_shared = 0;
 static ID3D11SamplerState       *g_smp = NULL;
 static ID3D11VertexShader       *g_vs  = NULL;
 static ID3D11PixelShader        *g_ps  = NULL;
@@ -152,7 +158,51 @@ int me_d3d11_init(HWND hwnd, unsigned max_w, unsigned max_h) {
     return 0;
 }
 
+void *me_d3d11_get_device(void)  { return g_dev; }
+void *me_d3d11_get_texture(void) { return g_tex; }
+
+void *me_d3d11_create_shared_texture(unsigned w, unsigned h) {
+    if (!g_dev) return NULL;
+    if (g_tex_shared) return g_tex_shared;  /* idempotent */
+
+    D3D11_TEXTURE2D_DESC td = {0};
+    td.Width  = w;
+    td.Height = h;
+    td.MipLevels = 1;
+    td.ArraySize = 1;
+    /* GL renders RGBA8 into this; WGL_NV_DX_interop2 swizzles to/from
+       D3D11's BGRA8 transparently when sampling. */
+    td.Format    = DXGI_FORMAT_B8G8R8A8_UNORM;
+    td.SampleDesc.Count = 1;
+    td.Usage     = D3D11_USAGE_DEFAULT;
+    td.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+    /* MISC_SHARED (the legacy kind, not _NTHANDLE) is what WGL interop
+       expects on Windows. */
+    td.MiscFlags = D3D11_RESOURCE_MISC_SHARED;
+    if (!chk(ID3D11Device_CreateTexture2D(g_dev, &td, NULL, &g_tex_shared),
+             "CreateTexture2D(shared)")) return NULL;
+
+    D3D11_SHADER_RESOURCE_VIEW_DESC svd = {0};
+    svd.Format = td.Format;
+    svd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+    svd.Texture2D.MipLevels = 1;
+    if (!chk(ID3D11Device_CreateShaderResourceView(g_dev, (ID3D11Resource *)g_tex_shared,
+                                                   &svd, &g_srv_shared),
+             "CreateShaderResourceView(shared)")) {
+        ID3D11Texture2D_Release(g_tex_shared); g_tex_shared = NULL;
+        return NULL;
+    }
+    /* Bump g_tex_w/h so present's u_scale/v_scale math (which uses these
+       as the texture extents) is correct when sampling the shared tex. */
+    g_tex_w = w; g_tex_h = h;
+    return g_tex_shared;
+}
+
+void me_d3d11_use_shared(int yes) { g_use_shared = yes; }
+
 void me_d3d11_shutdown(void) {
+    if (g_srv_shared) { ID3D11ShaderResourceView_Release(g_srv_shared); g_srv_shared = NULL; }
+    if (g_tex_shared) { ID3D11Texture2D_Release(g_tex_shared);           g_tex_shared = NULL; }
     if (g_rs)  { ID3D11RasterizerState_Release(g_rs);   g_rs  = NULL; }
     if (g_cb)  { ID3D11Buffer_Release(g_cb);            g_cb  = NULL; }
     if (g_ps)  { ID3D11PixelShader_Release(g_ps);       g_ps  = NULL; }
@@ -227,6 +277,13 @@ void me_d3d11_present(int client_w, int client_h, int dx, int dy, int dw, int dh
     float u_scale = (float)frame_w / (float)g_tex_w;
     float v_scale = (float)frame_h / (float)g_tex_h;
 
+    /* Interop path samples a GL-rendered (bottom-up) texture; flip by
+       swapping the NDC y-rect so uv.y=0 lands on screen-bottom and
+       uv.y=1 on screen-top. */
+    if (g_use_shared && g_srv_shared) {
+        float tmp = y0; y0 = y1; y1 = tmp;
+    }
+
     D3D11_MAPPED_SUBRESOURCE m = {0};
     if (SUCCEEDED(ID3D11DeviceContext_Map(g_ctx, (ID3D11Resource *)g_cb, 0,
                                           D3D11_MAP_WRITE_DISCARD, 0, &m))) {
@@ -247,7 +304,8 @@ void me_d3d11_present(int client_w, int client_h, int dx, int dy, int dw, int dh
     ID3D11DeviceContext_VSSetShader(g_ctx, g_vs, NULL, 0);
     ID3D11DeviceContext_VSSetConstantBuffers(g_ctx, 0, 1, &g_cb);
     ID3D11DeviceContext_PSSetShader(g_ctx, g_ps, NULL, 0);
-    ID3D11DeviceContext_PSSetShaderResources(g_ctx, 0, 1, &g_srv);
+    ID3D11ShaderResourceView *srv = (g_use_shared && g_srv_shared) ? g_srv_shared : g_srv;
+    ID3D11DeviceContext_PSSetShaderResources(g_ctx, 0, 1, &srv);
     ID3D11DeviceContext_PSSetSamplers(g_ctx, 0, 1, &g_smp);
     ID3D11DeviceContext_Draw(g_ctx, 4, 0);
 
