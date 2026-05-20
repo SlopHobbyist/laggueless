@@ -9,6 +9,7 @@
 #include "core_loader.h"
 #include "audio_wasapi.h"
 #include "render_d3d11.h"
+#include "render_vulkan.h"
 #include "gl_context.h"
 #include "libretro.h"
 #include "settings.h"
@@ -1206,7 +1207,12 @@ int main(int argc, char **argv) {
 
     if (g_force_vulkan) {
 #ifdef ME_HAVE_VULKAN
-        printf("[render] --vulkan requested (Vulkan path not yet implemented, falling back to default render path)\n");
+        /* A2: init Vulkan instance/device alongside the existing render path.
+           No swapchain yet; the actual frames still go through GDI/D3D11.
+           A3 will replace those once the swapchain is in. */
+        if (me_vk_init(g_hwnd, g_back_max_w, g_back_max_h) != 0) {
+            fprintf(stderr, "[render] Vulkan init failed; existing render path remains active\n");
+        }
 #else
         printf("[render] --vulkan requested but build has no Vulkan support (set VULKAN_SDK and rebuild)\n");
 #endif
@@ -1652,6 +1658,7 @@ int main(int argc, char **argv) {
     timeEndPeriod(1);
     if (audio_ok) me_audio_shutdown();
     if (g_use_d3d11) me_d3d11_shutdown();
+    me_vk_shutdown();
 
     if (g_hw_render_accepted && g_hw_render.context_destroy) {
         g_hw_render.context_destroy();
