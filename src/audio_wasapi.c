@@ -91,58 +91,112 @@ static DWORD WINAPI audio_thread(LPVOID arg) {
     return 0;
 }
 
-/* Try exclusive mode with a 3 ms period using a 16-bit PCM format the device
-   accepts (most hardware natively supports this). Returns 0 on success.
-   On any failure the caller should fall back to shared mode. */
-static int try_exclusive(WAVEFORMATEX *mix_fmt) {
-    /* Build a 16-bit PCM format at the same rate/channels as the mix format. */
-    WAVEFORMATEX ex = {0};
-    ex.wFormatTag      = WAVE_FORMAT_PCM;
-    ex.nChannels       = (WORD)mix_fmt->nChannels;
-    ex.nSamplesPerSec  = mix_fmt->nSamplesPerSec;
-    ex.wBitsPerSample  = 16;
-    ex.nBlockAlign     = (WORD)(ex.nChannels * (ex.wBitsPerSample / 8));
-    ex.nAvgBytesPerSec = ex.nSamplesPerSec * ex.nBlockAlign;
-    ex.cbSize          = 0;
+typedef enum { ME_EXCL_S16 = 0, ME_EXCL_F32 = 1 } me_excl_fmt;
 
-    /* Query minimum supported period. */
-    REFERENCE_TIME default_period = 0, min_period = 0;
-    HRESULT hr = IAudioClient_GetDevicePeriod(g_ac, &default_period, &min_period);
-    if (FAILED(hr)) return 1;
+static int         g_exclusive     = 0;
+static me_excl_fmt g_exclusive_fmt = ME_EXCL_S16;
 
-    /* Target ~3 ms; clamp to the device minimum (100 ns units). */
-    REFERENCE_TIME period = 30000; /* 3 ms in 100 ns units */
-    if (period < min_period) period = min_period;
-
-    /* Check the device actually supports our format at this period. */
-    WAVEFORMATEX *closest = NULL;
-    hr = IAudioClient_IsFormatSupported(g_ac, AUDCLNT_SHAREMODE_EXCLUSIVE, &ex, &closest);
-    if (closest) CoTaskMemFree(closest);
-    if (hr != S_OK) return 1; /* AUDCLNT_E_UNSUPPORTED_FORMAT or similar */
-
-    hr = IAudioClient_Initialize(g_ac, AUDCLNT_SHAREMODE_EXCLUSIVE,
-                                 AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-                                 period, period, &ex, NULL);
+/* Attempt IAudioClient_Initialize in exclusive mode with fmt/period, handling
+   the BUFFER_SIZE_NOT_ALIGNED retry. Returns 0 on success. */
+static int try_exclusive_init(WAVEFORMATEX *fmt, REFERENCE_TIME period, REFERENCE_TIME min_period) {
+    HRESULT hr = IAudioClient_Initialize(g_ac, AUDCLNT_SHAREMODE_EXCLUSIVE,
+                                         AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+                                         period, period, fmt, NULL);
     if (hr == AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED) {
-        /* Device requires aligned buffer; query the aligned size and retry. */
         UINT32 aligned = 0;
         if (FAILED(IAudioClient_GetBufferSize(g_ac, &aligned))) return 1;
-        period = (REFERENCE_TIME)(10000000.0 * aligned / ex.nSamplesPerSec + 0.5);
+        period = (REFERENCE_TIME)(10000000.0 * aligned / fmt->nSamplesPerSec + 0.5);
+        if (period < min_period) period = min_period;
         hr = IAudioClient_Initialize(g_ac, AUDCLNT_SHAREMODE_EXCLUSIVE,
                                      AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-                                     period, period, &ex, NULL);
+                                     period, period, fmt, NULL);
     }
-    if (FAILED(hr)) return 1;
-
-    /* Store float-equivalent channel count; the audio thread will convert from
-       float ring → s16 output when in exclusive mode. */
-    g_device_rate     = (unsigned)ex.nSamplesPerSec;
-    g_device_channels = (unsigned)ex.nChannels;
-    return 0;
+    return FAILED(hr) ? 1 : 0;
 }
 
-/* 1 while exclusive mode is active — audio thread writes s16 instead of f32. */
-static int g_exclusive = 0;
+/* Try exclusive mode. Probes two formats in order:
+   1. Plain 16-bit PCM at the device's native rate/channels.
+   2. EXTENSIBLE IEEE-float 32-bit at the device's native rate/channels,
+      built from scratch (not the mix format verbatim) so we know exactly
+      what we're writing.
+   The mix format is intentionally NOT passed directly to avoid accepting
+   unexpected container formats (24-in-32, surround, etc.).
+   Returns 0 on success and updates g_device_rate / g_device_channels / g_exclusive_fmt. */
+static int try_exclusive(WAVEFORMATEX *mix_fmt) {
+    REFERENCE_TIME default_period = 0, min_period = 0;
+    if (FAILED(IAudioClient_GetDevicePeriod(g_ac, &default_period, &min_period))) return 1;
+
+    /* Target ~10 ms — matches the shared-mode engine period and gives the
+       emulation loop (16.6 ms/frame) enough headroom to keep the ring fed.
+       3 ms sounds better on paper but our push granularity is one emulation
+       frame (~16 ms), so a 3 ms drain window starves every other wakeup and
+       produces gaps/echoing. 10 ms keeps the drain period well below the push
+       burst while staying above the device minimum on all common hardware. */
+    REFERENCE_TIME period = 100000; /* 10 ms in 100 ns units */
+    if (period < min_period) period = min_period;
+
+    WORD ch   = (WORD)mix_fmt->nChannels;
+    DWORD rate = mix_fmt->nSamplesPerSec;
+
+    /* --- candidate 1: 16-bit PCM --- */
+    {
+        WAVEFORMATEX pcm = {0};
+        pcm.wFormatTag      = WAVE_FORMAT_PCM;
+        pcm.nChannels       = ch;
+        pcm.nSamplesPerSec  = rate;
+        pcm.wBitsPerSample  = 16;
+        pcm.nBlockAlign     = (WORD)(ch * 2);
+        pcm.nAvgBytesPerSec = rate * pcm.nBlockAlign;
+
+        WAVEFORMATEX *closest = NULL;
+        HRESULT hr = IAudioClient_IsFormatSupported(g_ac, AUDCLNT_SHAREMODE_EXCLUSIVE,
+                                                    &pcm, &closest);
+        if (closest) { CoTaskMemFree(closest); closest = NULL; }
+        if (hr == S_OK && try_exclusive_init(&pcm, period, min_period) == 0) {
+            g_device_rate     = (unsigned)rate;
+            g_device_channels = (unsigned)ch;
+            g_exclusive_fmt   = ME_EXCL_S16;
+            printf("[audio] exclusive: 16-bit PCM %lu Hz %u ch, period=%lld us\n",
+                   (unsigned long)rate, (unsigned)ch, (long long)(period / 10));
+            return 0;
+        }
+    }
+
+    /* --- candidate 2: 32-bit IEEE float EXTENSIBLE --- */
+    {
+        static const GUID float_guid = {0x00000003, 0x0000, 0x0010,
+                                        {0x80,0x00,0x00,0xAA,0x00,0x38,0x9B,0x71}};
+        WAVEFORMATEXTENSIBLE ext = {0};
+        ext.Format.wFormatTag      = WAVE_FORMAT_EXTENSIBLE;
+        ext.Format.nChannels       = ch;
+        ext.Format.nSamplesPerSec  = rate;
+        ext.Format.wBitsPerSample  = 32;
+        ext.Format.nBlockAlign     = (WORD)(ch * 4);
+        ext.Format.nAvgBytesPerSec = rate * ext.Format.nBlockAlign;
+        ext.Format.cbSize          = sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX);
+        ext.Samples.wValidBitsPerSample = 32;
+        ext.dwChannelMask          = (ch == 2) ? (SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT)
+                                                : SPEAKER_FRONT_CENTER;
+        ext.SubFormat              = float_guid;
+
+        WAVEFORMATEX *closest = NULL;
+        HRESULT hr = IAudioClient_IsFormatSupported(g_ac, AUDCLNT_SHAREMODE_EXCLUSIVE,
+                                                    &ext.Format, &closest);
+        if (closest) { CoTaskMemFree(closest); closest = NULL; }
+        if (hr == S_OK && try_exclusive_init(&ext.Format, period, min_period) == 0) {
+            g_device_rate     = (unsigned)rate;
+            g_device_channels = (unsigned)ch;
+            g_exclusive_fmt   = ME_EXCL_F32;
+            printf("[audio] exclusive: 32-bit float EXTENSIBLE %lu Hz %u ch, period=%lld us\n",
+                   (unsigned long)rate, (unsigned)ch, (long long)(period / 10));
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
+/* Set by try_exclusive() before the thread launches. */
 
 static DWORD WINAPI audio_thread_exclusive(LPVOID arg) {
     (void)arg;
@@ -150,38 +204,49 @@ static DWORD WINAPI audio_thread_exclusive(LPVOID arg) {
     HANDLE mm_task = AvSetMmThreadCharacteristicsW(L"Pro Audio", &mm_task_idx);
     if (mm_task) AvSetMmThreadPriority(mm_task, AVRT_PRIORITY_HIGH);
 
-    /* Pre-fill one silent buffer before starting. */
     UINT32 buf_frames = g_buffer_frames;
-    BYTE *dst = NULL;
-    if (SUCCEEDED(IAudioRenderClient_GetBuffer(g_rc, buf_frames, &dst)) && dst) {
-        memset(dst, 0, buf_frames * g_device_channels * sizeof(int16_t));
-        IAudioRenderClient_ReleaseBuffer(g_rc, buf_frames, 0);
-    }
+    int use_f32 = (g_exclusive_fmt == ME_EXCL_F32);
+    size_t frame_bytes = g_device_channels * (use_f32 ? sizeof(float) : sizeof(int16_t));
+
+    /* In exclusive mode the driver fires the event immediately after Start()
+       to request the first buffer — do not pre-fill; let the loop handle it
+       uniformly so the ring read pointer stays in sync from frame 0. */
     IAudioClient_Start(g_ac);
 
     while (!g_quit) {
         DWORD w = WaitForSingleObject(g_ev, 200);
         if (w != WAIT_OBJECT_0) continue;
 
-        dst = NULL;
+        BYTE *dst = NULL;
         if (FAILED(IAudioRenderClient_GetBuffer(g_rc, buf_frames, &dst)) || !dst) continue;
 
-        int16_t *out16 = (int16_t *)dst;
         unsigned ch = g_device_channels;
         EnterCriticalSection(&g_ring_cs);
         size_t used = ring_used();
         size_t take = used < buf_frames ? used : buf_frames;
-        for (size_t i = 0; i < take; i++) {
-            unsigned idx = (g_ring_read + (unsigned)i) & (ME_RING_FRAMES - 1);
-            out16[i*ch + 0] = (int16_t)(g_ring[idx*2 + 0] * 32767.0f);
-            if (ch > 1) out16[i*ch + 1] = (int16_t)(g_ring[idx*2 + 1] * 32767.0f);
-            for (unsigned c = 2; c < ch; c++) out16[i*ch + c] = 0;
+        if (use_f32) {
+            float *out32 = (float *)dst;
+            for (size_t i = 0; i < take; i++) {
+                unsigned idx = (g_ring_read + (unsigned)i) & (ME_RING_FRAMES - 1);
+                out32[i*ch + 0] = g_ring[idx*2 + 0];
+                if (ch > 1) out32[i*ch + 1] = g_ring[idx*2 + 1];
+                for (unsigned c = 2; c < ch; c++) out32[i*ch + c] = 0.0f;
+            }
+            if (take < buf_frames)
+                memset((float *)dst + take * ch, 0, (buf_frames - take) * frame_bytes);
+        } else {
+            int16_t *out16 = (int16_t *)dst;
+            for (size_t i = 0; i < take; i++) {
+                unsigned idx = (g_ring_read + (unsigned)i) & (ME_RING_FRAMES - 1);
+                out16[i*ch + 0] = (int16_t)(g_ring[idx*2 + 0] * 32767.0f);
+                if (ch > 1) out16[i*ch + 1] = (int16_t)(g_ring[idx*2 + 1] * 32767.0f);
+                for (unsigned c = 2; c < ch; c++) out16[i*ch + c] = 0;
+            }
+            if (take < buf_frames)
+                memset((int16_t *)dst + take * ch, 0, (buf_frames - take) * frame_bytes);
         }
         g_ring_read = (g_ring_read + (unsigned)take) & (ME_RING_FRAMES - 1);
         LeaveCriticalSection(&g_ring_cs);
-
-        if (take < buf_frames)
-            memset(out16 + take * ch, 0, (buf_frames - take) * ch * sizeof(int16_t));
 
         IAudioRenderClient_ReleaseBuffer(g_rc, buf_frames, 0);
     }
@@ -252,9 +317,10 @@ int me_audio_init(unsigned *out_device_rate, int want_exclusive) {
     if (!g_thread) return 1;
 
     if (out_device_rate) *out_device_rate = g_device_rate;
-    printf("[audio] WASAPI %s mode running at %u Hz, buffer=%u frames\n",
+    printf("[audio] WASAPI %s mode running at %u Hz, buffer=%u frames%s\n",
            used_exclusive ? "exclusive" : "shared",
-           g_device_rate, (unsigned)g_buffer_frames);
+           g_device_rate, (unsigned)g_buffer_frames,
+           (used_exclusive && g_exclusive_fmt == ME_EXCL_F32) ? " (f32)" : "");
     return 0;
 }
 
@@ -269,6 +335,12 @@ void me_audio_shutdown(void) {
     if (g_enum) { IMMDeviceEnumerator_Release(g_enum); g_enum = NULL; }
     if (g_ev) { CloseHandle(g_ev); g_ev = NULL; }
     DeleteCriticalSection(&g_ring_cs);
+}
+
+void me_audio_set_thread_affinity(unsigned long long affinity_mask, int priority) {
+    if (!g_thread) return;
+    if (affinity_mask) SetThreadAffinityMask(g_thread, (DWORD_PTR)affinity_mask);
+    if (priority != -1) SetThreadPriority(g_thread, priority);
 }
 
 unsigned me_audio_device_rate(void) { return g_device_rate; }

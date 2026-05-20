@@ -839,6 +839,105 @@ static unsigned char *slurp(const char *path, size_t *out_size) {
     return buf;
 }
 
+/* Query the OS for CPU set information to split P-cores from E-cores.
+   Returns 1 if hybrid topology was detected and masks were filled.
+   On any failure (pre-Win10, homogeneous CPU, API not present) returns 0.
+
+   The Win32 SYSTEM_CPU_SET_INFORMATION type exposes an EfficiencyClass field:
+   0 = E-core (efficiency), higher = P-core (performance). We collect the two
+   highest distinct classes and assign the top class to emu_mask and a secondary
+   core from the top class (or falling back to the next class) to audio_mask. */
+static int me_pick_affinity_masks(DWORD_PTR *emu_mask, DWORD_PTR *audio_mask) {
+    /* Dynamically resolve — not available on Win7/8. */
+    typedef BOOL (WINAPI *PFN_GetSystemCpuSetInformation)(
+        void *, ULONG, PULONG, HANDLE, ULONG);
+    HMODULE kern = GetModuleHandleA("kernel32.dll");
+    if (!kern) return 0;
+    PFN_GetSystemCpuSetInformation pfn = (PFN_GetSystemCpuSetInformation)
+        GetProcAddress(kern, "GetSystemCpuSetInformation");
+    if (!pfn) return 0;
+
+    ULONG needed = 0;
+    pfn(NULL, 0, &needed, GetCurrentProcess(), 0);
+    if (!needed) return 0;
+    BYTE *buf = (BYTE *)malloc(needed);
+    if (!buf) return 0;
+    if (!pfn(buf, needed, &needed, GetCurrentProcess(), 0)) { free(buf); return 0; }
+
+    /* Walk entries, collecting per-EfficiencyClass masks.
+       Intel hybrid: P-cores have class > 0, E-cores have class 0.
+       AMD / homogeneous Intel: all cores have class 0. */
+    DWORD_PTR class_mask[256] = {0};
+    BYTE max_class = 0;
+    int  num_lp = 0;
+    ULONG offset = 0;
+    while (offset < needed) {
+        DWORD *entry = (DWORD *)(buf + offset);
+        DWORD  sz    = entry[0];
+        DWORD  type  = entry[1];
+        if (sz < 8 || offset + sz > needed) break;
+        if (type == 0 /* CpuSet */) {
+            /* Layout after Size+Type (8 bytes):
+               Id(4), Group(2), LogicalProcessorIndex(1), CoreIndex(1),
+               LastLevelCacheIndex(1), NumaNodeIndex(1), EfficiencyClass(1) */
+            BYTE *cs       = (BYTE *)(buf + offset + 8);
+            BYTE lp_idx    = cs[6];
+            BYTE eff_class = cs[10];
+            if (lp_idx < 64) { /* DWORD_PTR is 64-bit on x64 */
+                class_mask[eff_class] |= (DWORD_PTR)1 << lp_idx;
+                if (eff_class > max_class) max_class = eff_class;
+                num_lp++;
+            }
+        }
+        offset += sz;
+    }
+    free(buf);
+
+    if (num_lp < 2) return 0;
+
+    if (max_class > 0) {
+        /* Intel hybrid: P-cores are in max_class, E-cores in lower classes. */
+        DWORD_PTR pcores = class_mask[max_class];
+        DWORD_PTR ecores = 0;
+        for (int c = 0; c < max_class; c++) ecores |= class_mask[c];
+
+        /* Emu gets all P-cores. Audio gets one spare P-core if >=2 exist,
+           otherwise one E-core. */
+        DWORD_PTR lo = pcores & (DWORD_PTR)(-(DWORD_PTR)pcores);
+        DWORD_PTR rest_pcores = pcores & ~lo;
+        if (rest_pcores) {
+            *emu_mask   = pcores;
+            *audio_mask = rest_pcores & (DWORD_PTR)(-(DWORD_PTR)rest_pcores);
+        } else if (ecores) {
+            *emu_mask   = pcores;
+            *audio_mask = ecores & (DWORD_PTR)(-(DWORD_PTR)ecores);
+        } else {
+            return 0;
+        }
+    } else {
+        /* Homogeneous CPU (AMD, or all-E Intel): split by logical index.
+           Give emu the lower half of cores, audio one core from the upper half.
+           This keeps them on different physical cores / CCDs. */
+        DWORD_PTR all = class_mask[0];
+        int count = 0;
+        for (DWORD_PTR m = all; m; m &= m - 1) count++;
+        if (count < 2) return 0;
+
+        /* Lower half → emu; pick one bit from upper half → audio. */
+        DWORD_PTR emu = 0, upper = 0;
+        int seen = 0, half = count / 2;
+        for (int b = 0; b < 64; b++) {
+            if (!((all >> b) & 1)) continue;
+            if (seen < half) emu |= (DWORD_PTR)1 << b;
+            else             upper |= (DWORD_PTR)1 << b;
+            seen++;
+        }
+        *emu_mask   = emu;
+        *audio_mask = upper & (DWORD_PTR)(-(DWORD_PTR)upper); /* lowest bit of upper half */
+    }
+    return 1;
+}
+
 static LONG WINAPI me_unhandled_exception(EXCEPTION_POINTERS *ep) {
     DWORD code = ep && ep->ExceptionRecord ? ep->ExceptionRecord->ExceptionCode : 0;
     void *addr = ep && ep->ExceptionRecord ? ep->ExceptionRecord->ExceptionAddress : NULL;
@@ -882,6 +981,7 @@ int main(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
         if      (strcmp(argv[i], "--no-audio") == 0) no_audio  = 1;
         else if (strcmp(argv[i], "--exclusive-audio") == 0) audio_exclusive = 1;
+        else if (strcmp(argv[i], "--thread-affinity") == 0) g_settings.thread_affinity = 1;
         else if (strcmp(argv[i], "--gdi")      == 0) force_gdi = 1;
         else if (strcmp(argv[i], "--d3d11")    == 0) force_d3d11 = 1;
         else if (strcmp(argv[i], "--pace-log") == 0) pace_log  = 1;
@@ -910,6 +1010,8 @@ int main(int argc, char **argv) {
                 "  --no-audio                   disable audio output\n"
                 "  --exclusive-audio            opt-in WASAPI exclusive mode (~3 ms vs ~10 ms)\n"
                 "                                 falls back to shared if device rejects it\n"
+                "  --thread-affinity            pin emu thread to P-cores, audio to a separate\n"
+                "                                 core; both get elevated OS priority\n"
                 "  --gdi                        force GDI for all cores (overrides --d3d11)\n"
                 "  --d3d11                      use D3D11 present path for 2D cores too\n"
                 "                                 (enables VRR / lower latency, but may tear\n"
@@ -1228,6 +1330,34 @@ int main(int argc, char **argv) {
                 }
             }
         }
+    }
+
+    /* Thread affinity + priority isolation.
+       Emulation thread (this thread) → THREAD_PRIORITY_HIGHEST + P-cores.
+       Audio render thread              → THREAD_PRIORITY_TIME_CRITICAL + a
+       separate core (second P-core, or an E-core if there's only one P-core).
+       Falls back gracefully to just setting priority when affinity detection
+       fails (homogeneous CPU, pre-Win10, single-core). */
+    if (g_settings.thread_affinity) {
+        DWORD_PTR emu_mask = 0, audio_mask = 0;
+        int hybrid = me_pick_affinity_masks(&emu_mask, &audio_mask);
+        if (hybrid) {
+            SetThreadAffinityMask(GetCurrentThread(), emu_mask);
+            printf("[affinity] emu thread pinned to mask 0x%llx\n",
+                   (unsigned long long)emu_mask);
+            if (audio_ok) {
+                me_audio_set_thread_affinity((unsigned long long)audio_mask,
+                                            THREAD_PRIORITY_TIME_CRITICAL);
+                printf("[affinity] audio thread pinned to mask 0x%llx, priority=TIME_CRITICAL\n",
+                       (unsigned long long)audio_mask);
+            }
+        } else {
+            printf("[affinity] could not split cores (single-core or API unavailable); priority-only\n");
+            if (audio_ok)
+                me_audio_set_thread_affinity(0, THREAD_PRIORITY_TIME_CRITICAL);
+        }
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+        printf("[affinity] emu thread priority=HIGHEST\n");
     }
 
     g_latency_log = latency_log;

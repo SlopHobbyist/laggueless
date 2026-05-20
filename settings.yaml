@@ -23,6 +23,15 @@ audio:
                          # shared mode automatically if the device rejects it.
                          # CLI equivalent: --exclusive-audio
 
+system:
+  thread_affinity: true    # Pin the emulation thread to P-cores and the audio thread
+                            # to a separate core (reduces context-switch jitter on Intel
+                            # Alder Lake+, AMD hybrid CPUs). Both threads also get
+                            # elevated OS priority (HIGHEST for emu, TIME_CRITICAL for
+                            # audio). Falls back to priority-only when hybrid topology
+                            # can't be detected (homogeneous CPU, pre-Win10).
+                            # CLI equivalent: --thread-affinity
+
 # Run-ahead: reduces input latency by running the core extra frames ahead each
 # iteration and displaying the future frame. The displayed frame is what the
 # game would render N frames from "now", so reactions to your input appear

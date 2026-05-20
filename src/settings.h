@@ -66,6 +66,10 @@ typedef struct {
     int no_audio;
     int audio_exclusive; /* opt-in: WASAPI exclusive mode (~3 ms vs ~10 ms latency) */
 
+    /* thread affinity: pin emulation and audio threads to isolated cores.
+       Reduces context-switch jitter on hybrid CPUs (Alder Lake+, Ryzen). */
+    int thread_affinity; /* 0 = off, 1 = auto-detect P-cores, else leave OS default */
+
     /* run-ahead: number of frames to simulate ahead each iteration. 0 disables.
        Reduces visible input latency by displaying a future frame. Each ghost
        frame costs one extra retro_run() call plus a serialize/unserialize. */

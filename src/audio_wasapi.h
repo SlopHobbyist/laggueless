@@ -27,6 +27,11 @@ size_t me_audio_push(const int16_t *data, size_t frames);
 /* How many frames the ring buffer can still accept right now. */
 size_t me_audio_writable_frames(void);
 
+/* Set affinity mask and priority on the audio render thread. Call after
+   me_audio_init() succeeds. priority is a Win32 THREAD_PRIORITY_* constant;
+   pass -1 to leave priority unchanged. affinity_mask 0 leaves affinity alone. */
+void me_audio_set_thread_affinity(unsigned long long affinity_mask, int priority);
+
 /* Block until at least `frames` of writable space is available, or the
    timeout expires. Returns 1 if space is available, 0 on timeout. */
 int me_audio_wait_writable(size_t frames, unsigned timeout_ms);
