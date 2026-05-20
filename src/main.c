@@ -451,6 +451,26 @@ static int16_t g_analog_rx = 0, g_analog_ry = 0;  /* right stick */
 static const me_control_map *g_active_map = NULL;
 static me_settings g_settings;
 
+/* Some cores (NES, GB/GBC, PCE, SMS, ...) only have 2 face buttons. Several of
+   them repurpose RetroPad X/Y as turbo-A/turbo-B, which we never want. Set
+   based on the core's library_name after retro_get_system_info. */
+static int g_suppress_xy = 0;
+
+static int core_lacks_xy(const char *library_name) {
+    if (!library_name) return 0;
+    static const char *const names[] = {
+        "Mesen", "Nestopia", "FCEUmm", "QuickNES",          /* NES */
+        "Gambatte", "SameBoy", "TGB Dual", "VBA-M",         /* GB/GBC */
+        "Mednafen PCE", "Mednafen SuperGrafx", "Beetle PCE",/* PC Engine */
+        /* Genesis Plus GX / PicoDrive intentionally omitted: they also run
+           Mega Drive, which has 6-button pads using X/Y. */
+    };
+    for (size_t i = 0; i < sizeof(names)/sizeof(names[0]); i++) {
+        if (strstr(library_name, names[i])) return 1;
+    }
+    return 0;
+}
+
 static int key_down_kb(const me_kb_binding *b) {
     if (b->vk == 0) return 0;
     if (b->ctrl  && !(GetAsyncKeyState(VK_CONTROL) & 0x8000)) return 0;
@@ -484,8 +504,8 @@ static void me_input_poll_cb(void) {
     g_pad1[RETRO_DEVICE_ID_JOYPAD_RIGHT]  = right;
     g_pad1[RETRO_DEVICE_ID_JOYPAD_B]      = input_down(ME_IN_B);
     g_pad1[RETRO_DEVICE_ID_JOYPAD_A]      = input_down(ME_IN_A);
-    g_pad1[RETRO_DEVICE_ID_JOYPAD_Y]      = input_down(ME_IN_Y);
-    g_pad1[RETRO_DEVICE_ID_JOYPAD_X]      = input_down(ME_IN_X);
+    g_pad1[RETRO_DEVICE_ID_JOYPAD_Y]      = g_suppress_xy ? 0 : input_down(ME_IN_Y);
+    g_pad1[RETRO_DEVICE_ID_JOYPAD_X]      = g_suppress_xy ? 0 : input_down(ME_IN_X);
     g_pad1[RETRO_DEVICE_ID_JOYPAD_START]  = input_down(ME_IN_START);
     g_pad1[RETRO_DEVICE_ID_JOYPAD_SELECT] = input_down(ME_IN_BACK);
     g_pad1[RETRO_DEVICE_ID_JOYPAD_L]      = input_down(ME_IN_LB);
@@ -843,6 +863,11 @@ int main(int argc, char **argv) {
            info.library_version ? info.library_version : "?",
            info.valid_extensions ? info.valid_extensions : "?",
            (int)info.need_fullpath);
+
+    g_suppress_xy = core_lacks_xy(info.library_name);
+    if (g_suppress_xy) {
+        printf("[input] suppressing RetroPad X/Y for this core (no turbo)\n");
+    }
 
     fprintf(stderr, "[load] set_environment\n"); fflush(stderr);
     core->retro_set_environment(me_environment_cb);
