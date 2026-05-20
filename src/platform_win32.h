@@ -10,9 +10,13 @@ int  me_platform_pump(void); /* returns 0 when WM_QUIT received */
 /* Toggle borderless fullscreen on the given window. */
 void me_platform_toggle_fullscreen(HWND hwnd);
 
-/* Set to 1 by wndproc on F11; main loop reads & clears. */
-extern volatile int me_platform_f11_pressed;
-/* Set to 1 by wndproc on F1; main loop reads & clears. */
-extern volatile int me_platform_f1_pressed;
+/* Edge-triggered key-press detection. Returns 1 the first time the key is
+   queried after a WM_KEYDOWN; subsequent calls return 0 until the key is
+   released and pressed again. Modifier flags (ctrl/alt/shift) must all match
+   the current modifier state — use this to handle chords like Ctrl+R. */
+int  me_platform_key_pressed(unsigned vk, unsigned ctrl, unsigned alt, unsigned shift);
+
+/* Request graceful shutdown (posts WM_QUIT). */
+void me_platform_request_quit(void);
 
 #endif

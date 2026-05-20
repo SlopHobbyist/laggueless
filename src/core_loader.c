@@ -41,6 +41,7 @@ me_core *me_core_load(const char *dll_path) {
     ME_RESOLVE(c, retro_load_game);
     ME_RESOLVE(c, retro_unload_game);
     ME_RESOLVE(c, retro_run);
+    ME_RESOLVE(c, retro_reset);
     ME_RESOLVE(c, retro_serialize_size);
     ME_RESOLVE(c, retro_serialize);
     ME_RESOLVE(c, retro_unserialize);

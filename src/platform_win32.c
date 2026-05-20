@@ -2,8 +2,12 @@
 #include <windows.h>
 #include "platform_win32.h"
 
-volatile int me_platform_f11_pressed = 0;
-volatile int me_platform_f1_pressed = 0;
+/* Edge-detection state: bit set in g_pending the moment a WM_KEYDOWN arrives
+   (only if not already considered held), cleared by me_platform_key_pressed
+   when the consumer takes the event. Released keys clear g_held so the next
+   WM_KEYDOWN counts as a fresh press (Windows auto-repeats WM_KEYDOWN). */
+static unsigned char g_pending[256];
+static unsigned char g_held[256];
 
 static LRESULT CALLBACK me_wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
@@ -17,9 +21,15 @@ static LRESULT CALLBACK me_wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         case WM_KEYDOWN:
-            if (wp == VK_ESCAPE) PostQuitMessage(0);
-            else if (wp == VK_F11) me_platform_f11_pressed = 1;
-            else if (wp == VK_F1)  me_platform_f1_pressed  = 1;
+        case WM_SYSKEYDOWN:
+            if (wp < 256 && !g_held[wp]) {
+                g_held[wp] = 1;
+                g_pending[wp] = 1;
+            }
+            return 0;
+        case WM_KEYUP:
+        case WM_SYSKEYUP:
+            if (wp < 256) g_held[wp] = 0;
             return 0;
     }
     return DefWindowProcA(h, msg, wp, lp);
@@ -55,6 +65,26 @@ int me_platform_pump(void) {
         DispatchMessageA(&m);
     }
     return 1;
+}
+
+int me_platform_key_pressed(unsigned vk, unsigned ctrl, unsigned alt, unsigned shift) {
+    if (vk == 0 || vk >= 256) return 0;
+    if (!g_pending[vk]) return 0;
+    /* Match the chord's modifier set against current state. We consume the
+       event even if modifiers mismatch — pressing X without Ctrl shouldn't
+       leave a stale "X pressed" event around for the next frame's check. */
+    int got_ctrl  = (GetAsyncKeyState(VK_CONTROL) & 0x8000) ? 1 : 0;
+    int got_alt   = (GetAsyncKeyState(VK_MENU)    & 0x8000) ? 1 : 0;
+    int got_shift = (GetAsyncKeyState(VK_SHIFT)   & 0x8000) ? 1 : 0;
+    g_pending[vk] = 0;
+    if ((ctrl  && !got_ctrl)  || (!ctrl  && got_ctrl  && (vk != VK_CONTROL && vk != VK_LCONTROL && vk != VK_RCONTROL))) return 0;
+    if ((alt   && !got_alt)   || (!alt   && got_alt   && (vk != VK_MENU    && vk != VK_LMENU    && vk != VK_RMENU)))    return 0;
+    if ((shift && !got_shift) || (!shift && got_shift && (vk != VK_SHIFT   && vk != VK_LSHIFT   && vk != VK_RSHIFT)))   return 0;
+    return 1;
+}
+
+void me_platform_request_quit(void) {
+    PostQuitMessage(0);
 }
 
 /* ---- fullscreen toggle ---------------------------------------------------- */

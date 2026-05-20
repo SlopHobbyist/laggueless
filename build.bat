@@ -27,7 +27,7 @@ if not exist "%BUILD%" mkdir "%BUILD%"
 
 REM ---- flags -----------------------------------------------------------------
 set "CFLAGS=-std=c11 -O2 -g -Wall -Wextra -Wshadow -Wno-unused-parameter -I%SRC% -I%ROOT%include"
-set "LDFLAGS=-lgdi32 -luser32 -lopengl32 -lkernel32 -lole32 -luuid -lwinmm -ld3d11 -ldxgi"
+set "LDFLAGS=-lgdi32 -luser32 -lopengl32 -lkernel32 -lole32 -luuid -lwinmm -ld3d11 -ldxgi -lyaml"
 
 REM ---- collect sources -------------------------------------------------------
 set "SOURCES="
@@ -41,6 +41,15 @@ if errorlevel 1 (
     echo [build] FAILED.
     exit /b 1
 )
+
+REM Copy libyaml runtime alongside the exe so the user doesn't need mingw64\bin on PATH.
+for %%D in ("C:\msys64\mingw64\bin" "C:\mingw64\bin") do (
+    if exist "%%~D\libyaml-0-2.dll" (
+        copy /Y "%%~D\libyaml-0-2.dll" "%BUILD%\" >nul
+        goto :dll_done
+    )
+)
+:dll_done
 
 echo [build] OK.
 exit /b 0

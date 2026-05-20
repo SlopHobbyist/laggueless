@@ -11,6 +11,7 @@
 #include "render_d3d11.h"
 #include "gl_context.h"
 #include "libretro.h"
+#include "settings.h"
 
 /* ---- global state for callbacks (single core, single ROM) ----------------- */
 static enum retro_pixel_format g_pixel_format = RETRO_PIXEL_FORMAT_0RGB1555;
@@ -440,21 +441,40 @@ static size_t me_audio_sample_batch_cb(const int16_t *data, size_t frames) {
     resample_and_push(data, frames);
     return frames;
 }
-/* Player 1 RetroPad state, refreshed in input_poll. */
+/* Player 1 RetroPad state, refreshed in input_poll. The active control map
+   is selected at startup based on settings.yaml: either `g_settings.universal`
+   or the per-core entry's controls. */
 static int16_t g_pad1[16];
+static int16_t g_analog_lx = 0, g_analog_ly = 0;  /* left stick, -32767..32767 */
+static int16_t g_analog_rx = 0, g_analog_ry = 0;  /* right stick */
 
-static int key_down(int vk) {
-    return (GetAsyncKeyState(vk) & 0x8000) ? 1 : 0;
+static const me_control_map *g_active_map = NULL;
+static me_settings g_settings;
+
+static int key_down_kb(const me_kb_binding *b) {
+    if (b->vk == 0) return 0;
+    if (b->ctrl  && !(GetAsyncKeyState(VK_CONTROL) & 0x8000)) return 0;
+    if (b->alt   && !(GetAsyncKeyState(VK_MENU)    & 0x8000)) return 0;
+    if (b->shift && !(GetAsyncKeyState(VK_SHIFT)   & 0x8000)) return 0;
+    return (GetAsyncKeyState((int)b->vk) & 0x8000) ? 1 : 0;
+}
+
+static int input_down(me_input_id id) {
+    if (!g_active_map) return 0;
+    return key_down_kb(&g_active_map->keys[id]);
 }
 
 static void me_input_poll_cb(void) {
     /* Don't read keys when our window isn't foreground. */
     if (GetForegroundWindow() != g_hwnd) {
         memset(g_pad1, 0, sizeof(g_pad1));
+        g_analog_lx = g_analog_ly = g_analog_rx = g_analog_ry = 0;
         return;
     }
-    int up = key_down(VK_UP),   down  = key_down(VK_DOWN);
-    int lf = key_down(VK_LEFT), right = key_down(VK_RIGHT);
+    int up    = input_down(ME_IN_DPAD_UP);
+    int down  = input_down(ME_IN_DPAD_DOWN);
+    int lf    = input_down(ME_IN_DPAD_LEFT);
+    int right = input_down(ME_IN_DPAD_RIGHT);
     /* SOCD: opposing directions cancel to neutral. */
     if (up && down)  { up = down = 0; }
     if (lf && right) { lf = right = 0; }
@@ -462,21 +482,53 @@ static void me_input_poll_cb(void) {
     g_pad1[RETRO_DEVICE_ID_JOYPAD_DOWN]   = down;
     g_pad1[RETRO_DEVICE_ID_JOYPAD_LEFT]   = lf;
     g_pad1[RETRO_DEVICE_ID_JOYPAD_RIGHT]  = right;
-    g_pad1[RETRO_DEVICE_ID_JOYPAD_B]      = key_down('Z');
-    g_pad1[RETRO_DEVICE_ID_JOYPAD_A]      = key_down('X');
-    g_pad1[RETRO_DEVICE_ID_JOYPAD_Y]      = key_down('A');
-    g_pad1[RETRO_DEVICE_ID_JOYPAD_X]      = key_down('S');
-    g_pad1[RETRO_DEVICE_ID_JOYPAD_START]  = key_down(VK_RETURN);
-    g_pad1[RETRO_DEVICE_ID_JOYPAD_SELECT] = key_down(VK_RSHIFT);
-    g_pad1[RETRO_DEVICE_ID_JOYPAD_L]      = key_down('Q');
-    g_pad1[RETRO_DEVICE_ID_JOYPAD_R]      = key_down('W');
+    g_pad1[RETRO_DEVICE_ID_JOYPAD_B]      = input_down(ME_IN_B);
+    g_pad1[RETRO_DEVICE_ID_JOYPAD_A]      = input_down(ME_IN_A);
+    g_pad1[RETRO_DEVICE_ID_JOYPAD_Y]      = input_down(ME_IN_Y);
+    g_pad1[RETRO_DEVICE_ID_JOYPAD_X]      = input_down(ME_IN_X);
+    g_pad1[RETRO_DEVICE_ID_JOYPAD_START]  = input_down(ME_IN_START);
+    g_pad1[RETRO_DEVICE_ID_JOYPAD_SELECT] = input_down(ME_IN_BACK);
+    g_pad1[RETRO_DEVICE_ID_JOYPAD_L]      = input_down(ME_IN_LB);
+    g_pad1[RETRO_DEVICE_ID_JOYPAD_R]      = input_down(ME_IN_RB);
+    g_pad1[RETRO_DEVICE_ID_JOYPAD_L2]     = input_down(ME_IN_LT);
+    g_pad1[RETRO_DEVICE_ID_JOYPAD_R2]     = input_down(ME_IN_RT);
+    g_pad1[RETRO_DEVICE_ID_JOYPAD_L3]     = input_down(ME_IN_LSTICK);
+    g_pad1[RETRO_DEVICE_ID_JOYPAD_R3]     = input_down(ME_IN_RSTICK);
+
+    /* Stick directions are also surfaced through RETRO_DEVICE_ANALOG so cores
+       like mupen64plus_next that read the analog stick see motion. Opposing
+       directions cancel; non-opposing produce full deflection in that axis. */
+    int lu = input_down(ME_IN_LSTICK_UP),    ld = input_down(ME_IN_LSTICK_DOWN);
+    int ll = input_down(ME_IN_LSTICK_LEFT),  lr = input_down(ME_IN_LSTICK_RIGHT);
+    int ru = input_down(ME_IN_RSTICK_UP),    rd = input_down(ME_IN_RSTICK_DOWN);
+    int rl = input_down(ME_IN_RSTICK_LEFT),  rr = input_down(ME_IN_RSTICK_RIGHT);
+    if (lu && ld) lu = ld = 0;
+    if (ll && lr) ll = lr = 0;
+    if (ru && rd) ru = rd = 0;
+    if (rl && rr) rl = rr = 0;
+    g_analog_lx = (int16_t)((lr ? 32767 : 0) - (ll ? 32767 : 0));
+    g_analog_ly = (int16_t)((ld ? 32767 : 0) - (lu ? 32767 : 0));
+    g_analog_rx = (int16_t)((rr ? 32767 : 0) - (rl ? 32767 : 0));
+    g_analog_ry = (int16_t)((rd ? 32767 : 0) - (ru ? 32767 : 0));
 }
 
 static int16_t me_input_state_cb(unsigned port, unsigned device, unsigned index, unsigned id) {
-    (void)index;
-    if (port != 0 || device != RETRO_DEVICE_JOYPAD) return 0;
-    if (id >= sizeof(g_pad1) / sizeof(g_pad1[0])) return 0;
-    return g_pad1[id];
+    if (port != 0) return 0;
+    if (device == RETRO_DEVICE_JOYPAD) {
+        if (id >= sizeof(g_pad1) / sizeof(g_pad1[0])) return 0;
+        return g_pad1[id];
+    }
+    if (device == RETRO_DEVICE_ANALOG) {
+        if (index == RETRO_DEVICE_INDEX_ANALOG_LEFT) {
+            if (id == RETRO_DEVICE_ID_ANALOG_X) return g_analog_lx;
+            if (id == RETRO_DEVICE_ID_ANALOG_Y) return g_analog_ly;
+        } else if (index == RETRO_DEVICE_INDEX_ANALOG_RIGHT) {
+            if (id == RETRO_DEVICE_ID_ANALOG_X) return g_analog_rx;
+            if (id == RETRO_DEVICE_ID_ANALOG_Y) return g_analog_ry;
+        }
+        return 0;
+    }
+    return 0;
 }
 
 /* ---- present -------------------------------------------------------------- */
@@ -591,11 +643,19 @@ static LONG WINAPI me_unhandled_exception(EXCEPTION_POINTERS *ep) {
 
 int main(int argc, char **argv) {
     SetUnhandledExceptionFilter(me_unhandled_exception);
-    int no_audio = 0;
-    int force_gdi = 0;
-    int force_d3d11 = 0;  /* opts software cores into the D3D11 present path */
-    int pace_log = 0;
-    int timing_log = 0;
+
+    /* settings.yaml is the base layer: load defaults, then YAML overrides them,
+       then CLI flags override YAML. */
+    me_settings_defaults(&g_settings);
+    me_settings_load("settings.yaml", &g_settings);
+    int no_audio    = g_settings.no_audio;
+    int force_gdi   = g_settings.force_gdi;
+    int force_d3d11 = g_settings.force_d3d11;
+    int pace_log    = g_settings.pace_log;
+    int timing_log  = g_settings.timing_log;
+    g_aspect_mode   = (int)g_settings.aspect;
+    g_env_trace     = g_settings.env_trace;
+
     const char *positional[2] = { NULL, NULL };
     int npos = 0;
     const char *exe = argv[0] ? argv[0] : "multi-emulator.exe";
@@ -662,6 +722,20 @@ int main(int argc, char **argv) {
     }
     const char *core_path = positional[0];
     const char *rom_path  = positional[1];
+
+    /* Pick the active per-player-1 control map: per-core entry if it exists
+       and has use_universal=false, otherwise the universal map. */
+    {
+        const struct me_core_entry *ce = me_settings_find_core(&g_settings, core_path);
+        if (ce && !ce->use_universal) {
+            g_active_map = &ce->controls;
+            printf("[settings] using per-core controls for %s\n", ce->name);
+        } else {
+            g_active_map = &g_settings.universal;
+            printf("[settings] using universal controls%s%s\n",
+                   ce ? " for " : "", ce ? ce->name : "");
+        }
+    }
 
     me_core *core = me_core_load(core_path);
     if (!core) { fprintf(stderr, "failed to load core: %s\n", core_path); return 1; }
@@ -758,6 +832,9 @@ int main(int argc, char **argv) {
     if (win_h < 240) win_h = 480;
     g_hwnd = me_platform_create_window("multi-emulator", win_w, win_h);
     if (!g_hwnd) { fprintf(stderr, "window create failed\n"); return 1; }
+    if (g_settings.fullscreen_on_launch) {
+        me_platform_toggle_fullscreen(g_hwnd);
+    }
 
     /* D3D11 flip-model is used for HW (GL) cores by default and for software
        cores when --d3d11 is set. Otherwise software cores stay on GDI: lower
@@ -830,14 +907,26 @@ int main(int argc, char **argv) {
     LARGE_INTEGER pl_window_start = pl_last_qpc;
 
     while (me_platform_pump()) {
-        if (me_platform_f11_pressed) {
-            me_platform_f11_pressed = 0;
+        const me_kb_binding *hk;
+        hk = &g_settings.hk_toggle_fullscreen;
+        if (me_platform_key_pressed(hk->vk, hk->ctrl, hk->alt, hk->shift)) {
             me_platform_toggle_fullscreen(g_hwnd);
         }
-        if (me_platform_f1_pressed) {
-            me_platform_f1_pressed = 0;
+        hk = &g_settings.hk_cycle_aspect;
+        if (me_platform_key_pressed(hk->vk, hk->ctrl, hk->alt, hk->shift)) {
             g_aspect_mode = (g_aspect_mode + 1) % 3;
             printf("[aspect] %s\n", g_aspect_names[g_aspect_mode]);
+        }
+        hk = &g_settings.hk_quit;
+        if (me_platform_key_pressed(hk->vk, hk->ctrl, hk->alt, hk->shift)) {
+            me_platform_request_quit();
+        }
+        hk = &g_settings.hk_reset;
+        if (me_platform_key_pressed(hk->vk, hk->ctrl, hk->alt, hk->shift)) {
+            if (core->retro_reset) {
+                core->retro_reset();
+                printf("[hotkey] reset\n");
+            }
         }
         size_t fill_before = 0, fill_after = 0;
         int timed_out = 0;
@@ -954,5 +1043,6 @@ int main(int argc, char **argv) {
     free(rom_data);
     free(g_back);
     me_core_unload(core);
+    me_settings_free(&g_settings);
     return 0;
 }

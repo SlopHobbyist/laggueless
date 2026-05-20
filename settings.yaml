@@ -1,0 +1,281 @@
+## multi-emulator settings
+
+video:
+  fullscreen_on_launch: false
+  aspect: 1:1            # 1:1 | 4:3 | 16:9
+  force_gdi: false       # force GDI for all cores (overrides force_d3d11)
+  force_d3d11: false     # use D3D11 present path for 2D cores too
+                         # (enables VRR / lower latency, but may tear
+                         # on non-GSync/FreeSync displays)
+
+audio:
+  no_audio: false        # Changes frame timing on some cores/graphics apis
+
+log:
+  pace_log: false        # log audio pacing diagnostics
+  timing_log: false      # log frame timing diagnostics
+  env_trace: false       # log libretro environment calls
+
+hotkeys:
+  # Each hotkey can have both a keyboard binding and a controller binding.
+  # Both are active simultaneously — pressing either triggers the action.
+  cycle_aspect_ratio:
+    keyboard:   F1
+    controller: Back+DPadUp
+  toggle_fullscreen:
+    keyboard:   F11
+    controller: Back+Start
+  quit:
+    keyboard:   Escape
+    controller: Back+DPadDown
+  reset:
+    keyboard:   Ctrl+R
+    controller: Back+DPadLeft
+
+# Controls
+# ---------
+# `universal` is the default mapping applied to every core.
+# Each core listed under `cores:` has its own `use_universal` toggle.
+#   use_universal: true  -> ignore the per-core `controls:` block, use universal
+#   use_universal: false -> use the per-core `controls:` block
+#
+# Every input has separate `keyboard:` and `controller:` bindings. Both are
+# mapped at the same time — either input source will trigger the button.
+#
+# Naming uses Xbox / XInput vocabulary throughout:
+#   Face buttons:  a, b, x, y           (Xbox layout)
+#   D-pad:         dpad_up/down/left/right
+#   Shoulders:     lb, rb
+#   Triggers:      lt, rt
+#   Stick clicks:  lstick, rstick
+#   Left stick:    lstick_up/down/left/right
+#   Right stick:   rstick_up/down/left/right
+#   System:        start, back
+#
+# Keyboard values: SDL/Win32 key names (X, Z, Up, Return, RShift, Space, ...).
+# Controller values (XInput): A, B, X, Y, LB, RB, LT, RT, Back, Start,
+#   LStick, RStick (stick clicks),
+#   DPadUp, DPadDown, DPadLeft, DPadRight,
+#   LStickUp, LStickDown, LStickLeft, LStickRight,
+#   RStickUp, RStickDown, RStickLeft, RStickRight.
+controls:
+  # XInput tuning (applies to all controller bindings)
+  controller:
+    enabled: true
+    player1_index: 0       # XInput user index 0..3
+    stick_deadzone: 8000   # 0..32767 (XInput default ~7849)
+    trigger_threshold: 30  # 0..255 (XInput default 30)
+
+  universal:
+    player1:
+      dpad_up:
+        keyboard:   Up
+        controller: DPadUp
+      dpad_down:
+        keyboard:   Down
+        controller: DPadDown
+      dpad_left:
+        keyboard:   Left
+        controller: DPadLeft
+      dpad_right:
+        keyboard:   Right
+        controller: DPadRight
+      a:
+        keyboard:   X
+        controller: A
+      b:
+        keyboard:   Z
+        controller: B
+      x:
+        keyboard:   S
+        controller: X
+      y:
+        keyboard:   A
+        controller: Y
+      lb:
+        keyboard:   Q
+        controller: LB
+      rb:
+        keyboard:   W
+        controller: RB
+      start:
+        keyboard:   Return
+        controller: Start
+      back:
+        keyboard:   RShift
+        controller: Back
+
+# Per-core settings. `use_universal` controls whether the universal mapping
+# above is used, or the `controls:` block below it.
+cores:
+  snes9x:
+    dll: snes9x_libretro.dll
+    use_universal: true
+    controls:
+      player1:
+        a:
+          keyboard:   X
+          controller: A
+        b:
+          keyboard:   Z
+          controller: B
+        x:
+          keyboard:   S
+          controller: X
+        y:
+          keyboard:   A
+          controller: Y
+        lb:
+          keyboard:   Q
+          controller: LB
+        rb:
+          keyboard:   W
+          controller: RB
+        start:
+          keyboard:   Return
+          controller: Start
+        back:
+          keyboard:   RShift
+          controller: Back
+
+  bsnes:
+    dll: bsnes_libretro.dll
+    use_universal: true
+    controls:
+      player1: {}
+
+  bsnes_mercury:
+    dll: bsnes_mercury_performance_libretro.dll
+    use_universal: true
+    controls:
+      player1: {}
+
+  mesen:
+    dll: mesen_libretro.dll
+    use_universal: true
+    # NES only has A/B/Start/Back — universal's A=X, B=Z are fine.
+    controls:
+      player1:
+        a:
+          keyboard:   X
+          controller: A
+        b:
+          keyboard:   Z
+          controller: B
+        start:
+          keyboard:   Return
+          controller: Start
+        back:
+          keyboard:   RShift
+          controller: Back
+
+  mesen_s:
+    dll: mesen-s_libretro.dll
+    use_universal: true
+    controls:
+      player1: {}
+
+  nestopia:
+    dll: nestopia_libretro.dll
+    use_universal: true
+    controls:
+      player1: {}
+
+  mupen64plus_next:
+    dll: mupen64plus_next_libretro.dll
+    use_universal: false
+    # N64 has a unique layout (C-buttons, Z-trigger). Override the universal map.
+    # Left stick = analog stick, right stick = C-buttons, lt = Z-trigger.
+    controls:
+      player1:
+        lstick_up:
+          keyboard:   Up
+          controller: LStickUp
+        lstick_down:
+          keyboard:   Down
+          controller: LStickDown
+        lstick_left:
+          keyboard:   Left
+          controller: LStickLeft
+        lstick_right:
+          keyboard:   Right
+          controller: LStickRight
+        a:
+          keyboard:   X
+          controller: A
+        b:
+          keyboard:   Z
+          controller: B
+        lb:
+          keyboard:   Q
+          controller: LB
+        rb:
+          keyboard:   W
+          controller: RB
+        lt:                       # Z-trigger
+          keyboard:   Space
+          controller: LT
+        # C-buttons (libretro right stick)
+        rstick_up:
+          keyboard:   I
+          controller: RStickUp
+        rstick_down:
+          keyboard:   K
+          controller: RStickDown
+        rstick_left:
+          keyboard:   J
+          controller: RStickLeft
+        rstick_right:
+          keyboard:   L
+          controller: RStickRight
+        start:
+          keyboard:   Return
+          controller: Start
+
+  parallel_n64:
+    dll: parallel_n64_libretro.dll
+    use_universal: false
+    controls:
+      player1:
+        lstick_up:
+          keyboard:   Up
+          controller: LStickUp
+        lstick_down:
+          keyboard:   Down
+          controller: LStickDown
+        lstick_left:
+          keyboard:   Left
+          controller: LStickLeft
+        lstick_right:
+          keyboard:   Right
+          controller: LStickRight
+        a:
+          keyboard:   X
+          controller: A
+        b:
+          keyboard:   Z
+          controller: B
+        lb:
+          keyboard:   Q
+          controller: LB
+        rb:
+          keyboard:   W
+          controller: RB
+        lt:
+          keyboard:   Space
+          controller: LT
+        rstick_up:
+          keyboard:   I
+          controller: RStickUp
+        rstick_down:
+          keyboard:   K
+          controller: RStickDown
+        rstick_left:
+          keyboard:   J
+          controller: RStickLeft
+        rstick_right:
+          keyboard:   L
+          controller: RStickRight
+        start:
+          keyboard:   Return
+          controller: Start
