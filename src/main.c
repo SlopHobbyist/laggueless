@@ -1053,10 +1053,14 @@ int main(int argc, char **argv) {
         }
     }
     size_t frame_audio = (size_t)(g_dev_rate / fps + 0.5);
-    /* Pacing target: keep about 20 ms buffered in the ring. The WASAPI buffer
-       drains in ~20 ms bursts, so a 20 ms pre-buffer keeps the ring above
-       empty across drain events and reduces per-frame wait-loop jitter. */
-    size_t target_buffered = (size_t)(g_dev_rate * 0.020);
+    /* Pacing target: keep about 30 ms buffered in the ring. Cores deliver
+       audio in per-frame bursts (~16.6 ms at 60 fps), and the WASAPI buffer
+       drains in ~20 ms cycles. 30 ms gives ~13 ms of headroom over the
+       largest single drain/push event, which keeps the ring above empty
+       across jittery delivery without bloating latency. Lower than this
+       (e.g. 20 ms) causes underruns in cores like Mesen that produce one
+       big batch per frame at exactly the device rate. */
+    size_t target_buffered = (size_t)(g_dev_rate * 0.030);
 
     /* Video pacing is QPC absolute-deadline + spin-wait, regardless of audio.
        Audio is kept in sync via a small bias on the resampler ratio (dynamic
@@ -1175,11 +1179,13 @@ int main(int argc, char **argv) {
                 /* Normalized error: -1 = ring empty, 0 = at target, +1 = double target. */
                 double err = (avg_fill - (double)target_buffered) / (double)target_buffered;
                 /* Integral term: tracks the true core-vs-device clock mismatch.
-                   Bound to ±0.1% (~1.7 cents) — observed real mismatch is ~0.03%
-                   so 3x headroom is plenty and pitch stays inaudible. */
+                   Bound to ±0.25% (~4 cents, still inaudible — Mesen targets
+                   the same window). Wider than the original ±0.1% because
+                   cores at identity ratio (Mesen NES @ 48000) need more
+                   headroom to drain a too-full ring within reasonable time. */
                 g_resamp_ratio_bias += 1.0e-6 * err;
-                if (g_resamp_ratio_bias >  0.001) g_resamp_ratio_bias =  0.001;
-                if (g_resamp_ratio_bias < -0.001) g_resamp_ratio_bias = -0.001;
+                if (g_resamp_ratio_bias >  0.0025) g_resamp_ratio_bias =  0.0025;
+                if (g_resamp_ratio_bias < -0.0025) g_resamp_ratio_bias = -0.0025;
                 /* Proportional term: very gentle for inaudible transient response.
                    Max ±0.05% (~0.9 cents) and applied only this frame. */
                 drc_p_term = 0.0001 * err;
