@@ -9,6 +9,7 @@
 #include "core_loader.h"
 #include "audio_wasapi.h"
 #include "render_d3d11.h"
+#include "gl_context.h"
 #include "libretro.h"
 
 /* ---- global state for callbacks (single core, single ROM) ----------------- */
@@ -87,6 +88,44 @@ static void me_log_cb(enum retro_log_level level, const char *fmt, ...) {
     }
 }
 
+/* ---- hardware-rendering state --------------------------------------------
+   For GL cores, the core asks us via SET_HW_RENDER for a GL context, an FBO
+   id (via get_current_framebuffer), and a way to look up GL entry points
+   (via get_proc_address). It then renders into that FBO and signals frames
+   by passing RETRO_HW_FRAME_BUFFER_VALID to retro_video_refresh.
+
+   Step 1 just records the request and installs stub callbacks so we can see
+   what cores ask for via --env-trace. The real GL context, FBO, and frame
+   transport come in later steps. Until then, get_current_framebuffer returns
+   0 (the default framebuffer) — cores that actually try to render will draw
+   nowhere, which is fine for Step 1 (we reject the env call anyway if no
+   GL backend is wired up yet, so cores fall back or refuse to load). */
+static struct retro_hw_render_callback g_hw_render;
+static int g_hw_render_requested = 0;  /* core called SET_HW_RENDER */
+static int g_hw_render_accepted  = 0;  /* and we said yes */
+
+static uintptr_t me_hw_get_current_framebuffer(void) {
+    return (uintptr_t)me_gl_fbo_id();
+}
+
+static retro_proc_address_t me_hw_get_proc_address(const char *sym) {
+    return (retro_proc_address_t)me_gl_get_proc_address(sym);
+}
+
+static const char *hw_context_name(enum retro_hw_context_type t) {
+    switch (t) {
+        case RETRO_HW_CONTEXT_NONE:             return "NONE";
+        case RETRO_HW_CONTEXT_OPENGL:           return "OPENGL";
+        case RETRO_HW_CONTEXT_OPENGLES2:        return "OPENGLES2";
+        case RETRO_HW_CONTEXT_OPENGL_CORE:      return "OPENGL_CORE";
+        case RETRO_HW_CONTEXT_OPENGLES3:        return "OPENGLES3";
+        case RETRO_HW_CONTEXT_OPENGLES_VERSION: return "OPENGLES_VERSION";
+        case RETRO_HW_CONTEXT_VULKAN:           return "VULKAN";
+        case RETRO_HW_CONTEXT_D3D11:            return "D3D11";
+        default:                                return "?";
+    }
+}
+
 /* ---- environment callback ------------------------------------------------- */
 /* Track which unhandled env cmd IDs we've already logged so the trace doesn't
    spam the same call hundreds of times per second. */
@@ -138,12 +177,17 @@ static bool me_environment_cb(unsigned cmd, void *data) {
     unsigned base = cmd & ~RETRO_ENVIRONMENT_EXPERIMENTAL;
     switch (base) {
         case RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY: {
-            static const char *sysdir = "./firmware";
+            /* Resolve to absolute on first use. Some cores (mupen64plus-next
+               in particular) pass this straight into LoadLibrary / fopen
+               for plugins/INIs and break on relative paths. */
+            static char sysdir[MAX_PATH] = {0};
+            if (sysdir[0] == 0) GetFullPathNameA("firmware", MAX_PATH, sysdir, NULL);
             if (data) *(const char **)data = sysdir;
             return true;
         }
         case RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY: {
-            static const char *savedir = "./firmware";
+            static char savedir[MAX_PATH] = {0};
+            if (savedir[0] == 0) GetFullPathNameA("firmware", MAX_PATH, savedir, NULL);
             if (data) *(const char **)data = savedir;
             return true;
         }
@@ -182,6 +226,56 @@ static bool me_environment_cb(unsigned cmd, void *data) {
             }
             me_vars_set(arr);
             if (g_env_trace) { fprintf(stderr, "[env] SET_VARIABLES stored %zu\n", g_var_count); fflush(stderr); }
+            return true;
+        }
+        case RETRO_ENVIRONMENT_SET_HW_RENDER: {     /* 14 */
+            struct retro_hw_render_callback *cb = (struct retro_hw_render_callback *)data;
+            if (!cb) return false;
+            fprintf(stderr,
+                    "[hw] SET_HW_RENDER context_type=%u (%s) version=%u.%u "
+                    "depth=%d stencil=%d bottom_left=%d cache=%d debug=%d\n",
+                    (unsigned)cb->context_type, hw_context_name(cb->context_type),
+                    cb->version_major, cb->version_minor,
+                    (int)cb->depth, (int)cb->stencil, (int)cb->bottom_left_origin,
+                    (int)cb->cache_context, (int)cb->debug_context);
+            fflush(stderr);
+            /* For now accept only OpenGL / OpenGL Core. Vulkan-only cores
+               (e.g. the Vulkan build of mupen64plus-next) will get a clean
+               rejection here and refuse to load — the user should grab a
+               GL build of the core instead. The actual GL context, FBO,
+               and frame transport are built in later steps; until then a
+               core that gets past this point will render nowhere. */
+            if (cb->context_type != RETRO_HW_CONTEXT_OPENGL &&
+                cb->context_type != RETRO_HW_CONTEXT_OPENGL_CORE) {
+                fprintf(stderr,
+                        "[hw] core requires %s; this front-end currently only supports OpenGL.\n"
+                        "[hw] If this is a Vulkan-only build, try the GL build of the same core.\n",
+                        hw_context_name(cb->context_type));
+                fflush(stderr);
+                return false;
+            }
+            g_hw_render = *cb;
+            g_hw_render_requested = 1;
+            int core_profile = (cb->context_type == RETRO_HW_CONTEXT_OPENGL_CORE);
+            if (me_gl_init(core_profile, cb->version_major, cb->version_minor) != 0) {
+                fprintf(stderr, "[hw] GL context creation failed; rejecting SET_HW_RENDER\n");
+                g_hw_render_requested = 0;
+                return false;
+            }
+            g_hw_render_accepted = 1;
+            /* Fill in our side of the contract. get_current_framebuffer is
+               still a stub (returns 0) until Step 3 wires up the real FBO,
+               but get_proc_address is live now — cores that only need to
+               resolve entry points during SET_HW_RENDER (rare) work already. */
+            cb->get_current_framebuffer = me_hw_get_current_framebuffer;
+            cb->get_proc_address        = me_hw_get_proc_address;
+            return true;
+        }
+        case RETRO_ENVIRONMENT_GET_PREFERRED_HW_RENDER: {  /* 56 */
+            /* Cores often query this first to pick which API to request.
+               Steer them to OpenGL since that's what we'll support. */
+            if (data) *(unsigned *)data = RETRO_HW_CONTEXT_OPENGL;
+            if (g_env_trace) { fprintf(stderr, "[env] GET_PREFERRED_HW_RENDER -> OPENGL\n"); fflush(stderr); }
             return true;
         }
         case RETRO_ENVIRONMENT_SET_CONTROLLER_INFO:
@@ -246,6 +340,34 @@ static void me_video_refresh_cb(const void *data, unsigned w, unsigned h, size_t
     if (!data || !g_back) return;
     if (w > g_back_max_w || h > g_back_max_h) return;
     g_frame_w = w; g_frame_h = h;
+    /* HW path: the core drew into our FBO and passes the sentinel
+       RETRO_HW_FRAME_BUFFER_VALID. Read pixels back into g_back so the
+       existing present() path picks them up. Note GL is bottom-up, so
+       the image will appear vertically flipped until Step 5 adds a
+       flip-Y to the D3D11 shader (or we flip during the readback). */
+    if (data == RETRO_HW_FRAME_BUFFER_VALID) {
+        if (!g_hw_render_accepted) return;
+        /* Read into a tightly-packed scratch buffer, then copy row-flipped
+           into g_back (which is laid out top-down at g_back_max_w stride).
+           A shader-side flip would avoid this copy, but it's a few hundred
+           microseconds on modern CPUs at N64 resolutions. */
+        static unsigned char *scratch = NULL;
+        static size_t scratch_cap = 0;
+        size_t need = (size_t)w * h * 4;
+        if (need > scratch_cap) {
+            free(scratch);
+            scratch = (unsigned char *)malloc(need);
+            scratch_cap = need;
+            if (!scratch) { scratch_cap = 0; return; }
+        }
+        me_gl_fbo_readback_bgra(w, h, scratch);
+        for (unsigned y = 0; y < h; y++) {
+            const u32 *src = (const u32 *)(scratch + (h - 1 - y) * w * 4);
+            u32 *dst = g_back + y * g_back_max_w;
+            memcpy(dst, src, (size_t)w * 4);
+        }
+        return;
+    }
     if (g_pixel_format == RETRO_PIXEL_FORMAT_XRGB8888) {
         convert_xrgb8888((const u32 *)data, pitch, w, h);
     } else if (g_pixel_format == RETRO_PIXEL_FORMAT_RGB565) {
@@ -430,8 +552,19 @@ static unsigned char *slurp(const char *path, size_t *out_size) {
 static LONG WINAPI me_unhandled_exception(EXCEPTION_POINTERS *ep) {
     DWORD code = ep && ep->ExceptionRecord ? ep->ExceptionRecord->ExceptionCode : 0;
     void *addr = ep && ep->ExceptionRecord ? ep->ExceptionRecord->ExceptionAddress : NULL;
-    fprintf(stderr, "[crash] unhandled exception 0x%08lx at %p\n",
-            (unsigned long)code, addr);
+    /* Figure out which module the faulting address is in. Helps tell apart
+       a frontend bug from a core bug. */
+    HMODULE mod = NULL;
+    char modname[MAX_PATH] = "?";
+    if (addr && GetModuleHandleExA(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+            GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            (LPCSTR)addr, &mod) && mod) {
+        GetModuleFileNameA(mod, modname, sizeof(modname));
+    }
+    uintptr_t off = mod ? (uintptr_t)addr - (uintptr_t)mod : 0;
+    fprintf(stderr, "[crash] unhandled exception 0x%08lx at %p (%s+0x%llx)\n",
+            (unsigned long)code, addr, modname, (unsigned long long)off);
     fflush(stderr);
     return EXCEPTION_EXECUTE_HANDLER;
 }
@@ -485,7 +618,7 @@ int main(int argc, char **argv) {
                 "  F11  toggle fullscreen\n"
                 "\n"
                 "example:\n"
-                "  %s example-cores\\mesen_libretro.dll example-roms\\\"Super Mario Bros. (World).nes\"\n",
+                "  %s example-cores\\mesen_libretro.dll \"example-roms\\Super Mario Bros. (World).nes\"\n",
                 exe, exe);
             return 0;
         }
@@ -573,6 +706,23 @@ int main(int argc, char **argv) {
     g_back_max_h = av.geometry.max_height ? av.geometry.max_height : av.geometry.base_height;
     g_back = (u32 *)calloc((size_t)g_back_max_w * g_back_max_h, sizeof(u32));
     if (!g_back) { fprintf(stderr, "backbuffer alloc failed\n"); return 1; }
+
+    /* HW path: now that we know max geometry, build the FBO and fire the
+       core's context_reset so it can upload its shaders/VBOs. retro_load_game
+       already returned, but cores designed around hw_render defer all GL
+       resource creation until context_reset — exactly because the frontend
+       may not have a context ready at load time. */
+    if (g_hw_render_accepted) {
+        if (me_gl_fbo_create(g_back_max_w, g_back_max_h,
+                             g_hw_render.depth, g_hw_render.stencil) != 0) {
+            fprintf(stderr, "[hw] FBO creation failed\n");
+            return 1;
+        }
+        if (g_hw_render.context_reset) {
+            fprintf(stderr, "[hw] calling context_reset\n"); fflush(stderr);
+            g_hw_render.context_reset();
+        }
+    }
     g_frame_w = av.geometry.base_width;
     g_frame_h = av.geometry.base_height;
 
@@ -654,6 +804,9 @@ int main(int argc, char **argv) {
         (void)frame_audio; (void)timed_out;
         if (audio_ok && pace_log) fill_before = ME_RING_TOTAL - me_audio_writable_frames();
 
+        /* GL is per-thread; make sure our context is current on this thread
+           before the core does any GL work. Cheap if already current. */
+        if (g_hw_render_accepted) me_gl_make_current();
         core->retro_run();
         present(g_hwnd);
 
@@ -746,8 +899,12 @@ int main(int argc, char **argv) {
     if (audio_ok) me_audio_shutdown();
     if (g_use_d3d11) me_d3d11_shutdown();
 
+    if (g_hw_render_accepted && g_hw_render.context_destroy) {
+        g_hw_render.context_destroy();
+    }
     core->retro_unload_game();
     core->retro_deinit();
+    if (g_hw_render_accepted) me_gl_shutdown();
     free(rom_data);
     free(g_back);
     me_core_unload(core);
