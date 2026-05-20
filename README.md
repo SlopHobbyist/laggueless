@@ -6,7 +6,7 @@
 > Projects like these should clearly disclose as such.
 
 ## Goal
-The goal was to create a libretro core compatible emulator program. Users find RetroArch confusing, so I will force *my* favorite settings so players can focus on simply playing games. It will also have a large focus on lag/delay, and will have gsync/freesync support.
+The goal was to create a libretro core compatible emulator program. Users find RetroArch confusing, so I will force **my** favorite settings so players can focus on simply playing games. All design decisions aim to reduce visual and input lag/delay.
 
 ## Features
 - "integer (pixel-perfect) scaling" similar to bsnes-mt but for all cores
@@ -26,6 +26,10 @@ The goal was to create a libretro core compatible emulator program. Users find R
 `--env-trace` `log libretro environment calls`
 #### Example:
 `build\multi-emulator.exe --env-trace example-cores\mesen_libretro.dll "C:\Users\stewie\Downloads\multi-emulator\multi-emulator\example-roms\Super Mario Bros. (World).nes" 2>&1`
+
+## Cores
+You can download cores here: [https://buildbot.libretro.com/nightly/windows/x86_64/](https://buildbot.libretro.com/nightly/windows/x86_64/)
+
 
 ## License
 
