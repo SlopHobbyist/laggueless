@@ -359,6 +359,8 @@ int main(int argc, char **argv) {
     }
     size_t frame_audio = (size_t)(g_dev_rate / fps + 0.5);
     DWORD fallback_ms = (DWORD)(1000.0 / fps + 0.5);
+    /* Pacing target: keep about 25 ms buffered in the ring. */
+    size_t target_buffered = (size_t)(g_dev_rate * 0.025);
 
     while (me_platform_pump()) {
         if (me_platform_f11_pressed) {
@@ -366,9 +368,15 @@ int main(int argc, char **argv) {
             me_platform_toggle_fullscreen(g_hwnd);
         }
         if (audio_ok) {
-            /* Block (with timeout to keep the message pump alive) until the
-               ring buffer has room for one frame of audio. */
-            me_audio_wait_writable(frame_audio, 100);
+            /* Block until the ring buffer has drained back to the target
+               latency. Wait timeout keeps the message pump responsive. */
+            size_t want_writable = ME_RING_TOTAL - target_buffered;
+            (void)frame_audio;
+            DWORD start = GetTickCount();
+            while (me_audio_writable_frames() < want_writable) {
+                if (GetTickCount() - start >= 100) break;
+                Sleep(1);
+            }
         }
         core->retro_run();
         present(g_hwnd);

@@ -15,8 +15,9 @@ DEFINE_GUID(ME_IID_IMMDeviceEnumerator,  0xA95664D2, 0x9614, 0x4F35, 0xA7,0x46,0
 DEFINE_GUID(ME_IID_IAudioClient,         0x1CB9AD4C, 0xDBFA, 0x4C32, 0xB1,0x78,0xC2,0xF5,0x68,0xA7,0x03,0xB2);
 DEFINE_GUID(ME_IID_IAudioRenderClient,   0xF294ACFC, 0x3146, 0x4483, 0xA7,0xBF,0xAD,0xDC,0xA7,0xC2,0x60,0xE2);
 
-/* Ring buffer holds float32 interleaved stereo at the device rate. */
-#define ME_RING_FRAMES 16384u  /* ~340 ms at 48 kHz */
+/* Ring buffer holds float32 interleaved stereo at the device rate.
+   Capacity comes from the header so callers can reason about latency. */
+#define ME_RING_FRAMES ME_RING_TOTAL
 static float g_ring[ME_RING_FRAMES * 2];
 static volatile unsigned g_ring_read = 0;
 static volatile unsigned g_ring_write = 0;
@@ -150,6 +151,7 @@ void me_audio_shutdown(void) {
 }
 
 unsigned me_audio_device_rate(void) { return g_device_rate; }
+size_t   me_audio_ring_capacity(void) { return ME_RING_FRAMES; }
 
 size_t me_audio_push(const int16_t *data, size_t frames) {
     /* Direct push at device rate (resampling happens in caller). */

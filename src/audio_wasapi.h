@@ -12,6 +12,12 @@ void me_audio_shutdown(void);
 
 unsigned me_audio_device_rate(void);
 
+/* Total usable frames in the ring buffer (so callers can compute "how much
+   should be buffered for X ms of latency"). */
+size_t me_audio_ring_capacity(void);
+
+#define ME_RING_TOTAL 16384u
+
 /* Push interleaved stereo s16 frames into the ring buffer. Returns frames
    actually accepted (may be < frames if buffer full). */
 size_t me_audio_push(const int16_t *data, size_t frames);
