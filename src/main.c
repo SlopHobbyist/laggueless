@@ -679,6 +679,13 @@ static void present(HWND hwnd) {
     int dx = (cw - dw) / 2;
     int dy = (ch - dh) / 2;
 
+    /* Vulkan present path. A3: clear-color only — g_back/integer scaling are
+       ignored. A4 replaces this with the textured-quad upload path. */
+    if (me_vk_is_active()) {
+        me_vk_present_clear();
+        return;
+    }
+
     /* D3D11 flip-model path: HW (GL) cores always, software cores when the
        user opts in via --d3d11. Software cores default to GDI because DWM
        composites it at the desktop refresh — no visible tearing on a
@@ -1192,10 +1199,30 @@ int main(int argc, char **argv) {
         me_platform_toggle_fullscreen(g_hwnd);
     }
 
+    /* Vulkan path takes priority when --vulkan succeeds. If Vulkan init
+       fails, fall through to the normal D3D11/GDI selection below. */
+    int vk_initialized = 0;
+    if (g_force_vulkan) {
+#ifdef ME_HAVE_VULKAN
+        if (me_vk_init(g_hwnd, g_back_max_w, g_back_max_h) == 0) {
+            vk_initialized = 1;
+            if (g_hw_render_accepted) {
+                fprintf(stderr,
+                    "[render] WARNING: --vulkan with a GL hardware core. A3 only clears the\n"
+                    "[render]          screen; the core's GL output is not yet displayed.\n");
+            }
+        } else {
+            fprintf(stderr, "[render] Vulkan init failed; falling back to D3D11/GDI\n");
+        }
+#else
+        printf("[render] --vulkan requested but build has no Vulkan support (set VULKAN_SDK and rebuild)\n");
+#endif
+    }
+
     /* D3D11 flip-model is used for HW (GL) cores by default and for software
        cores when --d3d11 is set. Otherwise software cores stay on GDI: lower
        visible tearing on non-VRR displays. --gdi overrides everything. */
-    if (!force_gdi && (g_hw_render_accepted || force_d3d11)) {
+    if (!vk_initialized && !force_gdi && (g_hw_render_accepted || force_d3d11)) {
         if (me_d3d11_init(g_hwnd, g_back_max_w, g_back_max_h) == 0) {
             g_use_d3d11 = 1;
         } else {
@@ -1203,19 +1230,6 @@ int main(int argc, char **argv) {
         }
     } else if (force_gdi) {
         printf("[render] --gdi forced\n");
-    }
-
-    if (g_force_vulkan) {
-#ifdef ME_HAVE_VULKAN
-        /* A2: init Vulkan instance/device alongside the existing render path.
-           No swapchain yet; the actual frames still go through GDI/D3D11.
-           A3 will replace those once the swapchain is in. */
-        if (me_vk_init(g_hwnd, g_back_max_w, g_back_max_h) != 0) {
-            fprintf(stderr, "[render] Vulkan init failed; existing render path remains active\n");
-        }
-#else
-        printf("[render] --vulkan requested but build has no Vulkan support (set VULKAN_SDK and rebuild)\n");
-#endif
     }
 
     /* Try the WGL_NV_DX_interop2 zero-copy transport. If it fails (driver
