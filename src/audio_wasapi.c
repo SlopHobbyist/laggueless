@@ -5,6 +5,7 @@
 #include <mmdeviceapi.h>
 #include <audioclient.h>
 #include <ksmedia.h>
+#include <avrt.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -49,6 +50,9 @@ static int com_ok(HRESULT hr, const char *where) {
 
 static DWORD WINAPI audio_thread(LPVOID arg) {
     (void)arg;
+    DWORD mm_task_idx = 0;
+    HANDLE mm_task = AvSetMmThreadCharacteristicsW(L"Pro Audio", &mm_task_idx);
+    if (mm_task) AvSetMmThreadPriority(mm_task, AVRT_PRIORITY_HIGH);
     while (!g_quit) {
         DWORD w = WaitForSingleObject(g_ev, 200);
         if (w != WAIT_OBJECT_0) continue;
@@ -83,6 +87,7 @@ static DWORD WINAPI audio_thread(LPVOID arg) {
 
         IAudioRenderClient_ReleaseBuffer(g_rc, avail, 0);
     }
+    if (mm_task) AvRevertMmThreadCharacteristics(mm_task);
     return 0;
 }
 
@@ -112,7 +117,7 @@ int me_audio_init(unsigned *out_device_rate) {
            g_device_rate, g_device_channels,
            (unsigned)mix->wBitsPerSample, (unsigned)mix->wFormatTag);
 
-    REFERENCE_TIME dur = 50 * 10000;
+    REFERENCE_TIME dur = 20 * 10000;
     hr = IAudioClient_Initialize(g_ac, AUDCLNT_SHAREMODE_SHARED,
                                  AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
                                  dur, 0, mix, NULL);

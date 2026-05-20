@@ -1021,10 +1021,10 @@ int main(int argc, char **argv) {
         }
     }
     size_t frame_audio = (size_t)(g_dev_rate / fps + 0.5);
-    /* Pacing target: keep about 50 ms buffered in the ring. The WASAPI buffer
-       drains in ~50 ms bursts, so a 50 ms pre-buffer keeps the ring above
+    /* Pacing target: keep about 20 ms buffered in the ring. The WASAPI buffer
+       drains in ~20 ms bursts, so a 20 ms pre-buffer keeps the ring above
        empty across drain events and reduces per-frame wait-loop jitter. */
-    size_t target_buffered = (size_t)(g_dev_rate * 0.050);
+    size_t target_buffered = (size_t)(g_dev_rate * 0.020);
 
     /* Video pacing is QPC absolute-deadline + spin-wait, regardless of audio.
        Audio is kept in sync via a small bias on the resampler ratio (dynamic
