@@ -7,6 +7,13 @@ video:
   force_d3d11: false     # use D3D11 present path for 2D cores too
                          # (enables VRR / lower latency, but may tear
                          # on non-GSync/FreeSync displays)
+  match_display_hz: true # if the monitor's refresh rate is within ~5%
+                         # of the core's nominal fps, snap the pacing
+                         # deadline to the display's actual period.
+                         # Eliminates residual judder when core Hz ≠
+                         # display Hz (e.g. 60.10 NTSC on a 59.94 panel).
+                         # Audio drift is absorbed by the existing DRC
+                         # resampler, so pitch shift stays inaudible.
 
 audio:
   no_audio: false        # Changes frame timing on some cores/graphics apis

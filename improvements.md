@@ -8,7 +8,7 @@ General lag-reduction improvements across the project.
 
 3. **WASAPI exclusive-mode opt-in.** Shared mode floors at the engine period (~10 ms). Exclusive mode can reach ~3 ms. Add an opt-in toggle in [settings.yaml](settings.yaml) for users with dedicated audio hardware.
 
-4. **Refresh-rate matching / explicit VRR pacing.** Core Hz is currently fixed-computed. Query the monitor's actual refresh rate at startup and either match it or pace to the VRR cadence — eliminates residual judder when core Hz ≠ display Hz.
+4. ~~**Refresh-rate matching / explicit VRR pacing.** Core Hz is currently fixed-computed. Query the monitor's actual refresh rate at startup and either match it or pace to the VRR cadence — eliminates residual judder when core Hz ≠ display Hz.~~ ✅ Opt-in via `video.match_display_hz` in settings.yaml: snaps the pacing deadline to the monitor's actual refresh when within 5% of core fps; audio DRC absorbs the small clock mismatch.
 
 5. **Thread affinity + priority isolation.** Pin the emulation thread to a P-core and the audio thread to a different core. Reduces context-switch jitter on hybrid CPUs (Intel Alder Lake+, AMD with heterogeneous cores).
 

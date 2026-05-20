@@ -60,6 +60,7 @@ typedef struct {
     me_aspect_mode aspect;
     int force_gdi;
     int force_d3d11;
+    int match_display_hz;   /* snap pacing to monitor refresh when within tolerance */
 
     /* audio */
     int no_audio;

@@ -1048,6 +1048,39 @@ int main(int argc, char **argv) {
        core output up to that rate. */
     g_core_rate = (unsigned)(av.timing.sample_rate > 0 ? av.timing.sample_rate : 48000);
     double fps = av.timing.fps > 1.0 ? av.timing.fps : 60.0;
+
+    /* Refresh-rate matching: if the monitor's actual rate is within 5% of the
+       core's nominal fps, snap the pacing deadline to the display's period.
+       Removes residual judder when core Hz ≠ display Hz (e.g. 60.10 vs 59.94)
+       at the cost of a tiny core-vs-device clock mismatch the audio DRC
+       already absorbs. Opt-in via settings.yaml. */
+    if (g_settings.match_display_hz) {
+        HMONITOR mon = MonitorFromWindow(g_hwnd, MONITOR_DEFAULTTONEAREST);
+        MONITORINFOEXA mi = {0};
+        mi.cbSize = sizeof(mi);
+        double disp_hz = 0.0;
+        if (GetMonitorInfoA(mon, (MONITORINFO *)&mi)) {
+            DEVMODEA dm = {0};
+            dm.dmSize = sizeof(dm);
+            if (EnumDisplaySettingsA(mi.szDevice, ENUM_CURRENT_SETTINGS, &dm)
+                && dm.dmDisplayFrequency > 1) {
+                /* dmDisplayFrequency is integer Hz. Treat 59 as 59.94 (NTSC). */
+                disp_hz = (dm.dmDisplayFrequency == 59) ? 59.94 : (double)dm.dmDisplayFrequency;
+            }
+        }
+        if (disp_hz > 1.0) {
+            double ratio = disp_hz / fps;
+            if (ratio > 0.95 && ratio < 1.05) {
+                printf("[pace] match_display_hz: core %.4f -> display %.4f Hz\n", fps, disp_hz);
+                fps = disp_hz;
+            } else {
+                printf("[pace] match_display_hz: display %.4f Hz outside 5%% of core %.4f; keeping core rate\n",
+                       disp_hz, fps);
+            }
+        } else {
+            printf("[pace] match_display_hz: could not query display refresh; keeping core rate\n");
+        }
+    }
     int audio_ok = 0;
     if (no_audio) {
         printf("[audio] disabled via --no-audio; using Sleep-based pacing\n");
