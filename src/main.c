@@ -385,13 +385,17 @@ static void me_video_refresh_cb(const void *data, unsigned w, unsigned h, size_t
         convert_rgb565((const u16 *)data, pitch, w, h);
     }
 }
-/* Linear resampler from core rate -> device rate. State carries the last input
-   frame across calls, plus a fractional phase. */
+/* 4-point cubic Hermite resampler from core rate -> device rate. State carries
+   a 3-sample history (pp, p, n) across calls so the kernel always has 4 points
+   available. Output sample position t∈[0,1) is between p and n. */
 static unsigned g_core_rate = 0;
 static unsigned g_dev_rate  = 0;
 static int      g_audio_active = 0; /* 1 once me_audio_init has succeeded */
-static double   g_resamp_phase = 0.0; /* 0..1 position between prev and next input frame */
-static int16_t  g_resamp_prev_l = 0, g_resamp_prev_r = 0;
+static double   g_resamp_phase = 0.0; /* 0..1 position between p and n */
+static int16_t  g_resamp_pp_l = 0, g_resamp_pp_r = 0; /* sample at t-2 */
+static int16_t  g_resamp_p_l  = 0, g_resamp_p_r  = 0; /* sample at t-1 */
+static int16_t  g_resamp_n_l  = 0, g_resamp_n_r  = 0; /* sample at t (current right neighbor) */
+static int      g_resamp_primed = 0; /* set once we have at least one valid n */
 /* Dynamic rate control: integral bias (slow, persistent — tracks the true
    core-vs-device clock offset) plus a proportional bias (small, transient —
    set once per video frame for disturbance rejection). Total |bias| ≤ 0.65%
@@ -399,6 +403,15 @@ static int16_t  g_resamp_prev_l = 0, g_resamp_prev_r = 0;
    duplicated to maintain sync. */
 static double   g_resamp_ratio_bias = 0.0; /* integral term, persisted */
 static double   g_resamp_p_bias     = 0.0; /* proportional, updated per frame */
+
+static inline float hermite4(float pp, float p, float n, float nn, float t) {
+    /* Catmull-Rom flavor of 4-point cubic Hermite. */
+    float c0 = p;
+    float c1 = 0.5f * (n - pp);
+    float c2 = pp - 2.5f*p + 2.0f*n - 0.5f*nn;
+    float c3 = 0.5f*(nn - pp) + 1.5f*(p - n);
+    return ((c3*t + c2)*t + c1)*t + c0;
+}
 
 static void resample_and_push(const int16_t *in, size_t in_frames) {
     if (!g_audio_active || !g_dev_rate || !g_core_rate || in_frames == 0) return;
@@ -408,14 +421,29 @@ static void resample_and_push(const int16_t *in, size_t in_frames) {
     int16_t out[CHUNK * 2];
     size_t out_n = 0;
     double phase = g_resamp_phase;
-    int16_t pl = g_resamp_prev_l, pr = g_resamp_prev_r;
-    for (size_t i = 0; i < in_frames; i++) {
-        int16_t nl = in[i*2 + 0];
-        int16_t nr = in[i*2 + 1];
+    int16_t pp_l = g_resamp_pp_l, pp_r = g_resamp_pp_r;
+    int16_t p_l  = g_resamp_p_l,  p_r  = g_resamp_p_r;
+    int16_t n_l  = g_resamp_n_l,  n_r  = g_resamp_n_r;
+
+    /* On the very first call we have no real n yet; seed it from in[0] so the
+       loop below has a valid right neighbor before stepping nn forward. */
+    size_t i0 = 0;
+    if (!g_resamp_primed) {
+        n_l = in[0]; n_r = in[1];
+        g_resamp_primed = 1;
+        i0 = 1; /* in[0] has been absorbed as n */
+    }
+
+    for (size_t i = i0; i < in_frames; i++) {
+        /* nn = the new sample arriving now; it becomes n after we drain phase. */
+        int16_t nn_l = in[i*2 + 0];
+        int16_t nn_r = in[i*2 + 1];
         while (phase < 1.0) {
-            float fl = pl + (nl - pl) * (float)phase;
-            float fr = pr + (nr - pr) * (float)phase;
-            int il = (int)fl, ir = (int)fr;
+            float t = (float)phase;
+            float fl = hermite4((float)pp_l, (float)p_l, (float)n_l, (float)nn_l, t);
+            float fr = hermite4((float)pp_r, (float)p_r, (float)n_r, (float)nn_r, t);
+            int il = (int)(fl + (fl >= 0.0f ? 0.5f : -0.5f));
+            int ir = (int)(fr + (fr >= 0.0f ? 0.5f : -0.5f));
             if (il >  32767) il =  32767; else if (il < -32768) il = -32768;
             if (ir >  32767) ir =  32767; else if (ir < -32768) ir = -32768;
             out[out_n*2 + 0] = (int16_t)il;
@@ -425,12 +453,16 @@ static void resample_and_push(const int16_t *in, size_t in_frames) {
             phase += step;
         }
         phase -= 1.0;
-        pl = nl; pr = nr;
+        /* Shift the 4-point window forward by one input sample. */
+        pp_l = p_l;  pp_r = p_r;
+        p_l  = n_l;  p_r  = n_r;
+        n_l  = nn_l; n_r  = nn_r;
     }
     if (out_n) me_audio_push(out, out_n);
-    g_resamp_phase  = phase;
-    g_resamp_prev_l = pl;
-    g_resamp_prev_r = pr;
+    g_resamp_phase = phase;
+    g_resamp_pp_l = pp_l; g_resamp_pp_r = pp_r;
+    g_resamp_p_l  = p_l;  g_resamp_p_r  = p_r;
+    g_resamp_n_l  = n_l;  g_resamp_n_r  = n_r;
 }
 
 static void me_audio_sample_cb(int16_t l, int16_t r) {
@@ -1124,19 +1156,36 @@ int main(int argc, char **argv) {
         if (audio_ok) {
             size_t fill = ME_RING_TOTAL - me_audio_writable_frames();
             if (pace_log) fill_after = fill;
-            /* Normalized error: -1 = ring empty, 0 = at target, +1 = double target. */
-            double err = ((double)fill - (double)target_buffered) / (double)target_buffered;
-            /* Integral term: tracks the true core-vs-device clock mismatch.
-               Bound to ±0.1% (~1.7 cents) — observed real mismatch is ~0.03%
-               so 3x headroom is plenty and pitch stays inaudible. */
-            g_resamp_ratio_bias += 1.0e-6 * err;
-            if (g_resamp_ratio_bias >  0.001) g_resamp_ratio_bias =  0.001;
-            if (g_resamp_ratio_bias < -0.001) g_resamp_ratio_bias = -0.001;
-            /* Proportional term: very gentle for inaudible transient response.
-               Max ±0.05% (~0.9 cents) and applied only this frame. */
-            drc_p_term = 0.0001 * err;
-            if (drc_p_term >  0.0005) drc_p_term =  0.0005;
-            if (drc_p_term < -0.0005) drc_p_term = -0.0005;
+
+            /* 60-frame moving average of ring fill. Reacting to instantaneous
+               fill makes the rate bias chase per-frame noise and produces an
+               audible pitch wobble. Averaging over ~1 second smooths that out
+               while still tracking the true core-vs-device clock drift. */
+            static size_t fill_hist[60];
+            static int    fill_hist_idx = 0;
+            static int    fill_hist_filled = 0;
+            fill_hist[fill_hist_idx] = fill;
+            fill_hist_idx = (fill_hist_idx + 1) % 60;
+            if (fill_hist_idx == 0) fill_hist_filled = 1;
+
+            if (fill_hist_filled) {
+                uint64_t sum = 0;
+                for (int k = 0; k < 60; k++) sum += fill_hist[k];
+                double avg_fill = (double)sum / 60.0;
+                /* Normalized error: -1 = ring empty, 0 = at target, +1 = double target. */
+                double err = (avg_fill - (double)target_buffered) / (double)target_buffered;
+                /* Integral term: tracks the true core-vs-device clock mismatch.
+                   Bound to ±0.1% (~1.7 cents) — observed real mismatch is ~0.03%
+                   so 3x headroom is plenty and pitch stays inaudible. */
+                g_resamp_ratio_bias += 1.0e-6 * err;
+                if (g_resamp_ratio_bias >  0.001) g_resamp_ratio_bias =  0.001;
+                if (g_resamp_ratio_bias < -0.001) g_resamp_ratio_bias = -0.001;
+                /* Proportional term: very gentle for inaudible transient response.
+                   Max ±0.05% (~0.9 cents) and applied only this frame. */
+                drc_p_term = 0.0001 * err;
+                if (drc_p_term >  0.0005) drc_p_term =  0.0005;
+                if (drc_p_term < -0.0005) drc_p_term = -0.0005;
+            }
         }
         g_resamp_p_bias = drc_p_term;
 
