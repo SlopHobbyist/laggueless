@@ -69,3 +69,4 @@ prompts/
 .prompts/
 /example-cores/*
 /example-roms/*
+/firmware/*

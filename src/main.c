@@ -29,6 +29,33 @@ static const char *g_aspect_names[3] = { "1:1", "4:3", "16:9" };
 static const int g_aspect_x[3] = { 1, 4, 16 };
 static const int g_aspect_y[3] = { 1, 3,  9 };
 
+/* Set when a core's log message looks like a missing-firmware/BIOS error.
+   Cores typically continue running but the game hangs at first use of the
+   missing chip; surfacing this prominently makes the cause obvious. */
+static int g_firmware_warned = 0;
+
+static int looks_like_firmware_error(const char *s) {
+    if (!s) return 0;
+    /* Case-insensitive substring search for any of a few generic phrases.
+       Different cores phrase it differently ("firmware file", "BIOS file
+       not found", "missing BIOS", "required ROM"); these cover the common
+       formulations across SNES coprocessors, GBA BIOS, PSX/Saturn BIOS,
+       N64 64DD IPL, etc. */
+    static const char *needles[] = {
+        "firmware", "BIOS", "bios", "Could not find", "required ROM",
+        "not found in system", NULL
+    };
+    for (const char **n = needles; *n; n++) {
+        const char *p = s;
+        size_t nl = strlen(*n);
+        while (*p) {
+            if (_strnicmp(p, *n, nl) == 0) return 1;
+            p++;
+        }
+    }
+    return 0;
+}
+
 /* ---- log callback --------------------------------------------------------- */
 static void me_log_cb(enum retro_log_level level, const char *fmt, ...) {
     const char *tag = "?";
@@ -39,8 +66,25 @@ static void me_log_cb(enum retro_log_level level, const char *fmt, ...) {
         case RETRO_LOG_ERROR: tag = "ERR"; break;
         default: break;
     }
-    fprintf(stderr, "[core:%s] ", tag);
-    va_list ap; va_start(ap, fmt); vfprintf(stderr, fmt, ap); va_end(ap);
+    /* Format once into a buffer so we can both print it and scan it. */
+    char buf[1024];
+    va_list ap; va_start(ap, fmt);
+    int n = vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    if (n < 0) { fprintf(stderr, "[core:%s] (format error)\n", tag); return; }
+    fprintf(stderr, "[core:%s] %s", tag, buf);
+    /* Heuristic: a "could not find ... .rom" / "firmware missing" style line.
+       Print a prominent warning the first time and remember so we can also
+       surface it at exit if the game gets stuck. */
+    if (!g_firmware_warned && looks_like_firmware_error(buf)) {
+        g_firmware_warned = 1;
+        fprintf(stderr,
+                "[firmware] WARNING: the core reported a missing firmware/BIOS file.\n"
+                "[firmware] The game may freeze or behave incorrectly when it tries to use\n"
+                "[firmware] the missing chip. Place the required file in the system\n"
+                "[firmware] directory (./firmware) and restart.\n");
+        fflush(stderr);
+    }
 }
 
 /* ---- environment callback ------------------------------------------------- */
@@ -94,12 +138,12 @@ static bool me_environment_cb(unsigned cmd, void *data) {
     unsigned base = cmd & ~RETRO_ENVIRONMENT_EXPERIMENTAL;
     switch (base) {
         case RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY: {
-            static const char *sysdir = ".";
+            static const char *sysdir = "./firmware";
             if (data) *(const char **)data = sysdir;
             return true;
         }
         case RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY: {
-            static const char *savedir = ".";
+            static const char *savedir = "./firmware";
             if (data) *(const char **)data = savedir;
             return true;
         }
