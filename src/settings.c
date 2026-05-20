@@ -303,6 +303,7 @@ int me_settings_load(const char *path, me_settings *out) {
     if (logn) {
         out->pace_log   = scalar_bool(map_get(&doc, logn, "pace_log"),   out->pace_log);
         out->timing_log = scalar_bool(map_get(&doc, logn, "timing_log"), out->timing_log);
+        out->latency_log = scalar_bool(map_get(&doc, logn, "latency_log"), out->latency_log);
         out->env_trace  = scalar_bool(map_get(&doc, logn, "env_trace"),  out->env_trace);
     }
 

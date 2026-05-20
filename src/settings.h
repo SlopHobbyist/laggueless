@@ -73,6 +73,7 @@ typedef struct {
     /* log */
     int pace_log;
     int timing_log;
+    int latency_log;       /* per-stage latency breakdown: poll/core/present/wait */
     int env_trace;
 
     /* hotkeys (keyboard only — controller bindings parsed but unused for now) */

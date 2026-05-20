@@ -7,7 +7,7 @@ video:
   force_d3d11: false     # use D3D11 present path for 2D cores too
                          # (enables VRR / lower latency, but may tear
                          # on non-GSync/FreeSync displays)
-  match_display_hz: true # if the monitor's refresh rate is within ~5%
+  match_display_hz: false # if the monitor's refresh rate is within ~5%
                          # of the core's nominal fps, snap the pacing
                          # deadline to the display's actual period.
                          # Eliminates residual judder when core Hz ≠
@@ -30,9 +30,13 @@ runahead:
   frames: 0              # 0 disables; clamped to 0..10
 
 log:
-  pace_log: false        # log audio pacing diagnostics
-  timing_log: false      # log frame timing diagnostics
-  env_trace: false       # log libretro environment calls
+  pace_log: true        # log audio pacing diagnostics
+  timing_log: true      # log frame timing diagnostics
+  latency_log: true     # per-stage latency breakdown each second:
+                         # input poll → core run → present → pacing wait
+                         # (+ DXGI backpressure wait when D3D11 is active).
+                         # Includes frame index so regressions are easy to spot.
+  env_trace: true       # log libretro environment calls
 
 hotkeys:
   # Each hotkey can have both a keyboard binding and a controller binding.
@@ -44,7 +48,7 @@ hotkeys:
     keyboard:   F11
     controller: Back+Start
   quit:
-    keyboard:   Escape
+    keyboard:   asdjflkasdf
     controller: Back+DPadDown
   reset:
     keyboard:   Ctrl+R

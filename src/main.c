@@ -25,6 +25,14 @@ static unsigned long g_video_calls = 0;
 static HWND g_hwnd = NULL;
 static int  g_use_d3d11 = 0;
 
+/* Latency telemetry: timestamp of the most recent input poll callback. Read
+   by the main loop to split retro_run() into "before poll" and "after poll"
+   stages. Cores call poll exactly once per retro_run(), so this is a clean
+   split point. 0 means "no poll happened this retro_run()" (some cores
+   may skip polls during run-ahead's muted advance). */
+static int           g_latency_log = 0;
+static LARGE_INTEGER g_poll_qpc = {0};
+
 /* Aspect mode: 0 = 1:1 (square pixels), 1 = 4:3, 2 = 16:9. F1 cycles. */
 static int g_aspect_mode = 0;
 static const char *g_aspect_names[3] = { "1:1", "4:3", "16:9" };
@@ -133,6 +141,63 @@ static const char *hw_context_name(enum retro_hw_context_type t) {
 static unsigned char g_env_seen[256];
 static int g_env_trace = 0; /* set by --env-trace flag */
 
+/* Diagnostic log files. Hot-path messages (pace/timing/latency/env) used to
+   go to stdout/stderr — but a printf to the Windows console host costs an
+   IPC round-trip per call, enough to spike a frame past its deadline when
+   several streams are enabled at once. Route each stream to its own file
+   under ./logs/ with line buffering so completed lines land quickly without
+   per-write flushes. NULL = closed; lazily opened on first message. */
+typedef enum {
+    ME_LOG_PACE = 0,
+    ME_LOG_TIMING,
+    ME_LOG_LATENCY,
+    ME_LOG_ENV,
+    ME_LOG_COUNT
+} me_log_stream;
+static const char *g_log_names[ME_LOG_COUNT] = { "pace", "timing", "latency", "env" };
+static FILE *g_log_files[ME_LOG_COUNT] = {0};
+static int   g_log_dir_tried = 0;
+
+static FILE *me_log_open(me_log_stream s) {
+    if (s >= ME_LOG_COUNT) return NULL;
+    if (g_log_files[s]) return g_log_files[s];
+    if (!g_log_dir_tried) {
+        g_log_dir_tried = 1;
+        CreateDirectoryA("logs", NULL); /* ignore ALREADY_EXISTS */
+    }
+    char path[64];
+    snprintf(path, sizeof(path), "logs\\%s.log", g_log_names[s]);
+    FILE *f = fopen(path, "a");
+    if (!f) {
+        fprintf(stderr, "[log] cannot open %s; falling back to stderr for %s stream\n",
+                path, g_log_names[s]);
+        return NULL;
+    }
+    setvbuf(f, NULL, _IOLBF, 4096);
+    /* Append-mode files accumulate across runs; this header makes it obvious
+       where one session ends and the next begins. */
+    SYSTEMTIME t; GetLocalTime(&t);
+    fprintf(f, "\n---- session %04u-%02u-%02u %02u:%02u:%02u ----\n",
+            t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond);
+    g_log_files[s] = f;
+    return f;
+}
+
+static void me_log(me_log_stream s, const char *fmt, ...) {
+    FILE *f = me_log_open(s);
+    if (!f) f = stderr;
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(f, fmt, ap);
+    va_end(ap);
+}
+
+static void me_log_close_all(void) {
+    for (int i = 0; i < ME_LOG_COUNT; i++) {
+        if (g_log_files[i]) { fclose(g_log_files[i]); g_log_files[i] = NULL; }
+    }
+}
+
 /* Core options storage. SET_VARIABLES hands us a { key, "Desc; v1|v2|v3" }
    array terminated by { NULL, NULL }. At SET time we walk it once, strdup
    each default ("v1") into a parallel array. GET_VARIABLE then returns the
@@ -216,17 +281,16 @@ static bool me_environment_cb(unsigned cmd, void *data) {
         case RETRO_ENVIRONMENT_SET_VARIABLES: {     /* 16 */
             const struct retro_variable *arr = (const struct retro_variable *)data;
             if (g_env_trace) {
-                fprintf(stderr, "[env] SET_VARIABLES data=%p\n", (const void *)arr); fflush(stderr);
+                me_log(ME_LOG_ENV, "[env] SET_VARIABLES data=%p\n", (const void *)arr);
                 if (arr) {
                     for (const struct retro_variable *v = arr; v->key; v++) {
-                        fprintf(stderr, "[env]   key=%s value=%s\n",
-                                v->key, v->value ? v->value : "(null)");
+                        me_log(ME_LOG_ENV, "[env]   key=%s value=%s\n",
+                               v->key, v->value ? v->value : "(null)");
                     }
-                    fflush(stderr);
                 }
             }
             me_vars_set(arr);
-            if (g_env_trace) { fprintf(stderr, "[env] SET_VARIABLES stored %zu\n", g_var_count); fflush(stderr); }
+            if (g_env_trace) me_log(ME_LOG_ENV, "[env] SET_VARIABLES stored %zu\n", g_var_count);
             return true;
         }
         case RETRO_ENVIRONMENT_SET_HW_RENDER: {     /* 14 */
@@ -276,31 +340,30 @@ static bool me_environment_cb(unsigned cmd, void *data) {
             /* Cores often query this first to pick which API to request.
                Steer them to OpenGL since that's what we'll support. */
             if (data) *(unsigned *)data = RETRO_HW_CONTEXT_OPENGL;
-            if (g_env_trace) { fprintf(stderr, "[env] GET_PREFERRED_HW_RENDER -> OPENGL\n"); fflush(stderr); }
+            if (g_env_trace) me_log(ME_LOG_ENV, "[env] GET_PREFERRED_HW_RENDER -> OPENGL\n");
             return true;
         }
         case RETRO_ENVIRONMENT_SET_CONTROLLER_INFO:
-            if (g_env_trace) { fprintf(stderr, "[env] SET_CONTROLLER_INFO -> true\n"); fflush(stderr); }
+            if (g_env_trace) me_log(ME_LOG_ENV, "[env] SET_CONTROLLER_INFO -> true\n");
             return true;  /* 35 */
         case RETRO_ENVIRONMENT_SET_CONTENT_INFO_OVERRIDE:
             /* We don't actually apply the override (we use the original
                need_fullpath from get_system_info), so report false. Saying
                true puts cores into a state where they expect us to honor it. */
-            if (g_env_trace) { fprintf(stderr, "[env] SET_CONTENT_INFO_OVERRIDE -> false\n"); fflush(stderr); }
+            if (g_env_trace) me_log(ME_LOG_ENV, "[env] SET_CONTENT_INFO_OVERRIDE -> false\n");
             return false; /* 65 */
         /* Report we only support legacy core options (v0). Cores using newer
            option formats fall back to v0 SET_VARIABLES, which we accept above. */
         case RETRO_ENVIRONMENT_GET_CORE_OPTIONS_VERSION: { /* 52 */
             if (data) *(unsigned *)data = 0;
-            if (g_env_trace) { fprintf(stderr, "[env] GET_CORE_OPTIONS_VERSION -> 0\n"); fflush(stderr); }
+            if (g_env_trace) me_log(ME_LOG_ENV, "[env] GET_CORE_OPTIONS_VERSION -> 0\n");
             return true;
         }
         default:
             if (g_env_trace && base < 256 && !g_env_seen[base]) {
                 g_env_seen[base] = 1;
-                fprintf(stderr, "[env] unhandled cmd %u%s -> false\n",
-                        base, (cmd & RETRO_ENVIRONMENT_EXPERIMENTAL) ? " (experimental)" : "");
-                fflush(stderr);
+                me_log(ME_LOG_ENV, "[env] unhandled cmd %u%s -> false\n",
+                       base, (cmd & RETRO_ENVIRONMENT_EXPERIMENTAL) ? " (experimental)" : "");
             }
             return false;
     }
@@ -526,6 +589,7 @@ static int input_down(me_input_id id) {
 }
 
 static void me_input_poll_cb(void) {
+    if (g_latency_log) QueryPerformanceCounter(&g_poll_qpc);
     /* Don't read keys when our window isn't foreground. */
     if (GetForegroundWindow() != g_hwnd) {
         memset(g_pad1, 0, sizeof(g_pad1));
@@ -807,6 +871,7 @@ int main(int argc, char **argv) {
     int force_d3d11 = g_settings.force_d3d11;
     int pace_log    = g_settings.pace_log;
     int timing_log  = g_settings.timing_log;
+    int latency_log = g_settings.latency_log;
     g_aspect_mode   = (int)g_settings.aspect;
     g_env_trace     = g_settings.env_trace;
 
@@ -819,6 +884,7 @@ int main(int argc, char **argv) {
         else if (strcmp(argv[i], "--d3d11")    == 0) force_d3d11 = 1;
         else if (strcmp(argv[i], "--pace-log") == 0) pace_log  = 1;
         else if (strcmp(argv[i], "--timing-log") == 0) timing_log = 1;
+        else if (strcmp(argv[i], "--latency-log") == 0) latency_log = 1;
         else if (strcmp(argv[i], "--env-trace") == 0) g_env_trace = 1;
         else if (strcmp(argv[i], "-h")      == 0 || strcmp(argv[i], "--h")     == 0 ||
                 strcmp(argv[i], "-help")    == 0 || strcmp(argv[i], "--help")   == 0 ||
@@ -846,6 +912,7 @@ int main(int argc, char **argv) {
                 "                                  on non-GSync/FreeSync displays)\n"
                 "  --pace-log                   log audio pacing diagnostics\n"
                 "  --timing-log                 log frame timing diagnostics\n"
+                "  --latency-log                log per-stage latency (poll/core/present/wait)\n"
                 "  --env-trace                  log libretro environment calls\n"
                 "\n"
                 "arguments:\n"
@@ -1159,7 +1226,25 @@ int main(int argc, char **argv) {
         }
     }
 
+    g_latency_log = latency_log;
+    /* Per-stage latency telemetry: split each iteration into
+         backpressure_wait (DXGI waitable)
+         pre_poll          (top of retro_run until the core polls input)
+         post_poll         (rest of retro_run after the poll callback)
+         present           (frame upload + Present)
+         pace_wait         (Sleep + spin to absolute QPC deadline)
+       Sums and a frame-N marker are printed each second. Hot-path cost
+       when disabled: one branch in me_input_poll_cb and at each
+       checkpoint — negligible. */
+    double ll_pre_sum = 0, ll_post_sum = 0, ll_present_sum = 0;
+    double ll_pace_sum = 0, ll_back_sum = 0;
+    double ll_iter_max = 0;
+    unsigned ll_iters = 0, ll_missed_polls = 0;
+    LARGE_INTEGER ll_window_start; QueryPerformanceCounter(&ll_window_start);
+    unsigned long ll_window_first_frame = 0;
+
     while (me_platform_pump()) {
+        LARGE_INTEGER ll_t0; if (latency_log) QueryPerformanceCounter(&ll_t0);
         /* DXGI 1.3 waitable swap chain backpressure: with max frame latency
            pinned to 1, this blocks until the previous Present has been
            consumed by the compositor. Keeps CPU exactly one frame ahead of
@@ -1167,6 +1252,7 @@ int main(int argc, char **argv) {
            and the GDI present path return 0 here and rely on the QPC tail
            below for pacing. */
         if (g_use_d3d11) me_d3d11_wait_for_present(1000);
+        LARGE_INTEGER ll_t_after_wait; if (latency_log) QueryPerformanceCounter(&ll_t_after_wait);
         const me_kb_binding *hk;
         hk = &g_settings.hk_toggle_fullscreen;
         if (me_platform_key_pressed(hk->vk, hk->ctrl, hk->alt, hk->shift)) {
@@ -1201,6 +1287,8 @@ int main(int argc, char **argv) {
                while the core renders. No-op if interop is inactive. */
             me_gl_interop_lock();
         }
+        if (latency_log) g_poll_qpc.QuadPart = 0;
+        LARGE_INTEGER ll_t_before_run; if (latency_log) QueryPerformanceCounter(&ll_t_before_run);
         if (ra_frames > 0) {
             /* Run-ahead, single-instance technique. The core is currently at
                frame F (the displayed frame from last iteration). To show the
@@ -1239,7 +1327,9 @@ int main(int argc, char **argv) {
             core->retro_run();
         }
         if (g_hw_render_accepted) me_gl_interop_unlock();
+        LARGE_INTEGER ll_t_after_run; if (latency_log) QueryPerformanceCounter(&ll_t_after_run);
         present(g_hwnd);
+        LARGE_INTEGER ll_t_after_present; if (latency_log) QueryPerformanceCounter(&ll_t_after_present);
 
         /* SRAM dirty-poll: catches in-game saves so a force-quit shortly after
            the user hits "Save" still persists the write. 1s cadence + one-tick
@@ -1336,10 +1426,52 @@ int main(int argc, char **argv) {
             double elapsed_ms = (double)(now.QuadPart - qstart.QuadPart) * 1000.0 / (double)qpf.QuadPart;
             double expected_ms = (double)frame_count * frame_period_ms;
             double drift_ms = elapsed_ms - expected_ms;
-            printf("[timing] frame %lu expected=%.3f ms actual=%.3f ms drift=%+.3f ms (%+.3f us/frame) bias=%+.4f%%\n",
+            me_log(ME_LOG_TIMING,
+                   "[timing] frame %lu expected=%.3f ms actual=%.3f ms drift=%+.3f ms (%+.3f us/frame) bias=%+.4f%%\n",
                    frame_count, expected_ms, elapsed_ms, drift_ms,
                    (drift_ms * 1000.0) / (double)frame_count,
                    g_resamp_ratio_bias * 100.0);
+        }
+        if (latency_log) {
+            LARGE_INTEGER ll_t_end; QueryPerformanceCounter(&ll_t_end);
+            double q = 1000.0 / (double)qpf.QuadPart;
+            double d_back    = (double)(ll_t_after_wait.QuadPart    - ll_t0.QuadPart)            * q;
+            double d_run     = (double)(ll_t_after_run.QuadPart     - ll_t_before_run.QuadPart)  * q;
+            double d_present = (double)(ll_t_after_present.QuadPart - ll_t_after_run.QuadPart)   * q;
+            double d_pace    = (double)(ll_t_end.QuadPart           - ll_t_after_present.QuadPart) * q;
+            double d_iter    = (double)(ll_t_end.QuadPart           - ll_t0.QuadPart)            * q;
+            double d_pre = d_run, d_post = 0;
+            if (g_poll_qpc.QuadPart != 0
+                && g_poll_qpc.QuadPart >= ll_t_before_run.QuadPart
+                && g_poll_qpc.QuadPart <= ll_t_after_run.QuadPart) {
+                d_pre  = (double)(g_poll_qpc.QuadPart      - ll_t_before_run.QuadPart) * q;
+                d_post = (double)(ll_t_after_run.QuadPart  - g_poll_qpc.QuadPart)      * q;
+            } else {
+                ll_missed_polls++;
+            }
+            ll_back_sum    += d_back;
+            ll_pre_sum     += d_pre;
+            ll_post_sum    += d_post;
+            ll_present_sum += d_present;
+            ll_pace_sum    += d_pace;
+            if (d_iter > ll_iter_max) ll_iter_max = d_iter;
+            if (ll_iters == 0) ll_window_first_frame = frame_count;
+            ll_iters++;
+            double window_ms = (double)(ll_t_end.QuadPart - ll_window_start.QuadPart) * q;
+            if (window_ms >= 1000.0 && ll_iters > 0) {
+                double n = (double)ll_iters;
+                me_log(ME_LOG_LATENCY,
+                       "[latency] frame %lu..%lu (n=%u) avg ms: back=%.3f pre_poll=%.3f post_poll=%.3f present=%.3f pace=%.3f | iter_max=%.3f missed_polls=%u\n",
+                       ll_window_first_frame, frame_count, ll_iters,
+                       ll_back_sum / n, ll_pre_sum / n, ll_post_sum / n,
+                       ll_present_sum / n, ll_pace_sum / n,
+                       ll_iter_max, ll_missed_polls);
+                ll_back_sum = ll_pre_sum = ll_post_sum = 0;
+                ll_present_sum = ll_pace_sum = 0;
+                ll_iter_max = 0;
+                ll_iters = 0; ll_missed_polls = 0;
+                ll_window_start = ll_t_end;
+            }
         }
         if (pace_log) {
             LARGE_INTEGER now;
@@ -1359,7 +1491,8 @@ int main(int argc, char **argv) {
             if (timed_out) pl_timeouts++;
             double window_ms = (double)(now.QuadPart - pl_window_start.QuadPart) * 1000.0 / (double)qpf.QuadPart;
             if (window_ms >= 1000.0 && pl_iters > 0) {
-                printf("[pace] %ufps gap min/avg/max=%.1f/%.1f/%.1f ms fill_before(min/avg/max)=%zu/%zu/%zu fill_after=%zu/%zu/%zu bias=%+.4f%%\n",
+                me_log(ME_LOG_PACE,
+                       "[pace] %ufps gap min/avg/max=%.1f/%.1f/%.1f ms fill_before(min/avg/max)=%zu/%zu/%zu fill_after=%zu/%zu/%zu bias=%+.4f%%\n",
                        pl_iters,
                        pl_gap_min, pl_gap_sum / pl_iters, pl_gap_max,
                        pl_fill_before_min, pl_fill_before_sum / pl_iters, pl_fill_before_max,
@@ -1390,5 +1523,6 @@ int main(int argc, char **argv) {
     free(g_back);
     me_core_unload(core);
     me_settings_free(&g_settings);
+    me_log_close_all();
     return 0;
 }
