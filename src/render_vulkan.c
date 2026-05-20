@@ -15,12 +15,24 @@
 #define FRAMES_IN_FLIGHT 2
 #define MAX_SWAPCHAIN_IMAGES 8
 
+/* Per-frame-slot CPU/GPU pacing. The fence keeps CPU at most FRAMES_IN_FLIGHT
+   ahead of GPU; the command buffer is rotated so we never edit one the GPU
+   is still consuming. image_available is also per-frame-slot — it's signaled
+   by vkAcquireNextImageKHR and consumed by the next submit, both gated by
+   the fence we wait on at the start of each frame, so reuse is safe. */
 typedef struct {
-    VkSemaphore image_available;
-    VkSemaphore render_finished;
-    VkFence     in_flight;
+    VkFence         in_flight;
     VkCommandBuffer cmd;
+    VkSemaphore     image_available;
 } FrameSync;
+
+/* render_finished must be per-swapchain-image. Binary semaphores attached to
+   a presented image stay "in use" until that image is re-acquired, which is
+   not aligned with our FRAMES_IN_FLIGHT rotation when swapchain image count
+   exceeds it. See https://docs.vulkan.org/guide/latest/swapchain_semaphore_reuse.html */
+typedef struct {
+    VkSemaphore render_finished;
+} ImageSync;
 
 static struct {
     int            active;
@@ -44,6 +56,7 @@ static struct {
 
     VkCommandPool  cmd_pool;
     FrameSync      frames[FRAMES_IN_FLIGHT];
+    ImageSync      image_sync[MAX_SWAPCHAIN_IMAGES];
     uint32_t       frame_index; /* which of FRAMES_IN_FLIGHT we're on */
 
     int            swapchain_needs_recreate;
@@ -233,14 +246,13 @@ static int create_frame_sync(void) {
         fprintf(stderr, "[vk] vkCreateCommandPool failed\n");
         return -1;
     }
+    VkSemaphoreCreateInfo seci = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+    VkFenceCreateInfo fci = {
+        .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+        .flags = VK_FENCE_CREATE_SIGNALED_BIT,
+    };
     for (uint32_t i = 0; i < FRAMES_IN_FLIGHT; i++) {
-        VkSemaphoreCreateInfo seci = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
-        VkFenceCreateInfo fci = {
-            .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
-            .flags = VK_FENCE_CREATE_SIGNALED_BIT,
-        };
         if (vkCreateSemaphore(g_vk.device, &seci, NULL, &g_vk.frames[i].image_available) != VK_SUCCESS) return -1;
-        if (vkCreateSemaphore(g_vk.device, &seci, NULL, &g_vk.frames[i].render_finished) != VK_SUCCESS) return -1;
         if (vkCreateFence(g_vk.device, &fci, NULL, &g_vk.frames[i].in_flight) != VK_SUCCESS) return -1;
         VkCommandBufferAllocateInfo cbi = {
             .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
@@ -250,15 +262,24 @@ static int create_frame_sync(void) {
         };
         if (vkAllocateCommandBuffers(g_vk.device, &cbi, &g_vk.frames[i].cmd) != VK_SUCCESS) return -1;
     }
+    /* render_finished is one per swapchain image (see ImageSync comment). */
+    for (uint32_t i = 0; i < g_vk.sc_image_count; i++) {
+        if (vkCreateSemaphore(g_vk.device, &seci, NULL, &g_vk.image_sync[i].render_finished) != VK_SUCCESS) return -1;
+    }
     return 0;
 }
 
 static void destroy_frame_sync(void) {
     for (uint32_t i = 0; i < FRAMES_IN_FLIGHT; i++) {
         if (g_vk.frames[i].image_available) vkDestroySemaphore(g_vk.device, g_vk.frames[i].image_available, NULL);
-        if (g_vk.frames[i].render_finished) vkDestroySemaphore(g_vk.device, g_vk.frames[i].render_finished, NULL);
         if (g_vk.frames[i].in_flight) vkDestroyFence(g_vk.device, g_vk.frames[i].in_flight, NULL);
         memset(&g_vk.frames[i], 0, sizeof(g_vk.frames[i]));
+    }
+    for (uint32_t i = 0; i < MAX_SWAPCHAIN_IMAGES; i++) {
+        if (g_vk.image_sync[i].render_finished) {
+            vkDestroySemaphore(g_vk.device, g_vk.image_sync[i].render_finished, NULL);
+            g_vk.image_sync[i].render_finished = VK_NULL_HANDLE;
+        }
     }
     if (g_vk.cmd_pool) {
         vkDestroyCommandPool(g_vk.device, g_vk.cmd_pool, NULL);
@@ -461,11 +482,26 @@ void me_vk_shutdown(void) {
 
 int me_vk_is_active(void) { return g_vk.active; }
 
-/* Recreate the swapchain after a resize or OUT_OF_DATE. Caller must have
-   already waited for the device to be idle on the failure path. */
+/* Recreate the swapchain after a resize or OUT_OF_DATE. Also recreates the
+   per-image render_finished semaphores since the image count may change. */
 static int recreate_swapchain(void) {
     vkDeviceWaitIdle(g_vk.device);
-    return create_swapchain();
+    for (uint32_t i = 0; i < MAX_SWAPCHAIN_IMAGES; i++) {
+        if (g_vk.image_sync[i].render_finished) {
+            vkDestroySemaphore(g_vk.device, g_vk.image_sync[i].render_finished, NULL);
+            g_vk.image_sync[i].render_finished = VK_NULL_HANDLE;
+        }
+    }
+    if (create_swapchain() != 0) return -1;
+    if (g_vk.swapchain == VK_NULL_HANDLE) return 0; /* minimized */
+    VkSemaphoreCreateInfo seci = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+    for (uint32_t i = 0; i < g_vk.sc_image_count; i++) {
+        if (vkCreateSemaphore(g_vk.device, &seci, NULL, &g_vk.image_sync[i].render_finished) != VK_SUCCESS) {
+            fprintf(stderr, "[vk] vkCreateSemaphore (image_sync) failed during recreate\n");
+            return -1;
+        }
+    }
+    return 0;
 }
 
 int me_vk_present_clear(void) {
@@ -544,6 +580,7 @@ int me_vk_present_clear(void) {
 
     if (vkEndCommandBuffer(f->cmd) != VK_SUCCESS) return -1;
 
+    VkSemaphore signal_sem = g_vk.image_sync[img_idx].render_finished;
     VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     VkSubmitInfo si = {
         .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
@@ -553,7 +590,7 @@ int me_vk_present_clear(void) {
         .commandBufferCount = 1,
         .pCommandBuffers = &f->cmd,
         .signalSemaphoreCount = 1,
-        .pSignalSemaphores = &f->render_finished,
+        .pSignalSemaphores = &signal_sem,
     };
     if (vkQueueSubmit(g_vk.gfx_queue, 1, &si, f->in_flight) != VK_SUCCESS) {
         fprintf(stderr, "[vk] vkQueueSubmit failed\n");
@@ -563,7 +600,7 @@ int me_vk_present_clear(void) {
     VkPresentInfoKHR pi = {
         .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
         .waitSemaphoreCount = 1,
-        .pWaitSemaphores = &f->render_finished,
+        .pWaitSemaphores = &signal_sem,
         .swapchainCount = 1,
         .pSwapchains = &g_vk.swapchain,
         .pImageIndices = &img_idx,
