@@ -21,7 +21,7 @@ REM ---- paths -----------------------------------------------------------------
 set "ROOT=%~dp0"
 set "SRC=%ROOT%src"
 set "BUILD=%ROOT%build"
-set "OUT=%BUILD%\multi-emulator.exe"
+set "OUT=%BUILD%\laggueless.exe"
 
 if not exist "%BUILD%" mkdir "%BUILD%"
 

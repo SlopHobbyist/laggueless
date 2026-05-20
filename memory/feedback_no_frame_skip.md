@@ -1,6 +1,6 @@
 ---
 name: feedback_no_frame_skip
-description: Hard rule for multi-emulator project — emulated frames must not be skipped or duplicated. Speedrun/competition compliance.
+description: Hard rule for laggueless project — emulated frames must not be skipped or duplicated. Speedrun/competition compliance.
 metadata:
   type: feedback
 ---

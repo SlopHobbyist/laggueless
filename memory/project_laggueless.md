@@ -1,11 +1,11 @@
 ---
-name: project_multi_emulator
-description: multi-emulator project context — custom Win32 libretro frontend, plan-driven, currently in compat pass between steps 7 and 8.
+name: project_laggueless
+description: laggueless project context — custom Win32 libretro frontend, plan-driven, currently in compat pass between steps 7 and 8.
 metadata:
   type: project
 ---
 
-Custom Win32 libretro frontend in C at c:\Users\stewie\Downloads\multi-emulator\multi-emulator. Built with mingw gcc via build.bat. Plan-driven from plan.md with strict step gating ("STOP after each step").
+Custom Win32 libretro frontend in C at c:\Users\stewie\Downloads\laggueless. Built with mingw gcc via build.bat. Plan-driven from plan.md with strict step gating ("STOP after each step"). Project was renamed from "multi-emulator" to "laggueless" on 2026-05-20.
 
 **Current status (2026-05-20):** step 7 (D3D11 flip-model present with ALLOW_TEARING/SyncInterval=0) implemented and working with snes9x_libretro. Stopped before step 8 (game-picker menu) to do a compatibility pass after the user found other cores broken:
 - mesen_libretro.dll and mesen-s_libretro.dll exit before `[av]` line — retro_load_game silently failing.

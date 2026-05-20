@@ -1,4 +1,4 @@
-# Multi-Emulator Implementation Plan
+# Laggueless Implementation Plan
 
 ## Instructions to the LLM coding agent
 
@@ -33,7 +33,7 @@ If a step's design is ambiguous, ask the user before coding rather than guessing
   - Store function pointers in `struct me_core`.
 - In [src/main.c](src/main.c), accept a DLL path on argv[1], load it, print `retro_api_version()` and `retro_get_system_info()` fields, then unload and exit (no window yet for this step).
 
-**User test:** `multi-emulator.exe example-cores\snes9x_libretro.dll` prints API version 1 and the core's name/version/extensions.
+**User test:** `laggueless.exe example-cores\snes9x_libretro.dll` prints API version 1 and the core's name/version/extensions.
 
 ---
 
@@ -47,7 +47,7 @@ If a step's design is ambiguous, ask the user before coding rather than guessing
 - Accept ROM path on argv[2]. Read into memory, hand to `retro_load_game` via `struct retro_game_info`.
 - Call `retro_run` 60 times, then `retro_unload_game` + `retro_deinit`.
 
-**User test:** `multi-emulator.exe <core.dll> <rom>` runs without crashing and prints reported AV info (geometry, fps, sample rate) and that video_refresh was called N times.
+**User test:** `laggueless.exe <core.dll> <rom>` runs without crashing and prints reported AV info (geometry, fps, sample rate) and that video_refresh was called N times.
 
 ---
 

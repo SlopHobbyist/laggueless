@@ -812,7 +812,7 @@ int main(int argc, char **argv) {
 
     const char *positional[2] = { NULL, NULL };
     int npos = 0;
-    const char *exe = argv[0] ? argv[0] : "multi-emulator.exe";
+    const char *exe = argv[0] ? argv[0] : "laggueless.exe";
     for (int i = 1; i < argc; i++) {
         if      (strcmp(argv[i], "--no-audio") == 0) no_audio  = 1;
         else if (strcmp(argv[i], "--gdi")      == 0) force_gdi = 1;
@@ -833,7 +833,7 @@ int main(int argc, char **argv) {
                 strcmp(argv[i], "Help")     == 0 || strcmp(argv[i], "-usage")   == 0 ||
                 strcmp(argv[i], "--usage")  == 0 || strcmp(argv[i], "/usage")   == 0) {
             printf(
-                "multi-emulator - libretro core front-end\n"
+                "laggueless - libretro core front-end\n"
                 "\n"
                 "usage: %s [options] <core.dll> <rom>\n"
                 "\n"
@@ -1012,7 +1012,7 @@ int main(int argc, char **argv) {
     int win_h = (int)(av.geometry.base_height * 2);
     if (win_w < 320) win_w = 640;
     if (win_h < 240) win_h = 480;
-    g_hwnd = me_platform_create_window("multi-emulator", win_w, win_h);
+    g_hwnd = me_platform_create_window("laggueless", win_w, win_h);
     if (!g_hwnd) { fprintf(stderr, "window create failed\n"); return 1; }
     if (g_settings.fullscreen_on_launch) {
         me_platform_toggle_fullscreen(g_hwnd);

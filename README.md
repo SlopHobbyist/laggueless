@@ -1,4 +1,4 @@
-# Multi-Emulator Project
+# Laggueless
 
 > **Note**: This entire project was written by AI (Claude Code: Sonnet 4.5, and Antigravity: Gemini 3 Pro (High)). All code, architecture decisions, and implementation details were generated through AI assistance.
 >
@@ -16,7 +16,7 @@ The goal was to create a libretro core compatible emulator program. Users find R
 - ⭐ Windows x86-64
 
 ## Usage
-`multi-emulator.exe [options] <core.dll> <rom>`
+`laggueless.exe [options] <core.dll> <rom>`
 #### Optional Arguments:
 `--no-audio` `disable audio output`
 `--gdi` `force GDI for all cores (overrides --d3d11)`
@@ -25,7 +25,7 @@ The goal was to create a libretro core compatible emulator program. Users find R
 `--timing-log` `log frame timing diagnostics`
 `--env-trace` `log libretro environment calls`
 #### Example:
-`build\multi-emulator.exe --env-trace example-cores\mesen_libretro.dll "C:\Users\stewie\Downloads\multi-emulator\multi-emulator\example-roms\Super Mario Bros. (World).nes" 2>&1`
+`build\laggueless.exe --env-trace example-cores\mesen_libretro.dll "C:\Users\stewie\Downloads\laggueless\example-roms\Super Mario Bros. (World).nes" 2>&1`
 
 ## Cores
 You can download cores here: [https://buildbot.libretro.com/nightly/windows/x86_64/](https://buildbot.libretro.com/nightly/windows/x86_64/)
