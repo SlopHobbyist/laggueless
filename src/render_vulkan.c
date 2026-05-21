@@ -1576,8 +1576,14 @@ int me_vk_present(const u32 *pixels, unsigned frame_w, unsigned frame_h, unsigne
             return -1;
         }
 
-        /* B4: Tell backend to generate frames (it waits on our timeline signal). */
+        /* B4: Tell backend to generate frames (it waits on our timeline signal).
+         * The backend's GPU submit signals timeline values signal_val+1 .. signal_val+dst_count.
+         * Once scheduled, those values are spoken for even if we bail out below — account for
+         * them up front so the next iteration's increment doesn't collide with a value the
+         * backend will eventually signal (causes VUID-VkSubmitInfo-pSignalSemaphores-03242
+         * "signal value must be greater than current"). */
         me_lsfg_backend_schedule(g_vk.lsfg_inst, g_vk.lsfg_ctx);
+        g_vk.lsfg_timeline_value += (uint64_t)g_vk.lsfg_dst_count;
 
         /* Present the real frame first (FIFO: it queues behind any pending present). */
         VkPresentInfoKHR pi = {
@@ -1618,6 +1624,10 @@ int me_vk_present(const u32 *pixels, unsigned frame_w, unsigned frame_h, unsigne
                                       g_vk.lsfg_acquire_sem, VK_NULL_HANDLE, &gen_img_idx);
             if (r == VK_ERROR_OUT_OF_DATE_KHR) {
                 g_vk.swapchain_needs_recreate = 1;
+                goto lsfg_present_done;
+            }
+            if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) {
+                fprintf(stderr, "[vk] gen-frame acquire failed: %s\n", vk_result_str(r));
                 goto lsfg_present_done;
             }
 
@@ -1693,7 +1703,14 @@ int me_vk_present(const u32 *pixels, unsigned frame_w, unsigned frame_h, unsigne
                 .signalSemaphoreCount = 1,
                 .pSignalSemaphores = &gen_signal,
             };
-            vkQueueSubmit(g_vk.gfx_queue, 1, &gen_si, g_vk.lsfg_fence);
+            VkResult gen_sr = vkQueueSubmit(g_vk.gfx_queue, 1, &gen_si, g_vk.lsfg_fence);
+            if (gen_sr != VK_SUCCESS) {
+                /* Submit failed — the acquired image is still in UNDEFINED. Don't present it
+                 * (would trip VUID-VkPresentInfoKHR-pImageIndices-01430). Force a recreate. */
+                fprintf(stderr, "[vk] gen-frame submit failed: %s\n", vk_result_str(gen_sr));
+                g_vk.swapchain_needs_recreate = 1;
+                goto lsfg_present_done;
+            }
 
             VkPresentInfoKHR gen_pi = {
                 .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
@@ -1710,8 +1727,6 @@ int me_vk_present(const u32 *pixels, unsigned frame_w, unsigned frame_h, unsigne
             }
         }
 
-        /* Update timeline_value to account for backend's signals. */
-        g_vk.lsfg_timeline_value += (uint64_t)g_vk.lsfg_dst_count;
         lsfg_present_done:
         g_vk.frame_index = (g_vk.frame_index + 1) % FRAMES_IN_FLIGHT;
         g_vk.present_count++;
