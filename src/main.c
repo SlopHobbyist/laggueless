@@ -13,6 +13,7 @@
 #include "gl_context.h"
 #include "libretro.h"
 #include "settings.h"
+#include "lsfg_loader.h"
 
 /* ---- global state for callbacks (single core, single ROM) ----------------- */
 static enum retro_pixel_format g_pixel_format = RETRO_PIXEL_FORMAT_0RGB1555;
@@ -27,6 +28,11 @@ static HWND g_hwnd = NULL;
 static int  g_use_d3d11 = 0;
 static int  g_force_vulkan = 0; /* --vulkan requested on the CLI */
 static int  g_no_vsync = 0;     /* --no-vsync (Vulkan: IMMEDIATE present mode) */
+
+/* LSFG frame-gen (Plan B) */
+static int               g_lsfg_enabled  = 0;    /* --lsfg flag */
+static char              g_lsfg_dll_path[MAX_PATH] = {0}; /* --lsfg-dll= override */
+static me_lsfg_shaders  *g_lsfg_shaders  = NULL; /* loaded shader table */
 
 /* Latency telemetry: timestamp of the most recent input poll callback. Read
    by the main loop to split retro_run() into "before poll" and "after poll"
@@ -1004,6 +1010,11 @@ int main(int argc, char **argv) {
         else if (strcmp(argv[i], "--d3d11")    == 0) force_d3d11 = 1;
         else if (strcmp(argv[i], "--vulkan")   == 0) g_force_vulkan = 1;
         else if (strcmp(argv[i], "--no-vsync") == 0) g_no_vsync = 1;
+        else if (strcmp(argv[i], "--lsfg")     == 0) g_lsfg_enabled = 1;
+        else if (strncmp(argv[i], "--lsfg-dll=", 11) == 0) {
+            snprintf(g_lsfg_dll_path, sizeof(g_lsfg_dll_path), "%s", argv[i] + 11);
+            g_lsfg_enabled = 1; /* --lsfg-dll= implies --lsfg */
+        }
         else if (strcmp(argv[i], "--pace-log") == 0) pace_log  = 1;
         else if (strcmp(argv[i], "--timing-log") == 0) timing_log = 1;
         else if (strcmp(argv[i], "--latency-log") == 0) latency_log = 1;
@@ -1038,6 +1049,10 @@ int main(int argc, char **argv) {
                 "                                 required for LSFG frame generation)\n"
                 "  --no-vsync                   (Vulkan only) use IMMEDIATE present mode\n"
                 "                                 (allows tearing, lowest latency)\n"
+                "  --lsfg                       enable LSFG 3.1 frame generation (requires\n"
+                "                                 --vulkan and Lossless Scaling on Steam;\n"
+                "                                 place Lossless.dll in lsfg/ next to the exe)\n"
+                "  --lsfg-dll=<path>            path to Lossless.dll (overrides lsfg/ folder)\n"
                 "  --pace-log                   log audio pacing diagnostics\n"
                 "  --timing-log                 log frame timing diagnostics\n"
                 "  --latency-log                log per-stage latency (poll/core/present/wait)\n"
@@ -1071,6 +1086,31 @@ int main(int argc, char **argv) {
     }
     const char *core_path = positional[0];
     const char *rom_path  = positional[1];
+
+    /* ---- Step B1: Load Lossless.dll + extract shaders --------------------- */
+    if (g_lsfg_enabled) {
+        if (!g_force_vulkan) {
+            fprintf(stderr,
+                "[lsfg] WARNING: --lsfg requires --vulkan. Enabling Vulkan automatically.\n");
+            g_force_vulkan = 1;
+        }
+        g_lsfg_shaders = me_lsfg_load(g_lsfg_dll_path[0] ? g_lsfg_dll_path : NULL);
+        if (!g_lsfg_shaders) {
+            /* Error already printed by me_lsfg_load(). Exit cleanly. */
+            return 1;
+        }
+        fprintf(stderr, "[lsfg] DLL: %s\n", me_lsfg_dll_path(g_lsfg_shaders));
+        fprintf(stderr, "[lsfg] shaders extracted: %d\n",
+                me_lsfg_shader_count(g_lsfg_shaders));
+        /* Sanity check: Lossless.dll should have at least 30 shader resources */
+        if (me_lsfg_shader_count(g_lsfg_shaders) < 30) {
+            fprintf(stderr,
+                "[lsfg] WARNING: only %d shader resources found (expected 30+).\n"
+                "[lsfg]          This may not be a valid Lossless Scaling DLL.\n",
+                me_lsfg_shader_count(g_lsfg_shaders));
+        }
+        fprintf(stderr, "[lsfg] Step B1 OK — DLL loaded, shaders ready\n");
+    }
 
     /* Pick the active per-player-1 control map: per-core entry if it exists
        and has use_universal=false, otherwise the universal map. */
@@ -1696,6 +1736,7 @@ int main(int argc, char **argv) {
     if (audio_ok) me_audio_shutdown();
     if (g_use_d3d11) me_d3d11_shutdown();
     me_vk_shutdown();
+    me_lsfg_free(g_lsfg_shaders); g_lsfg_shaders = NULL;
 
     if (g_hw_render_accepted && g_hw_render.context_destroy) {
         g_hw_render.context_destroy();

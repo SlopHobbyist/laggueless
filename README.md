@@ -23,6 +23,8 @@ The goal was to create a libretro core compatible emulator program. Users find R
 `--d3d11` `use D3D11 present path for 2D cores too. (enables VRR / lower latency, but may tear on non-GSync/FreeSync displays)`
 `--vulkan` `use the Vulkan present path. Required for the planned LSFG frame-generation work. Software cores (mesen, snes9x, etc.) render correctly; GL hardware cores are not bridged to Vulkan yet — use --d3d11 for those.`
 `--no-vsync` `(Vulkan only) use IMMEDIATE present mode. VRR-smooth if adaptive sync is enabled in the driver/OS; otherwise tearing for lowest latency on fixed-rate displays.`
+`--lsfg` `enable LSFG 3.1 frame generation (requires --vulkan; see LSFG section below).`
+`--lsfg-dll=<path>` `explicit path to Lossless.dll (overrides the lsfg/ folder search).`
 `--pace-log` `log audio pacing diagnostics (and Vulkan present pacing when --vulkan is on)`
 `--timing-log` `log frame timing diagnostics`
 `--env-trace` `log libretro environment calls`
@@ -44,6 +46,23 @@ To regenerate the embedded SPIR-V shaders after editing `src/shaders/quad.vert` 
 
 ## Cores
 You can download cores here: [https://buildbot.libretro.com/nightly/windows/x86_64/](https://buildbot.libretro.com/nightly/windows/x86_64/)
+
+## LSFG 3.1 Frame Generation
+
+LSFG frame generation is optional and requires [Lossless Scaling](https://store.steampowered.com/app/993090/Lossless_Scaling/) on Steam. **We do not distribute Lossless.dll.**
+
+To enable LSFG:
+
+1. Find `Lossless.dll` in your Lossless Scaling Steam installation folder.
+2. Create a `lsfg/` folder next to `laggueless.exe` (i.e. `build\lsfg\`).
+3. Copy `Lossless.dll` into `build\lsfg\Lossless.dll`.
+4. Run with `--lsfg --vulkan` (Vulkan is required for frame gen).
+
+Alternatively, point directly at the DLL: `--lsfg-dll="C:\path\to\Lossless.dll"`.
+
+> **Note:** LSFG adds input latency (one real-frame delay + FIFO queuing). This is inherent to the frame generation technique. Run-ahead latency compensation is planned for Plan C.
+
+
 
 
 ## License
