@@ -17,12 +17,16 @@
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
-// Input: BGRA upload image, sampled at integer texel coords. We use a storage
-// image rather than a sampler because we want exact texel reads (no filtering).
-layout(set = 0, binding = 0, rgba8) uniform readonly image2D u_src_bgra;
+// Input: upload image bound through an image view whose VkFormat is
+// VK_FORMAT_B8G8R8A8_UNORM. The Vulkan ICD performs the byte-order conversion
+// at the hardware sampler — imageLoad() returns .r=red, .g=green, .b=blue,
+// .a=alpha regardless of the underlying memory order.
+layout(set = 0, binding = 0, rgba8) uniform readonly image2D u_src;
 
-// Output: RGBA LSFG source slot, storage image.
-layout(set = 0, binding = 1, rgba8) uniform writeonly image2D u_dst_rgba;
+// Output: RGBA LSFG source slot, view declared as VK_FORMAT_R8G8B8A8_UNORM.
+// imageStore writes .r to red, .g to green, .b to blue, .a to alpha — again
+// at the hardware sampler level, so the bytes land in the order R8G8B8A8 expects.
+layout(set = 0, binding = 1, rgba8) uniform writeonly image2D u_dst;
 
 layout(push_constant) uniform Push {
     uint width;
@@ -33,11 +37,8 @@ void main() {
     ivec2 p = ivec2(gl_GlobalInvocationID.xy);
     if (uint(p.x) >= pc.width || uint(p.y) >= pc.height) return;
 
-    // Read the upload image. Because the underlying memory is BGRA but we
-    // declared this binding as rgba8, the .r/.g/.b/.a channels we see here are
-    // actually the BGRA bytes in that order. So this->r is the FRAME's blue,
-    // this->b is the FRAME's red. Swap them on the write side.
-    vec4 bgra = imageLoad(u_src_bgra, p);
-    vec4 rgba = vec4(bgra.b, bgra.g, bgra.r, bgra.a);
-    imageStore(u_dst_rgba, p, rgba);
+    // No manual swap: with image views declared at the correct formats on both
+    // sides, the GPU does the BGRA->RGBA byte reorder for us. The shader sees
+    // semantically-correct .r/.g/.b/.a on both ends.
+    imageStore(u_dst, p, imageLoad(u_src, p));
 }
