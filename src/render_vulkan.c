@@ -135,15 +135,28 @@ static struct {
 
     /* Which source slot we wrote last (0 or 1, alternating). */
     int                lsfg_src_slot;
+    int                lsfg_multiplier; /* 2, 3, or 4 */
 
     /* Backend objects. */
     me_lsfg_instance  *lsfg_inst;
     me_lsfg_context   *lsfg_ctx;
 
+    /* vkWaitSemaphores PFN — from core Vulkan 1.2 promoted from KHR. */
+    PFN_vkWaitSemaphores       pfn_WaitSemaphores;
+    PFN_vkSignalSemaphore      pfn_SignalSemaphore;
+
     /* PFN for device-level Win32 external memory/semaphore. */
     PFN_vkGetMemoryWin32HandleKHR          pfn_GetMemoryWin32Handle;
     PFN_vkImportSemaphoreWin32HandleKHR    pfn_ImportSemaphoreWin32Handle;
     PFN_vkGetSemaphoreWin32HandleKHR       pfn_GetSemaphoreWin32Handle;
+
+    /* B4: Command pool + buffer for generated-frame blit+present passes.
+     * We reuse a single command buffer (reset each time) — the CPU-wait on
+     * the timeline gate ensures the backend is done before we record. */
+    VkCommandPool      lsfg_cmd_pool;
+    VkCommandBuffer    lsfg_cmd;         /* single cmd buf for generated presents */
+    VkSemaphore        lsfg_acquire_sem; /* image_available for generated presents */
+    VkFence            lsfg_fence;       /* CPU gate: gpu done with lsfg_cmd */
 #endif /* ME_HAVE_LSFG */
 } g_vk;
 
@@ -331,7 +344,8 @@ static int create_swapchain_only(void) {
         .imageColorSpace = g_vk.sc_colorspace,
         .imageExtent = g_vk.sc_extent,
         .imageArrayLayers = 1,
-        .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+        /* B4: TRANSFER_DST needed when blitting LSFG generated frames into swapchain. */
+        .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
         .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
         .preTransform = caps.currentTransform,
         .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
@@ -439,7 +453,9 @@ static int create_upload_image(void) {
         .arrayLayers = 1,
         .samples = VK_SAMPLE_COUNT_1_BIT,
         .tiling = VK_IMAGE_TILING_OPTIMAL,
-        .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        /* B4: also TRANSFER_SRC so we can blit into LSFG source slots */
+        .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT
+               | VK_IMAGE_USAGE_SAMPLED_BIT,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
     };
@@ -893,17 +909,32 @@ int me_vk_init(HWND hwnd, unsigned max_w, unsigned max_h) {
     dev_exts[dev_ext_count++] = VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME;
     dev_exts[dev_ext_count++] = VK_KHR_EXTERNAL_SEMAPHORE_EXTENSION_NAME;
 #endif
+    /* Enable timeline semaphores (needed for vkWaitSemaphores on our device)
+       and explicitly disable samplerAnisotropy (we don't use it; prevents
+       validation errors from other internal paths that may set VK_TRUE). */
+    VkPhysicalDeviceFeatures feats = { .samplerAnisotropy = VK_FALSE };
+    VkPhysicalDeviceVulkan12Features feats12 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+        .timelineSemaphore = VK_TRUE,
+    };
     VkDeviceCreateInfo dci = {
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+        .pNext = &feats12,
         .queueCreateInfoCount = 1,
         .pQueueCreateInfos = &qci,
         .enabledExtensionCount = dev_ext_count,
         .ppEnabledExtensionNames = dev_exts,
+        .pEnabledFeatures = &feats,
     };
     VK_CHECK(vkCreateDevice(g_vk.phys, &dci, NULL, &g_vk.device), "vkCreateDevice");
     vkGetDeviceQueue(g_vk.device, g_vk.gfx_queue_family, 0, &g_vk.gfx_queue);
 
 #ifdef ME_HAVE_LSFG
+    /* Load Vulkan 1.2 timeline semaphore PFNs (CPU-side wait/signal). */
+    g_vk.pfn_WaitSemaphores = (PFN_vkWaitSemaphores)
+        vkGetDeviceProcAddr(g_vk.device, "vkWaitSemaphores");
+    g_vk.pfn_SignalSemaphore = (PFN_vkSignalSemaphore)
+        vkGetDeviceProcAddr(g_vk.device, "vkSignalSemaphore");
     /* Load Win32 external memory/semaphore device functions. */
     g_vk.pfn_GetMemoryWin32Handle = (PFN_vkGetMemoryWin32HandleKHR)
         vkGetDeviceProcAddr(g_vk.device, "vkGetMemoryWin32HandleKHR");
@@ -911,8 +942,9 @@ int me_vk_init(HWND hwnd, unsigned max_w, unsigned max_h) {
         vkGetDeviceProcAddr(g_vk.device, "vkImportSemaphoreWin32HandleKHR");
     g_vk.pfn_GetSemaphoreWin32Handle = (PFN_vkGetSemaphoreWin32HandleKHR)
         vkGetDeviceProcAddr(g_vk.device, "vkGetSemaphoreWin32HandleKHR");
-    if (!g_vk.pfn_GetMemoryWin32Handle || !g_vk.pfn_GetSemaphoreWin32Handle) {
-        fprintf(stderr, "[vk] WARNING: Win32 external memory/semaphore functions unavailable - LSFG disabled\n");
+    if (!g_vk.pfn_GetMemoryWin32Handle || !g_vk.pfn_GetSemaphoreWin32Handle ||
+        !g_vk.pfn_WaitSemaphores) {
+        fprintf(stderr, "[vk] WARNING: Win32 external memory/semaphore or timeline functions unavailable - LSFG disabled\n");
     }
 #endif
 
@@ -1052,7 +1084,13 @@ static int create_lsfg_timeline(VkSemaphore *out_sem, HANDLE *out_handle, uint64
 }
 
 static void destroy_lsfg_images(void) {
-    /* Close handles first. */
+    /* B4: Destroy command infrastructure first. */
+    if (g_vk.lsfg_fence)       { vkDestroyFence(g_vk.device, g_vk.lsfg_fence, NULL);           g_vk.lsfg_fence = VK_NULL_HANDLE; }
+    if (g_vk.lsfg_acquire_sem) { vkDestroySemaphore(g_vk.device, g_vk.lsfg_acquire_sem, NULL); g_vk.lsfg_acquire_sem = VK_NULL_HANDLE; }
+    if (g_vk.lsfg_cmd_pool)    { vkDestroyCommandPool(g_vk.device, g_vk.lsfg_cmd_pool, NULL);  g_vk.lsfg_cmd_pool = VK_NULL_HANDLE; }
+    g_vk.lsfg_cmd = VK_NULL_HANDLE;
+
+    /* Close Win32 HANDLEs then destroy Vulkan objects. */
     for (int i = 0; i < 2; i++) {
         if (g_vk.lsfg_src_handle[i]) { CloseHandle(g_vk.lsfg_src_handle[i]); g_vk.lsfg_src_handle[i] = NULL; }
         if (g_vk.lsfg_src[i])        { vkDestroyImage(g_vk.device, g_vk.lsfg_src[i], NULL); g_vk.lsfg_src[i] = VK_NULL_HANDLE; }
@@ -1070,18 +1108,63 @@ static void destroy_lsfg_images(void) {
 }
 
 /* -------------------------------------------------------------------------
- * me_vk_lsfg_init — B3 public API
- * Call after me_vk_init() to wire up the LSFG backend.
+ * me_vk_lsfg_init — B4 public API
+ * Call after me_vk_init() to wire up the LSFG backend and force FIFO mode.
  * ------------------------------------------------------------------------- */
 int me_vk_lsfg_init(const char *dll_path, unsigned width, unsigned height, int multiplier) {
     if (!g_vk.active) return -1;
+    if (!g_vk.pfn_WaitSemaphores || !g_vk.pfn_GetMemoryWin32Handle) {
+        fprintf(stderr, "[vk-lsfg] required Vulkan 1.2 / Win32 functions missing\n");
+        return -1;
+    }
     if (multiplier < 2) multiplier = 2;
     if (multiplier > 4) multiplier = 4;
     int dst_count = multiplier - 1;
 
+    /* B4: Switch to FIFO — required for proper pacing with frame gen. */
+    if (g_vk.present_mode != VK_PRESENT_MODE_FIFO_KHR) {
+        fprintf(stderr, "[vk-lsfg] switching to FIFO present mode for frame gen\n");
+        g_vk.present_mode = VK_PRESENT_MODE_FIFO_KHR;
+        g_vk.swapchain_needs_recreate = 1;
+    }
+
+    /* B4: Create command pool + buffer for generated-frame presents. */
+    VkCommandPoolCreateInfo cpci = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+        .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+        .queueFamilyIndex = g_vk.gfx_queue_family,
+    };
+    if (vkCreateCommandPool(g_vk.device, &cpci, NULL, &g_vk.lsfg_cmd_pool) != VK_SUCCESS) {
+        fprintf(stderr, "[vk-lsfg] failed to create B4 command pool\n");
+        goto fail;
+    }
+    VkCommandBufferAllocateInfo cbai = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool = g_vk.lsfg_cmd_pool,
+        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount = 1,
+    };
+    if (vkAllocateCommandBuffers(g_vk.device, &cbai, &g_vk.lsfg_cmd) != VK_SUCCESS) {
+        fprintf(stderr, "[vk-lsfg] failed to allocate B4 command buffer\n");
+        goto fail;
+    }
+    VkFenceCreateInfo fci = {
+        .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+        .flags = VK_FENCE_CREATE_SIGNALED_BIT, /* start signaled so first wait is free */
+    };
+    if (vkCreateFence(g_vk.device, &fci, NULL, &g_vk.lsfg_fence) != VK_SUCCESS) {
+        fprintf(stderr, "[vk-lsfg] failed to create B4 fence\n");
+        goto fail;
+    }
+    VkSemaphoreCreateInfo seci = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+    if (vkCreateSemaphore(g_vk.device, &seci, NULL, &g_vk.lsfg_acquire_sem) != VK_SUCCESS) {
+        fprintf(stderr, "[vk-lsfg] failed to create B4 acquire semaphore\n");
+        goto fail;
+    }
+
     /* Create the backend instance (its own VkDevice). */
     g_vk.lsfg_inst = me_lsfg_backend_create(dll_path);
-    if (!g_vk.lsfg_inst) return -1;
+    if (!g_vk.lsfg_inst) goto fail;
 
     /* Create shared source images. */
     for (int i = 0; i < 2; i++) {
@@ -1124,11 +1207,13 @@ int me_vk_lsfg_init(const char *dll_path, unsigned width, unsigned height, int m
         goto fail;
     }
 
-    g_vk.lsfg_enabled = 1;
-    g_vk.lsfg_width   = width;
-    g_vk.lsfg_height  = height;
-    g_vk.lsfg_src_slot = 0;
-    fprintf(stderr, "[vk-lsfg] B3 OK: shared images + context open (%ux%u, x%d)\n",
+    g_vk.lsfg_enabled     = 1;
+    g_vk.lsfg_width       = width;
+    g_vk.lsfg_height      = height;
+    g_vk.lsfg_src_slot    = 0;
+    g_vk.lsfg_multiplier  = multiplier;
+    g_vk.lsfg_timeline_value = 0;
+    fprintf(stderr, "[vk-lsfg] B4 OK: frame gen ready (%ux%u, x%d, FIFO)\n",
             width, height, multiplier);
     return 0;
 
@@ -1159,6 +1244,7 @@ void me_vk_lsfg_shutdown(void) {
 }
 
 #endif /* ME_HAVE_LSFG */
+
 
 void me_vk_shutdown(void) {
     if (g_vk.device) {
@@ -1470,6 +1556,177 @@ int me_vk_present(const u32 *pixels, unsigned frame_w, unsigned frame_h, unsigne
 
     VkSemaphore signal_sem = g_vk.image_sync[img_idx].render_finished;
     VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+
+#ifdef ME_HAVE_LSFG
+    /* B4: Include the timeline semaphore in the submit signal list.
+     * Incrementing by 1 tells the backend "source slot is ready, generate now". */
+    if (g_vk.lsfg_enabled && g_vk.lsfg_ctx) {
+        g_vk.lsfg_timeline_value++;
+        uint64_t signal_val = g_vk.lsfg_timeline_value;
+        VkSemaphore signal_sems[2] = { signal_sem, g_vk.lsfg_timeline };
+        uint64_t    signal_vals[2] = { 0, signal_val }; /* binary sem uses 0 */
+        VkTimelineSemaphoreSubmitInfo tsi = {
+            .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
+            .signalSemaphoreValueCount = 2,
+            .pSignalSemaphoreValues = signal_vals,
+        };
+        VkSubmitInfo si = {
+            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            .pNext = &tsi,
+            .waitSemaphoreCount = 1,
+            .pWaitSemaphores = &f->image_available,
+            .pWaitDstStageMask = &wait_stage,
+            .commandBufferCount = 1,
+            .pCommandBuffers = &f->cmd,
+            .signalSemaphoreCount = 2,
+            .pSignalSemaphores = signal_sems,
+        };
+        if (vkQueueSubmit(g_vk.gfx_queue, 1, &si, f->in_flight) != VK_SUCCESS) {
+            fprintf(stderr, "[vk] vkQueueSubmit failed\n");
+            return -1;
+        }
+
+        /* B4: Tell backend to generate frames (it waits on our timeline signal). */
+        me_lsfg_backend_schedule(g_vk.lsfg_inst, g_vk.lsfg_ctx);
+
+        /* Present the real frame first (FIFO: it queues behind any pending present). */
+        VkPresentInfoKHR pi = {
+            .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+            .waitSemaphoreCount = 1,
+            .pWaitSemaphores = &signal_sem,
+            .swapchainCount = 1,
+            .pSwapchains = &g_vk.swapchain,
+            .pImageIndices = &img_idx,
+        };
+        r = vkQueuePresentKHR(g_vk.gfx_queue, &pi);
+        if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) {
+            g_vk.swapchain_needs_recreate = 1;
+            goto lsfg_present_done;
+        } else if (r != VK_SUCCESS) {
+            fprintf(stderr, "[vk] vkQueuePresentKHR (real): %s\n", vk_result_str(r));
+        }
+
+        /* B4: Wait for backend to finish each generated frame, then blit + present. */
+        for (int gi = 0; gi < g_vk.lsfg_dst_count; gi++) {
+            /* CPU-wait for this generated frame to be ready on the backend device. */
+            uint64_t wait_val = signal_val + (uint64_t)(gi + 1);
+            VkSemaphoreWaitInfo swi = {
+                .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
+                .semaphoreCount = 1,
+                .pSemaphores = &g_vk.lsfg_timeline,
+                .pValues = &wait_val,
+            };
+            g_vk.pfn_WaitSemaphores(g_vk.device, &swi, 5000000000ull /* 5s timeout */);
+
+            /* Wait for previous lsfg_cmd to finish (first time fence is already signaled). */
+            vkWaitForFences(g_vk.device, 1, &g_vk.lsfg_fence, VK_TRUE, UINT64_MAX);
+            vkResetFences(g_vk.device, 1, &g_vk.lsfg_fence);
+
+            /* Acquire a swapchain image for this generated frame. */
+            uint32_t gen_img_idx = 0;
+            r = vkAcquireNextImageKHR(g_vk.device, g_vk.swapchain, UINT64_MAX,
+                                      g_vk.lsfg_acquire_sem, VK_NULL_HANDLE, &gen_img_idx);
+            if (r == VK_ERROR_OUT_OF_DATE_KHR) {
+                g_vk.swapchain_needs_recreate = 1;
+                goto lsfg_present_done;
+            }
+
+            /* Record: blit lsfg_dst[gi] (RGBA8, GENERAL) -> swapchain[gen_img_idx] (BGRA8). */
+            vkResetCommandBuffer(g_vk.lsfg_cmd, 0);
+            VkCommandBufferBeginInfo lbi = {
+                .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+            };
+            vkBeginCommandBuffer(g_vk.lsfg_cmd, &lbi);
+
+            /* Transition swapchain image: UNDEFINED -> TRANSFER_DST */
+            VkImageMemoryBarrier sc_to_dst = {
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                .srcAccessMask = 0,
+                .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = g_vk.sc_images[gen_img_idx],
+                .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+            };
+            vkCmdPipelineBarrier(g_vk.lsfg_cmd,
+                VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                0, 0, NULL, 0, NULL, 1, &sc_to_dst);
+
+            /* Blit: dest image is in GENERAL (backend leaves it there). */
+            VkImageBlit gen_blit = {
+                .srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+                .srcOffsets = { {0,0,0}, {(int32_t)g_vk.sc_extent.width,
+                                          (int32_t)g_vk.sc_extent.height, 1} },
+                .dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+                .dstOffsets = { {0,0,0}, {(int32_t)g_vk.sc_extent.width,
+                                          (int32_t)g_vk.sc_extent.height, 1} },
+            };
+            vkCmdBlitImage(g_vk.lsfg_cmd,
+                g_vk.lsfg_dst[gi], VK_IMAGE_LAYOUT_GENERAL,
+                g_vk.sc_images[gen_img_idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                1, &gen_blit, VK_FILTER_NEAREST);
+
+            /* Transition swapchain: TRANSFER_DST -> PRESENT_SRC */
+            VkImageMemoryBarrier sc_to_present = {
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                .dstAccessMask = 0,
+                .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = g_vk.sc_images[gen_img_idx],
+                .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+            };
+            vkCmdPipelineBarrier(g_vk.lsfg_cmd,
+                VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                0, 0, NULL, 0, NULL, 1, &sc_to_present);
+
+            vkEndCommandBuffer(g_vk.lsfg_cmd);
+
+            VkSemaphore gen_signal = g_vk.image_sync[gen_img_idx].render_finished;
+            VkPipelineStageFlags gen_wait_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+            VkSubmitInfo gen_si = {
+                .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                .waitSemaphoreCount = 1,
+                .pWaitSemaphores = &g_vk.lsfg_acquire_sem,
+                .pWaitDstStageMask = &gen_wait_stage,
+                .commandBufferCount = 1,
+                .pCommandBuffers = &g_vk.lsfg_cmd,
+                .signalSemaphoreCount = 1,
+                .pSignalSemaphores = &gen_signal,
+            };
+            vkQueueSubmit(g_vk.gfx_queue, 1, &gen_si, g_vk.lsfg_fence);
+
+            VkPresentInfoKHR gen_pi = {
+                .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+                .waitSemaphoreCount = 1,
+                .pWaitSemaphores = &gen_signal,
+                .swapchainCount = 1,
+                .pSwapchains = &g_vk.swapchain,
+                .pImageIndices = &gen_img_idx,
+            };
+            r = vkQueuePresentKHR(g_vk.gfx_queue, &gen_pi);
+            if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) {
+                g_vk.swapchain_needs_recreate = 1;
+                goto lsfg_present_done;
+            }
+        }
+
+        /* Update timeline_value to account for backend's signals. */
+        g_vk.lsfg_timeline_value += (uint64_t)g_vk.lsfg_dst_count;
+        lsfg_present_done:
+        g_vk.frame_index = (g_vk.frame_index + 1) % FRAMES_IN_FLIGHT;
+        g_vk.present_count++;
+        goto pace_log;
+    }
+#endif /* ME_HAVE_LSFG */
+
+    /* --- Normal (non-LSFG) path --- */
+    {
     VkSubmitInfo si = {
         .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
         .waitSemaphoreCount = 1,
@@ -1484,16 +1741,8 @@ int me_vk_present(const u32 *pixels, unsigned frame_w, unsigned frame_h, unsigne
         fprintf(stderr, "[vk] vkQueueSubmit failed\n");
         return -1;
     }
-
-#ifdef ME_HAVE_LSFG
-    /* B3: Tell the backend a new real frame has been submitted.
-     * scheduleFrames signals the backend's GPU to start generating inserted frames.
-     * This is non-blocking; the backend uses the timeline semaphore to sequence
-     * itself after our submit. The real frame is still presented below. */
-    if (g_vk.lsfg_enabled && g_vk.lsfg_ctx) {
-        me_lsfg_backend_schedule(g_vk.lsfg_inst, g_vk.lsfg_ctx);
     }
-#endif
+
 
     VkPresentInfoKHR pi = {
         .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
@@ -1510,6 +1759,7 @@ int me_vk_present(const u32 *pixels, unsigned frame_w, unsigned frame_h, unsigne
         fprintf(stderr, "[vk] vkQueuePresentKHR: %s\n", vk_result_str(r));
     }
 
+    pace_log:
     g_vk.frame_index = (g_vk.frame_index + 1) % FRAMES_IN_FLIGHT;
     g_vk.present_count++;
 
