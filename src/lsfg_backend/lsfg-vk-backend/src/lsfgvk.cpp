@@ -67,6 +67,12 @@ namespace lsfgvk::backend {
             const std::filesystem::path& shaderDllPath,
             bool allowLowPrecision);
 
+        /// create an instance from a host-provided VkInstance/VkDevice
+        InstanceImpl(VkInstance hostInstance, VkPhysicalDevice hostPhysDev,
+            VkDevice hostDevice, uint32_t queueFamilyIdx,
+            const std::filesystem::path& shaderDllPath,
+            bool allowLowPrecision);
+
         /// get the Vulkan instance
         /// @return the Vulkan instance
         [[nodiscard]] const auto& getVulkan() const { return this->vk; }
@@ -191,6 +197,19 @@ Instance::Instance(
     );
 }
 
+Instance::Instance(
+        VkInstance hostInstance,
+        VkPhysicalDevice hostPhysDev,
+        VkDevice hostDevice,
+        uint32_t queueFamilyIdx,
+        const std::filesystem::path& shaderDllPath,
+        bool allowLowPrecision) {
+    this->m_impl = std::make_unique<InstanceImpl>(
+        hostInstance, hostPhysDev, hostDevice, queueFamilyIdx,
+        shaderDllPath, allowLowPrecision
+    );
+}
+
 namespace {
     /// find the cache file path (Windows: %APPDATA%\lsfg-vk)
     std::filesystem::path findCacheFilePath() {
@@ -211,6 +230,33 @@ namespace {
             };
         } catch (const std::exception& e) {
             throw backend::error("Unable to initialize Vulkan", e);
+        }
+    }
+    /// adopt a host-provided Vulkan instance/device into a vk::Vulkan
+    vk::Vulkan adoptHostVulkan(VkInstance hostInstance, VkPhysicalDevice hostPhysDev,
+            VkDevice hostDevice) {
+        try {
+            // resolve vkGetInstanceProcAddr via the loader (vulkan-1.dll is already
+            // mapped because the host linked vulkan-1.lib)
+            HMODULE vulkanDll = LoadLibraryA("vulkan-1.dll");
+            if (!vulkanDll)
+                throw backend::error("failed to load vulkan-1.dll");
+            auto mpa = reinterpret_cast<PFN_vkGetInstanceProcAddr>(
+                GetProcAddress(vulkanDll, "vkGetInstanceProcAddr"));
+            if (!mpa)
+                throw backend::error("failed to resolve vkGetInstanceProcAddr");
+
+            auto instanceFuncs = vk::initVulkanInstanceFuncs(hostInstance, mpa, false);
+            auto deviceFuncs = vk::initVulkanDeviceFuncs(instanceFuncs, hostDevice, false);
+
+            return vk::Vulkan{
+                hostInstance, hostDevice, hostPhysDev,
+                instanceFuncs, deviceFuncs,
+                false, std::nullopt,
+                findCacheFilePath()
+            };
+        } catch (const std::exception& e) {
+            throw backend::error("Unable to adopt host Vulkan instance/device", e);
         }
     }
     /// build a shader registry
@@ -260,6 +306,19 @@ InstanceImpl::InstanceImpl(vk::PhysicalDeviceSelector selectPhysicalDevice,
             const std::filesystem::path& shaderDllPath,
             bool allowLowPrecision)
         : vk(createVulkanInstance(selectPhysicalDevice)),
+        shaders(createShaderRegistry(this->vk, shaderDllPath,
+            allowLowPrecision && vk.supportsFP16())) {
+#ifdef LSFGVK_TESTING_RENDERDOC
+    this->renderdoc = loadRenderDocIntegration();
+#endif
+    vk.persistPipelineCache(); // will silently fail
+}
+
+InstanceImpl::InstanceImpl(VkInstance hostInstance, VkPhysicalDevice hostPhysDev,
+            VkDevice hostDevice, uint32_t /*queueFamilyIdx*/,
+            const std::filesystem::path& shaderDllPath,
+            bool allowLowPrecision)
+        : vk(adoptHostVulkan(hostInstance, hostPhysDev, hostDevice)),
         shaders(createShaderRegistry(this->vk, shaderDllPath,
             allowLowPrecision && vk.supportsFP16())) {
 #ifdef LSFGVK_TESTING_RENDERDOC

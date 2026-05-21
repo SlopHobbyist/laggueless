@@ -64,6 +64,7 @@ if exist "%LSFG_LIB%" (
         "-I%ROOT%src\lsfg_backend\lsfg-vk-backend\include" ^
         "-I%ROOT%src\lsfg_backend\lsfg-vk-common\include" ^
         "-I%ROOT%src\lsfg_backend\lsfg-vk-common\thirdparty\include" ^
+        "-I%VULKAN_SDK%\Include" ^
         "-I%SRC%" ^
         -c "%BRIDGE_SRC%" -o "%BRIDGE_OBJ%" 2>"%BUILD%\bridge_compile.log"
     if not errorlevel 1 (

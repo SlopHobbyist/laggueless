@@ -11,6 +11,7 @@
 #include <utility>
 #include <vector>
 #include <windows.h>
+#include <vulkan/vulkan_core.h>
 
 namespace lsfgvk::backend {
 
@@ -69,6 +70,41 @@ namespace lsfgvk::backend {
         ///
         Instance(
             const DevicePicker& devicePicker,
+            const std::filesystem::path& shaderDllPath,
+            bool allowLowPrecision
+        );
+
+        ///
+        /// Create a lsfg-vk instance reusing a host-provided VkInstance/VkDevice.
+        ///
+        /// Use this when the host application already has a VkInstance and VkDevice
+        /// for the same physical device. On Windows + NVIDIA, creating a second
+        /// VkInstance for the same physical GPU corrupts the ICD's WSI dispatch
+        /// and the host's vkQueuePresentKHR crashes. Sharing the host's instance
+        /// avoids the issue entirely.
+        ///
+        /// The host's VkDevice MUST enable:
+        ///   - VK_KHR_external_memory_win32
+        ///   - VK_KHR_external_semaphore_win32
+        ///   - VK_KHR_timeline_semaphore (or core 1.2 timelineSemaphore feature)
+        ///
+        /// The host retains ownership of the VkInstance/VkDevice; this object
+        /// will NOT call vkDestroyInstance or vkDestroyDevice in its destructor.
+        ///
+        /// @param hostInstance   Host VkInstance (kept alive by host)
+        /// @param hostPhysDev    Physical device used by the host
+        /// @param hostDevice     Host VkDevice (kept alive by host)
+        /// @param queueFamilyIdx Queue family used by the host (must support compute)
+        /// @param shaderDllPath  Path to Lossless.dll
+        /// @param allowLowPrecision Whether to load FP16 shaders if supported
+        ///
+        /// @throws backend::error on failure
+        ///
+        Instance(
+            VkInstance hostInstance,
+            VkPhysicalDevice hostPhysDev,
+            VkDevice hostDevice,
+            uint32_t queueFamilyIdx,
             const std::filesystem::path& shaderDllPath,
             bool allowLowPrecision
         );

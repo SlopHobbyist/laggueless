@@ -102,6 +102,13 @@ static struct {
     int pace_log; /* per-second swapchain/present diagnostics */
     int present_count; /* monotonic, for pace_log */
 
+    /* Swapchain extension PFNs resolved via vkGetDeviceProcAddr so we don't
+     * go through the loader trampoline. The trampoline's WSI dispatch can
+     * get corrupted on Windows + NVIDIA when a second VkInstance is created
+     * for the same physical device, which would otherwise crash present. */
+    PFN_vkAcquireNextImageKHR              pfn_AcquireNextImage;
+    PFN_vkQueuePresentKHR                  pfn_QueuePresent;
+
 #ifdef ME_HAVE_LSFG
     /* B3: Shared images + timeline semaphore for LSFG frame gen.
      * Two source images (curr/prev), N dest images (generated frames).
@@ -903,11 +910,15 @@ int me_vk_init(HWND hwnd, unsigned max_w, unsigned max_h) {
     uint32_t dev_ext_count = 0;
     dev_exts[dev_ext_count++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
 #ifdef ME_HAVE_LSFG
-    /* B3: External memory/semaphore extensions needed for HANDLE sharing. */
+    /* B3: External memory/semaphore extensions needed for HANDLE sharing.
+     * Timeline semaphore extension is enabled in addition to the 1.2 feature
+     * because the shared lsfg-vk backend resolves the KHR-suffixed entry points
+     * (vkSignalSemaphoreKHR / vkWaitSemaphoresKHR). */
     dev_exts[dev_ext_count++] = VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME;
     dev_exts[dev_ext_count++] = VK_KHR_EXTERNAL_SEMAPHORE_WIN32_EXTENSION_NAME;
     dev_exts[dev_ext_count++] = VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME;
     dev_exts[dev_ext_count++] = VK_KHR_EXTERNAL_SEMAPHORE_EXTENSION_NAME;
+    dev_exts[dev_ext_count++] = VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME;
 #endif
     /* Enable timeline semaphores (needed for vkWaitSemaphores on our device)
        and explicitly disable samplerAnisotropy (we don't use it; prevents
@@ -928,6 +939,19 @@ int me_vk_init(HWND hwnd, unsigned max_w, unsigned max_h) {
     };
     VK_CHECK(vkCreateDevice(g_vk.phys, &dci, NULL, &g_vk.device), "vkCreateDevice");
     vkGetDeviceQueue(g_vk.device, g_vk.gfx_queue_family, 0, &g_vk.gfx_queue);
+
+    /* Resolve swapchain extension PFNs from the device. Calling these through
+     * the loader trampoline can crash after a second VkInstance is created
+     * (the lsfg-vk backend). Calling the device-level pointer directly is safe
+     * because it points straight at the ICD entry point. */
+    g_vk.pfn_AcquireNextImage = (PFN_vkAcquireNextImageKHR)
+        vkGetDeviceProcAddr(g_vk.device, "vkAcquireNextImageKHR");
+    g_vk.pfn_QueuePresent = (PFN_vkQueuePresentKHR)
+        vkGetDeviceProcAddr(g_vk.device, "vkQueuePresentKHR");
+    if (!g_vk.pfn_AcquireNextImage || !g_vk.pfn_QueuePresent) {
+        fprintf(stderr, "[vk] failed to resolve swapchain device PFNs\n");
+        goto fail;
+    }
 
 #ifdef ME_HAVE_LSFG
     /* Load Vulkan 1.2 timeline semaphore PFNs (CPU-side wait/signal). */
@@ -1125,7 +1149,11 @@ int me_vk_lsfg_init(const char *dll_path, unsigned width, unsigned height, int m
     if (g_vk.present_mode != VK_PRESENT_MODE_FIFO_KHR) {
         fprintf(stderr, "[vk-lsfg] switching to FIFO present mode for frame gen\n");
         g_vk.present_mode = VK_PRESENT_MODE_FIFO_KHR;
-        g_vk.swapchain_needs_recreate = 1;
+        /* Recreate immediately so the first present hits a steady state. */
+        if (recreate_swapchain() != 0) {
+            fprintf(stderr, "[vk-lsfg] failed to recreate swapchain in FIFO mode\n");
+            goto fail;
+        }
     }
 
     /* B4: Create command pool + buffer for generated-frame presents. */
@@ -1162,8 +1190,13 @@ int me_vk_lsfg_init(const char *dll_path, unsigned width, unsigned height, int m
         goto fail;
     }
 
-    /* Create the backend instance (its own VkDevice). */
-    g_vk.lsfg_inst = me_lsfg_backend_create(dll_path);
+    /* Create the backend instance. It shares our VkInstance/VkDevice rather
+     * than creating its own — on Windows + NVIDIA, creating a second VkInstance
+     * for the same physical device clobbers the ICD's WSI dispatch and the
+     * host's vkQueuePresentKHR crashes (jump to 0x0). */
+    g_vk.lsfg_inst = me_lsfg_backend_create(
+        dll_path, g_vk.instance, g_vk.phys, g_vk.device,
+        g_vk.gfx_queue, g_vk.gfx_queue_family);
     if (!g_vk.lsfg_inst) goto fail;
 
     /* Create shared source images. */
@@ -1322,7 +1355,7 @@ int me_vk_present(const u32 *pixels, unsigned frame_w, unsigned frame_h, unsigne
     vkWaitForFences(g_vk.device, 1, &f->in_flight, VK_TRUE, UINT64_MAX);
 
     uint32_t img_idx = 0;
-    VkResult r = vkAcquireNextImageKHR(g_vk.device, g_vk.swapchain, UINT64_MAX,
+    VkResult r = g_vk.pfn_AcquireNextImage(g_vk.device, g_vk.swapchain, UINT64_MAX,
                                        f->image_available, VK_NULL_HANDLE, &img_idx);
     if (r == VK_ERROR_OUT_OF_DATE_KHR) {
         g_vk.swapchain_needs_recreate = 1;
@@ -1565,8 +1598,11 @@ int me_vk_present(const u32 *pixels, unsigned frame_w, unsigned frame_h, unsigne
         uint64_t signal_val = g_vk.lsfg_timeline_value;
         VkSemaphore signal_sems[2] = { signal_sem, g_vk.lsfg_timeline };
         uint64_t    signal_vals[2] = { 0, signal_val }; /* binary sem uses 0 */
+        uint64_t    wait_vals[1]   = { 0 }; /* binary wait sem uses 0 */
         VkTimelineSemaphoreSubmitInfo tsi = {
             .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
+            .waitSemaphoreValueCount = 1,
+            .pWaitSemaphoreValues = wait_vals,
             .signalSemaphoreValueCount = 2,
             .pSignalSemaphoreValues = signal_vals,
         };
@@ -1598,7 +1634,7 @@ int me_vk_present(const u32 *pixels, unsigned frame_w, unsigned frame_h, unsigne
             .pSwapchains = &g_vk.swapchain,
             .pImageIndices = &img_idx,
         };
-        r = vkQueuePresentKHR(g_vk.gfx_queue, &pi);
+        r = g_vk.pfn_QueuePresent(g_vk.gfx_queue, &pi);
         if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) {
             g_vk.swapchain_needs_recreate = 1;
             goto lsfg_present_done;
@@ -1624,7 +1660,7 @@ int me_vk_present(const u32 *pixels, unsigned frame_w, unsigned frame_h, unsigne
 
             /* Acquire a swapchain image for this generated frame. */
             uint32_t gen_img_idx = 0;
-            r = vkAcquireNextImageKHR(g_vk.device, g_vk.swapchain, UINT64_MAX,
+            r = g_vk.pfn_AcquireNextImage(g_vk.device, g_vk.swapchain, UINT64_MAX,
                                       g_vk.lsfg_acquire_sem, VK_NULL_HANDLE, &gen_img_idx);
             if (r == VK_ERROR_OUT_OF_DATE_KHR) {
                 g_vk.swapchain_needs_recreate = 1;
@@ -1709,7 +1745,7 @@ int me_vk_present(const u32 *pixels, unsigned frame_w, unsigned frame_h, unsigne
                 .pSwapchains = &g_vk.swapchain,
                 .pImageIndices = &gen_img_idx,
             };
-            r = vkQueuePresentKHR(g_vk.gfx_queue, &gen_pi);
+            r = g_vk.pfn_QueuePresent(g_vk.gfx_queue, &gen_pi);
             if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) {
                 g_vk.swapchain_needs_recreate = 1;
                 goto lsfg_present_done;
@@ -1752,7 +1788,7 @@ int me_vk_present(const u32 *pixels, unsigned frame_w, unsigned frame_h, unsigne
         .pSwapchains = &g_vk.swapchain,
         .pImageIndices = &img_idx,
     };
-    r = vkQueuePresentKHR(g_vk.gfx_queue, &pi);
+    r = g_vk.pfn_QueuePresent(g_vk.gfx_queue, &pi);
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) {
         g_vk.swapchain_needs_recreate = 1;
     } else if (r != VK_SUCCESS) {

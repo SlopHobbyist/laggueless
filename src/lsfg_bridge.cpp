@@ -41,9 +41,19 @@ struct me_lsfg_context {
  * ------------------------------------------------------------------------- */
 
 extern "C"
-me_lsfg_instance *me_lsfg_backend_create(const char *dll_path) {
+me_lsfg_instance *me_lsfg_backend_create(
+        const char *dll_path,
+        VkInstance host_instance,
+        VkPhysicalDevice host_phys_dev,
+        VkDevice host_device,
+        VkQueue /*host_queue*/,
+        uint32_t queue_family_idx) {
     if (!dll_path) {
         fprintf(stderr, "[lsfg-bridge] dll_path is NULL\n");
+        return nullptr;
+    }
+    if (!host_instance || !host_phys_dev || !host_device) {
+        fprintf(stderr, "[lsfg-bridge] host VkInstance/VkPhysicalDevice/VkDevice required\n");
         return nullptr;
     }
 
@@ -52,17 +62,11 @@ me_lsfg_instance *me_lsfg_backend_create(const char *dll_path) {
 
     try {
         handle->inst = std::make_unique<lsfgvk::backend::Instance>(
-            /* device picker: accept the first discrete GPU, log its name */
-            [](const std::string& name,
-               std::pair<const std::string&, const std::string&> /*ids*/,
-               const std::optional<std::string>& /*pci*/) -> bool {
-                fprintf(stderr, "[lsfg-bridge] backend device: %s\n", name.c_str());
-                return true; /* accept the first one */
-            },
+            host_instance, host_phys_dev, host_device, queue_family_idx,
             std::filesystem::path(dll_path),
             true /* allow FP16 if supported */
         );
-        fprintf(stderr, "[lsfg-bridge] Instance created OK\n");
+        fprintf(stderr, "[lsfg-bridge] Instance created OK (shared host VkInstance/VkDevice)\n");
         return handle;
     } catch (const lsfgvk::backend::error& e) {
         fprintf(stderr, "[lsfg-bridge] backend::error creating Instance: %s\n", e.what());

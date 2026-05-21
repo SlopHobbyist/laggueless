@@ -17,6 +17,7 @@
 
 #include <windows.h>
 #include <stdint.h>
+#include <vulkan/vulkan_core.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -36,7 +37,13 @@ typedef struct me_lsfg_context me_lsfg_context;
  * dll_path  — absolute path to Lossless.dll
  * Returns NULL on failure (error printed to stderr).
  * ------------------------------------------------------------------------- */
-me_lsfg_instance *me_lsfg_backend_create(const char *dll_path);
+me_lsfg_instance *me_lsfg_backend_create(
+    const char *dll_path,
+    VkInstance host_instance,
+    VkPhysicalDevice host_phys_dev,
+    VkDevice host_device,
+    VkQueue host_queue,            /* currently unused, reserved for future use */
+    uint32_t queue_family_idx);
 
 /* -------------------------------------------------------------------------
  * me_lsfg_backend_open
