@@ -162,6 +162,22 @@ static struct {
     VkCommandBuffer    lsfg_cmd;         /* single cmd buf for generated presents */
     VkSemaphore        lsfg_acquire_sem; /* image_available for generated presents */
     VkFence            lsfg_fence;       /* CPU gate: gpu done with lsfg_cmd */
+
+    /* B5 quality fix: BGRA->RGBA compute shader.
+     * vkCmdBlitImage does NOT swizzle channels between same-bit-width formats
+     * with different component orders — it raw-copies bytes. Feeding the
+     * BGRA upload_image straight into the RGBA LSFG src image would leave LSFG
+     * seeing red and blue swapped, corrupting its luma-driven motion estimation
+     * and producing visible shimmer/artifacting. This compute pass does the
+     * swap explicitly. */
+    VkShaderModule        lsfg_swiz_module;
+    VkDescriptorSetLayout lsfg_swiz_dsl;
+    VkPipelineLayout      lsfg_swiz_pl;
+    VkPipeline            lsfg_swiz_pipe;
+    VkDescriptorPool      lsfg_swiz_pool;
+    VkDescriptorSet       lsfg_swiz_dset[2];   /* one per source slot */
+    VkImageView           lsfg_src_view[2];    /* storage view, RGBA */
+    VkImageView           upload_storage_view; /* storage view over upload_image, BGRA */
 #endif /* ME_HAVE_LSFG */
 } g_vk;
 
@@ -460,7 +476,11 @@ static int create_upload_image(void) {
         .tiling = VK_IMAGE_TILING_OPTIMAL,
         /* B4: also TRANSFER_SRC so we can blit into LSFG source slots */
         .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT
-               | VK_IMAGE_USAGE_SAMPLED_BIT,
+               | VK_IMAGE_USAGE_SAMPLED_BIT
+               /* B5 quality fix: STORAGE so the BGRA->RGBA compute shader can
+                * sample upload_image as a storage image (image views must come
+                * from the image's declared usage). */
+               | VK_IMAGE_USAGE_STORAGE_BIT,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
     };
@@ -1065,8 +1085,182 @@ static int create_lsfg_timeline(VkSemaphore *out_sem, uint64_t initial_value) {
     return 0;
 }
 
+/* B5: Set up the BGRA -> RGBA swizzle compute pipeline.
+ * Creates the shader module, descriptor-set layout (2 storage images +
+ * push constant), pipeline, descriptor pool, and per-slot descriptor sets.
+ * Also creates the storage image views.
+ * Idempotent: pre-existing state is destroyed first. */
+static int create_lsfg_swizzle_pipeline(void) {
+    /* Image views. upload_image is BGRA; lsfg_src[i] is RGBA. We pretend
+     * upload_image is RGBA in the view so the shader sees raw bytes and we
+     * swap them on the write side. */
+    VkImageViewCreateInfo uvci = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .image = g_vk.upload_image,
+        .viewType = VK_IMAGE_VIEW_TYPE_2D,
+        .format = VK_FORMAT_B8G8R8A8_UNORM,
+        .components = { VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
+                        VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY },
+        .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+    };
+    if (vkCreateImageView(g_vk.device, &uvci, NULL, &g_vk.upload_storage_view) != VK_SUCCESS) {
+        fprintf(stderr, "[vk-lsfg] failed to create upload_storage_view\n");
+        return -1;
+    }
+    for (int i = 0; i < 2; i++) {
+        VkImageViewCreateInfo svci = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .image = g_vk.lsfg_src[i],
+            .viewType = VK_IMAGE_VIEW_TYPE_2D,
+            .format = VK_FORMAT_R8G8B8A8_UNORM,
+            .components = { VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
+                            VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY },
+            .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+        };
+        if (vkCreateImageView(g_vk.device, &svci, NULL, &g_vk.lsfg_src_view[i]) != VK_SUCCESS) {
+            fprintf(stderr, "[vk-lsfg] failed to create lsfg_src_view[%d]\n", i);
+            return -1;
+        }
+    }
+
+    /* Shader module. */
+    VkShaderModuleCreateInfo smci = {
+        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+        .codeSize = bgra_to_rgba_spv_len,
+        .pCode = bgra_to_rgba_spv,
+    };
+    if (vkCreateShaderModule(g_vk.device, &smci, NULL, &g_vk.lsfg_swiz_module) != VK_SUCCESS) {
+        fprintf(stderr, "[vk-lsfg] failed to create swizzle shader module\n");
+        return -1;
+    }
+
+    /* Descriptor-set layout: binding 0 = readonly storage image (upload, BGRA),
+     * binding 1 = writeonly storage image (lsfg_src, RGBA). */
+    VkDescriptorSetLayoutBinding dslb[2] = {
+        { .binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+          .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT },
+        { .binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+          .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT },
+    };
+    VkDescriptorSetLayoutCreateInfo dslci = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .bindingCount = 2,
+        .pBindings = dslb,
+    };
+    if (vkCreateDescriptorSetLayout(g_vk.device, &dslci, NULL, &g_vk.lsfg_swiz_dsl) != VK_SUCCESS) {
+        fprintf(stderr, "[vk-lsfg] failed to create swizzle DSL\n");
+        return -1;
+    }
+
+    /* Pipeline layout (DSL + push constant: 2 uints for width, height). */
+    VkPushConstantRange pcr = {
+        .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+        .offset = 0,
+        .size = sizeof(uint32_t) * 2,
+    };
+    VkPipelineLayoutCreateInfo plci = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .setLayoutCount = 1,
+        .pSetLayouts = &g_vk.lsfg_swiz_dsl,
+        .pushConstantRangeCount = 1,
+        .pPushConstantRanges = &pcr,
+    };
+    if (vkCreatePipelineLayout(g_vk.device, &plci, NULL, &g_vk.lsfg_swiz_pl) != VK_SUCCESS) {
+        fprintf(stderr, "[vk-lsfg] failed to create swizzle pipeline layout\n");
+        return -1;
+    }
+
+    /* Compute pipeline. */
+    VkComputePipelineCreateInfo cpci = {
+        .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+        .stage = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+            .module = g_vk.lsfg_swiz_module,
+            .pName = "main",
+        },
+        .layout = g_vk.lsfg_swiz_pl,
+    };
+    if (vkCreateComputePipelines(g_vk.device, VK_NULL_HANDLE, 1, &cpci, NULL, &g_vk.lsfg_swiz_pipe) != VK_SUCCESS) {
+        fprintf(stderr, "[vk-lsfg] failed to create swizzle compute pipeline\n");
+        return -1;
+    }
+
+    /* Descriptor pool + 2 sets (one per LSFG source slot). */
+    VkDescriptorPoolSize dps = {
+        .type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+        .descriptorCount = 4, /* 2 bindings * 2 sets */
+    };
+    VkDescriptorPoolCreateInfo dpci = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+        .maxSets = 2,
+        .poolSizeCount = 1,
+        .pPoolSizes = &dps,
+    };
+    if (vkCreateDescriptorPool(g_vk.device, &dpci, NULL, &g_vk.lsfg_swiz_pool) != VK_SUCCESS) {
+        fprintf(stderr, "[vk-lsfg] failed to create swizzle descriptor pool\n");
+        return -1;
+    }
+    VkDescriptorSetLayout layouts[2] = { g_vk.lsfg_swiz_dsl, g_vk.lsfg_swiz_dsl };
+    VkDescriptorSetAllocateInfo dsai = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .descriptorPool = g_vk.lsfg_swiz_pool,
+        .descriptorSetCount = 2,
+        .pSetLayouts = layouts,
+    };
+    if (vkAllocateDescriptorSets(g_vk.device, &dsai, g_vk.lsfg_swiz_dset) != VK_SUCCESS) {
+        fprintf(stderr, "[vk-lsfg] failed to allocate swizzle descriptor sets\n");
+        return -1;
+    }
+
+    /* Write the descriptor sets: each set binds the same upload view + its own
+     * lsfg_src view. The upload image is in GENERAL layout when the compute
+     * dispatch runs (we transition it there in the per-frame path). */
+    for (int i = 0; i < 2; i++) {
+        VkDescriptorImageInfo dii_src = {
+            .imageView = g_vk.upload_storage_view,
+            .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+        };
+        VkDescriptorImageInfo dii_dst = {
+            .imageView = g_vk.lsfg_src_view[i],
+            .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+        };
+        VkWriteDescriptorSet wds[2] = {
+            { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+              .dstSet = g_vk.lsfg_swiz_dset[i],
+              .dstBinding = 0, .descriptorCount = 1,
+              .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+              .pImageInfo = &dii_src },
+            { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+              .dstSet = g_vk.lsfg_swiz_dset[i],
+              .dstBinding = 1, .descriptorCount = 1,
+              .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+              .pImageInfo = &dii_dst },
+        };
+        vkUpdateDescriptorSets(g_vk.device, 2, wds, 0, NULL);
+    }
+
+    return 0;
+}
+
+static void destroy_lsfg_swizzle_pipeline(void) {
+    if (g_vk.lsfg_swiz_pool)   { vkDestroyDescriptorPool(g_vk.device, g_vk.lsfg_swiz_pool, NULL); g_vk.lsfg_swiz_pool = VK_NULL_HANDLE; }
+    g_vk.lsfg_swiz_dset[0] = g_vk.lsfg_swiz_dset[1] = VK_NULL_HANDLE;
+    if (g_vk.lsfg_swiz_pipe)   { vkDestroyPipeline(g_vk.device, g_vk.lsfg_swiz_pipe, NULL); g_vk.lsfg_swiz_pipe = VK_NULL_HANDLE; }
+    if (g_vk.lsfg_swiz_pl)     { vkDestroyPipelineLayout(g_vk.device, g_vk.lsfg_swiz_pl, NULL); g_vk.lsfg_swiz_pl = VK_NULL_HANDLE; }
+    if (g_vk.lsfg_swiz_dsl)    { vkDestroyDescriptorSetLayout(g_vk.device, g_vk.lsfg_swiz_dsl, NULL); g_vk.lsfg_swiz_dsl = VK_NULL_HANDLE; }
+    if (g_vk.lsfg_swiz_module) { vkDestroyShaderModule(g_vk.device, g_vk.lsfg_swiz_module, NULL); g_vk.lsfg_swiz_module = VK_NULL_HANDLE; }
+    for (int i = 0; i < 2; i++) {
+        if (g_vk.lsfg_src_view[i]) { vkDestroyImageView(g_vk.device, g_vk.lsfg_src_view[i], NULL); g_vk.lsfg_src_view[i] = VK_NULL_HANDLE; }
+    }
+    if (g_vk.upload_storage_view) { vkDestroyImageView(g_vk.device, g_vk.upload_storage_view, NULL); g_vk.upload_storage_view = VK_NULL_HANDLE; }
+}
+
 static void destroy_lsfg_images(void) {
-    /* B4: Destroy command infrastructure first. */
+    /* B5: tear down the swizzle pipeline + storage views first. */
+    destroy_lsfg_swizzle_pipeline();
+
+    /* B4: Destroy command infrastructure. */
     if (g_vk.lsfg_fence)       { vkDestroyFence(g_vk.device, g_vk.lsfg_fence, NULL);           g_vk.lsfg_fence = VK_NULL_HANDLE; }
     if (g_vk.lsfg_acquire_sem) { vkDestroySemaphore(g_vk.device, g_vk.lsfg_acquire_sem, NULL); g_vk.lsfg_acquire_sem = VK_NULL_HANDLE; }
     if (g_vk.lsfg_cmd_pool)    { vkDestroyCommandPool(g_vk.device, g_vk.lsfg_cmd_pool, NULL);  g_vk.lsfg_cmd_pool = VK_NULL_HANDLE; }
@@ -1179,6 +1373,13 @@ int me_vk_lsfg_init(const char *dll_path, unsigned width, unsigned height,
     /* Create timeline semaphore. */
     if (create_lsfg_timeline(&g_vk.lsfg_timeline, 0) != 0) {
         fprintf(stderr, "[vk-lsfg] failed to create timeline semaphore\n");
+        goto fail;
+    }
+
+    /* B5: Set up the BGRA->RGBA swizzle compute pipeline. Must come after
+     * lsfg_src images exist (it creates views over them). */
+    if (create_lsfg_swizzle_pipeline() != 0) {
+        fprintf(stderr, "[vk-lsfg] failed to create BGRA->RGBA swizzle pipeline\n");
         goto fail;
     }
 
@@ -1404,83 +1605,25 @@ int me_vk_present(const u32 *pixels, unsigned frame_w, unsigned frame_h, unsigne
     g_vk.upload_image_initialized = 1;
 
 #ifdef ME_HAVE_LSFG
-    /* B3: Copy upload image into the current LSFG source slot.
-     * We blit BGRX (upload, B8G8R8A8_UNORM) -> RGBA (src slot, R8G8B8A8_UNORM).
-     * vkCmdBlitImage with NEAREST filter handles the channel reorder via the
-     * surface format difference (Vulkan blits swizzle automatically when the
-     * component order differs between same-bitwidth formats on most hardware).
-     * The upload image is frame_w x frame_h (a sub-region); the source slot is
-     * lsfg_width x lsfg_height (== max_w x max_h at context-open time).
-     * We blit only the (frame_w, frame_h) region into the source slot. */
+    /* B5: Copy upload_image (BGRA) -> lsfg_src[slot] (RGBA) via a compute shader
+     * that explicitly swaps R<->B. vkCmdBlitImage does NOT swizzle between
+     * BGRA and RGBA — it raw-copies bytes — which would corrupt LSFG's luma
+     * computation and produce shimmer/artifacting on motion. The compute
+     * dispatch is the only correct cross-format channel reorder available
+     * without restructuring the upload path.
+     *
+     * Layout transitions: upload_image SHADER_READ_ONLY -> GENERAL (storage
+     * read), lsfg_src[slot] UNDEFINED -> GENERAL (storage write, then stays
+     * in GENERAL for the backend to sample). */
     if (g_vk.lsfg_enabled && pixels && frame_w > 0 && frame_h > 0) {
         int slot = g_vk.lsfg_src_slot;
 
-        /* 1. Transition src slot: UNDEFINED -> TRANSFER_DST */
-        VkImageMemoryBarrier lsfg_b = {
-            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-            .srcAccessMask = 0,
-            .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-            .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image = g_vk.lsfg_src[slot],
-            .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
-        };
-        vkCmdPipelineBarrier(f->cmd,
-            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-            0, 0, NULL, 0, NULL, 1, &lsfg_b);
-
-        /* 2. Blit upload_image -> lsfg_src[slot].
-         * upload_image is currently in SHADER_READ_ONLY; we need TRANSFER_SRC. */
-        VkImageMemoryBarrier upload_to_src = {
-            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-            .srcAccessMask = VK_ACCESS_SHADER_READ_BIT,
-            .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
-            .oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image = g_vk.upload_image,
-            .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
-        };
-        vkCmdPipelineBarrier(f->cmd,
-            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-            0, 0, NULL, 0, NULL, 1, &upload_to_src);
-
-        VkImageBlit blit_region = {
-            .srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
-            .srcOffsets = { {0,0,0}, {(int32_t)frame_w, (int32_t)frame_h, 1} },
-            .dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
-            .dstOffsets = { {0,0,0}, {(int32_t)frame_w, (int32_t)frame_h, 1} },
-        };
-        vkCmdBlitImage(f->cmd,
-            g_vk.upload_image,      VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            g_vk.lsfg_src[slot],    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            1, &blit_region, VK_FILTER_NEAREST);
-
-        /* 3. Restore upload_image -> SHADER_READ_ONLY for the render pass. */
-        VkImageMemoryBarrier upload_back = {
-            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-            .srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
-            .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
-            .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image = g_vk.upload_image,
-            .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
-        };
-        vkCmdPipelineBarrier(f->cmd,
-            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-            0, 0, NULL, 0, NULL, 1, &upload_back);
-
-        /* 4. Transition lsfg_src[slot] -> GENERAL (backend reads in GENERAL). */
+        /* 1. Transition lsfg_src[slot]: UNDEFINED -> GENERAL (write target). */
         VkImageMemoryBarrier lsfg_to_general = {
             .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-            .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-            .dstAccessMask = 0,
-            .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            .srcAccessMask = 0,
+            .dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
             .newLayout = VK_IMAGE_LAYOUT_GENERAL,
             .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -1488,8 +1631,68 @@ int me_vk_present(const u32 *pixels, unsigned frame_w, unsigned frame_h, unsigne
             .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
         };
         vkCmdPipelineBarrier(f->cmd,
-            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
             0, 0, NULL, 0, NULL, 1, &lsfg_to_general);
+
+        /* 2. Transition upload_image: SHADER_READ_ONLY -> GENERAL (storage read). */
+        VkImageMemoryBarrier upload_to_general = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .srcAccessMask = VK_ACCESS_SHADER_READ_BIT,
+            .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = g_vk.upload_image,
+            .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+        };
+        vkCmdPipelineBarrier(f->cmd,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            0, 0, NULL, 0, NULL, 1, &upload_to_general);
+
+        /* 3. Dispatch the swizzle compute shader over the (frame_w, frame_h) region. */
+        vkCmdBindPipeline(f->cmd, VK_PIPELINE_BIND_POINT_COMPUTE, g_vk.lsfg_swiz_pipe);
+        vkCmdBindDescriptorSets(f->cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                g_vk.lsfg_swiz_pl, 0, 1, &g_vk.lsfg_swiz_dset[slot], 0, NULL);
+        uint32_t pc[2] = { frame_w, frame_h };
+        vkCmdPushConstants(f->cmd, g_vk.lsfg_swiz_pl, VK_SHADER_STAGE_COMPUTE_BIT,
+                           0, sizeof(pc), pc);
+        uint32_t gx = (frame_w + 7) / 8;
+        uint32_t gy = (frame_h + 7) / 8;
+        vkCmdDispatch(f->cmd, gx, gy, 1);
+
+        /* 4. Restore upload_image -> SHADER_READ_ONLY for the render pass. */
+        VkImageMemoryBarrier upload_back = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .srcAccessMask = VK_ACCESS_SHADER_READ_BIT,
+            .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
+            .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = g_vk.upload_image,
+            .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+        };
+        vkCmdPipelineBarrier(f->cmd,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            0, 0, NULL, 0, NULL, 1, &upload_back);
+
+        /* 5. Memory barrier on lsfg_src so the backend's compute reads see our writes.
+         * Image stays in GENERAL; the backend reads it in GENERAL. */
+        VkImageMemoryBarrier lsfg_visible = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
+            .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = g_vk.lsfg_src[slot],
+            .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+        };
+        vkCmdPipelineBarrier(f->cmd,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+            0, 0, NULL, 0, NULL, 1, &lsfg_visible);
 
         /* Advance source slot for next frame. */
         g_vk.lsfg_src_slot = 1 - slot;

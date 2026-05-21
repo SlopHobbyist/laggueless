@@ -22,7 +22,7 @@ echo "#include <stddef.h>"                                            >> "$out"
 echo "#include <stdint.h>"                                            >> "$out"
 
 # pairs: stage:input:name
-for spec in vert:quad.vert:quad_vert_spv frag:quad.frag:quad_frag_spv; do
+for spec in vert:quad.vert:quad_vert_spv frag:quad.frag:quad_frag_spv comp:bgra_to_rgba.comp:bgra_to_rgba_spv; do
     stage=${spec%%:*}
     rest=${spec#*:}
     src_name=${rest%%:*}

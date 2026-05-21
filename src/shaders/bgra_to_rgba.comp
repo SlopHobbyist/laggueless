@@ -1,0 +1,43 @@
+#version 450
+
+// BGRA -> RGBA channel swizzle for the LSFG source image.
+//
+// The host renderer's upload_image is VK_FORMAT_B8G8R8A8_UNORM (matches the
+// libretro core's framebuffer). The LSFG src images are VK_FORMAT_R8G8B8A8_UNORM
+// (what the LSFG SPIR-V shaders expect). vkCmdBlitImage between these formats
+// copies bytes verbatim — it does NOT swizzle — which would leave the LSFG
+// algorithm seeing red and blue swapped. That corrupts the luma-based motion
+// estimate and produces visible shimmer/artifacts on motion edges.
+//
+// This shader samples the BGRA upload_image (via a uimage2D bound as
+// VK_FORMAT_R8G8B8A8_UINT cast? No — simpler: sampled image with an image view
+// that has identity components, and we explicitly swap on read).
+//
+// Dispatched as (ceil(W/8), ceil(H/8), 1).
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+// Input: BGRA upload image, sampled at integer texel coords. We use a storage
+// image rather than a sampler because we want exact texel reads (no filtering).
+layout(set = 0, binding = 0, rgba8) uniform readonly image2D u_src_bgra;
+
+// Output: RGBA LSFG source slot, storage image.
+layout(set = 0, binding = 1, rgba8) uniform writeonly image2D u_dst_rgba;
+
+layout(push_constant) uniform Push {
+    uint width;
+    uint height;
+} pc;
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (uint(p.x) >= pc.width || uint(p.y) >= pc.height) return;
+
+    // Read the upload image. Because the underlying memory is BGRA but we
+    // declared this binding as rgba8, the .r/.g/.b/.a channels we see here are
+    // actually the BGRA bytes in that order. So this->r is the FRAME's blue,
+    // this->b is the FRAME's red. Swap them on the write side.
+    vec4 bgra = imageLoad(u_src_bgra, p);
+    vec4 rgba = vec4(bgra.b, bgra.g, bgra.r, bgra.a);
+    imageStore(u_dst_rgba, p, rgba);
+}
