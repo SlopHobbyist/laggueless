@@ -276,6 +276,10 @@ int me_settings_load(const char *path, me_settings *out) {
         out->aspect      = parse_aspect(scalar_str(map_get(&doc, video, "aspect")), out->aspect);
         out->force_gdi   = scalar_bool(map_get(&doc, video, "force_gdi"),   out->force_gdi);
         out->force_d3d11 = scalar_bool(map_get(&doc, video, "force_d3d11"), out->force_d3d11);
+        out->force_vulkan = scalar_bool(map_get(&doc, video, "force_vulkan"), out->force_vulkan);
+        out->vk_no_vsync = scalar_bool(map_get(&doc, video, "vk_no_vsync"), out->vk_no_vsync);
+        out->vk_mailbox  = scalar_bool(map_get(&doc, video, "vk_mailbox"),  out->vk_mailbox);
+        out->vk_validate = scalar_bool(map_get(&doc, video, "vk_validate"), out->vk_validate);
         out->match_display_hz = scalar_bool(map_get(&doc, video, "match_display_hz"),
                                             out->match_display_hz);
     }

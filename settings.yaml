@@ -7,6 +7,21 @@ video:
   force_d3d11: false     # use D3D11 present path for 2D cores too
                          # (enables VRR / lower latency, but may tear
                          # on non-GSync/FreeSync displays)
+  force_vulkan: false    # use the Vulkan present path. Software cores render
+                         # correctly; GL hardware cores are not bridged yet.
+                         # CLI equivalent: --vulkan
+  vk_no_vsync: false     # (Vulkan only) IMMEDIATE present mode: VRR-smooth if
+                         # adaptive sync is enabled in the driver/OS; otherwise
+                         # tearing for lowest latency on fixed-rate displays.
+                         # CLI equivalent: --no-vsync
+                         # Env equivalent: LAGGUELESS_VK_NO_VSYNC=1
+  vk_mailbox: false      # (Vulkan only) prefer MAILBOX present mode (no tearing,
+                         # replaces queued frame). Ignored when vk_no_vsync is on.
+                         # Env equivalent: LAGGUELESS_VK_MAILBOX=1
+  vk_validate: false     # (Vulkan only) enable VK_LAYER_KHRONOS_validation.
+                         # Requires the Vulkan SDK installed. Adds significant
+                         # overhead; only useful for debugging.
+                         # Env equivalent: LAGGUELESS_VK_VALIDATE=1
   match_display_hz: false # if the monitor's refresh rate is within ~5%
                          # of the core's nominal fps, snap the pacing
                          # deadline to the display's actual period.

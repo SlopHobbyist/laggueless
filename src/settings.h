@@ -60,6 +60,10 @@ typedef struct {
     me_aspect_mode aspect;
     int force_gdi;
     int force_d3d11;
+    int force_vulkan;       /* use the Vulkan present path */
+    int vk_no_vsync;        /* Vulkan IMMEDIATE present mode */
+    int vk_mailbox;         /* Vulkan MAILBOX present mode (ignored if vk_no_vsync) */
+    int vk_validate;        /* enable VK_LAYER_KHRONOS_validation */
     int match_display_hz;   /* snap pacing to monitor refresh when within tolerance */
 
     /* audio */

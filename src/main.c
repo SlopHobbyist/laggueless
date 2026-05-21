@@ -982,8 +982,17 @@ int main(int argc, char **argv) {
     int pace_log    = g_settings.pace_log;
     int timing_log  = g_settings.timing_log;
     int latency_log = g_settings.latency_log;
+    g_force_vulkan  = g_settings.force_vulkan;
+    g_no_vsync      = g_settings.vk_no_vsync;
     g_aspect_mode   = (int)g_settings.aspect;
     g_env_trace     = g_settings.env_trace;
+
+    /* Vulkan options come from three sources, lowest → highest priority:
+       settings.yaml → CLI flag → user-set env var. Settings-derived values are
+       pushed into env vars only when the user hasn't already set them; the CLI
+       loop and explicit env vars always win because they overwrite. */
+    if (g_settings.vk_mailbox  && !getenv("LAGGUELESS_VK_MAILBOX"))  _putenv("LAGGUELESS_VK_MAILBOX=1");
+    if (g_settings.vk_validate && !getenv("LAGGUELESS_VK_VALIDATE")) _putenv("LAGGUELESS_VK_VALIDATE=1");
 
     const char *positional[2] = { NULL, NULL };
     int npos = 0;
