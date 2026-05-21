@@ -174,3 +174,15 @@ Image::Image(const vk::Vulkan& vk,
         )),
         extent(extent) {
 }
+
+Image::Image(const vk::Vulkan& vk,
+            VkImage adoptedImage, VkDeviceMemory adoptedMemory,
+            VkExtent2D extent,
+            VkFormat format) :
+        // adopt without ownership: deleter-less owned_ptr<> just deletes the
+        // heap allocation, no vk destructor is called.
+        image(ls::owned_ptr<VkImage>(new VkImage(adoptedImage))),
+        memory(ls::owned_ptr<VkDeviceMemory>(new VkDeviceMemory(adoptedMemory))),
+        view(createImageView(vk, adoptedImage, format)),
+        extent(extent) {
+}

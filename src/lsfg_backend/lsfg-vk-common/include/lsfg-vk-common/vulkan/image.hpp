@@ -29,6 +29,21 @@ namespace vk {
             std::optional<HANDLE> importHandle = std::nullopt,
             std::optional<HANDLE*> exportHandle = std::nullopt);
 
+        /// adopt a pre-existing VkImage/VkDeviceMemory (host-owned).
+        /// The image and memory MUST be already bound and remain valid for the
+        /// lifetime of this object. The dtor will only destroy the created
+        /// VkImageView; the image/memory remain owned by the caller.
+        /// @param vk the vulkan instance
+        /// @param image existing VkImage handle (already memory-bound)
+        /// @param memory existing VkDeviceMemory handle bound to image
+        /// @param extent extent of the image in pixels
+        /// @param format vulkan format of the image (used to create the view)
+        /// @throws ls::vulkan_error on failure
+        Image(const vk::Vulkan& vk,
+            VkImage image, VkDeviceMemory memory,
+            VkExtent2D extent,
+            VkFormat format);
+
         /// get the image handle
         /// @return the image handle
         [[nodiscard]] const auto& handle() const { return this->image.get(); }

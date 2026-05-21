@@ -65,12 +65,41 @@ me_lsfg_instance *me_lsfg_backend_create(
  *
  * Returns NULL on failure.
  * ------------------------------------------------------------------------- */
+/* DEPRECATED: uses Win32 HANDLE export/import path.  Kept for reference;
+ * the shared-device path (me_lsfg_backend_open_shared) is preferred when
+ * the host and backend share a VkDevice (which avoids dedicated-allocate
+ * mismatches across instances). */
 me_lsfg_context *me_lsfg_backend_open(
     me_lsfg_instance *inst,
     HANDLE src0_handle,
     HANDLE src1_handle,
     const HANDLE *dest_handles, int dest_count,
     HANDLE sync_handle,
+    unsigned width, unsigned height,
+    int hdr, float flow_scale, int perf_mode);
+
+/* -------------------------------------------------------------------------
+ * me_lsfg_backend_open_shared
+ *
+ * Shared-VkDevice variant: pass pre-existing host-owned VkImages / VkDeviceMemory
+ * / VkSemaphore directly. No HANDLE export/import. Avoids cross-instance
+ * dedicated-allocate validation errors.
+ *
+ * src_images[2]   — source VkImage handles (curr, prev)
+ * src_mems[2]     — VkDeviceMemory bound to each source image
+ * dest_images[]   — N dest VkImage handles
+ * dest_mems[]     — VkDeviceMemory bound to each dest image
+ * sync_semaphore  — host-owned timeline VkSemaphore
+ * Other args same as me_lsfg_backend_open.
+ * ------------------------------------------------------------------------- */
+me_lsfg_context *me_lsfg_backend_open_shared(
+    me_lsfg_instance *inst,
+    VkImage src_image0, VkImage src_image1,
+    VkDeviceMemory src_mem0, VkDeviceMemory src_mem1,
+    const VkImage *dest_images,
+    const VkDeviceMemory *dest_mems,
+    int dest_count,
+    VkSemaphore sync_semaphore,
     unsigned width, unsigned height,
     int hdr, float flow_scale, int perf_mode);
 

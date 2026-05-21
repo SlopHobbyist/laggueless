@@ -144,6 +144,23 @@ namespace lsfgvk::backend {
         );
 
         ///
+        /// Open a frame generation context using pre-existing VkImage/VkDeviceMemory
+        /// and VkSemaphore handles, without going through Win32 HANDLE export/import.
+        /// Use this when the host shares the same VkDevice as the backend.
+        ///
+        /// The images and semaphore MUST remain valid until closeContext().
+        ///
+        Context& openContext(
+            std::pair<VkImage, VkImage> sourceImages,
+            std::pair<VkDeviceMemory, VkDeviceMemory> sourceMems,
+            const std::vector<VkImage>& destImages,
+            const std::vector<VkDeviceMemory>& destMems,
+            VkSemaphore syncSemaphore,
+            uint32_t width, uint32_t height,
+            bool hdr, float flow, bool perf
+        );
+
+        ///
         /// Schedule a new set of generated frames.
         ///
         /// @param context Context to use.

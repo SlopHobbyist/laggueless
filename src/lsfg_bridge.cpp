@@ -124,6 +124,59 @@ me_lsfg_context *me_lsfg_backend_open(
 }
 
 /* -------------------------------------------------------------------------
+ * me_lsfg_backend_open_shared
+ * ------------------------------------------------------------------------- */
+
+extern "C"
+me_lsfg_context *me_lsfg_backend_open_shared(
+    me_lsfg_instance *inst,
+    VkImage src_image0, VkImage src_image1,
+    VkDeviceMemory src_mem0, VkDeviceMemory src_mem1,
+    const VkImage *dest_images,
+    const VkDeviceMemory *dest_mems,
+    int dest_count,
+    VkSemaphore sync_semaphore,
+    unsigned width, unsigned height,
+    int hdr, float flow_scale, int perf_mode)
+{
+    if (!inst || !inst->inst) return nullptr;
+    if (dest_count <= 0 || !dest_images || !dest_mems) return nullptr;
+    if (!src_image0 || !src_image1 || !src_mem0 || !src_mem1) return nullptr;
+    if (!sync_semaphore) return nullptr;
+
+    std::vector<VkImage> destImgs(dest_images, dest_images + dest_count);
+    std::vector<VkDeviceMemory> destMms(dest_mems, dest_mems + dest_count);
+
+    try {
+        lsfgvk::backend::Context& ctx_ref = inst->inst->openContext(
+            { src_image0, src_image1 },
+            { src_mem0, src_mem1 },
+            destImgs,
+            destMms,
+            sync_semaphore,
+            width, height,
+            hdr ? true : false,
+            flow_scale,
+            perf_mode ? true : false
+        );
+        auto *handle = new (std::nothrow) me_lsfg_context;
+        if (!handle) {
+            inst->inst->closeContext(ctx_ref);
+            return nullptr;
+        }
+        handle->ctx = &ctx_ref;
+        fprintf(stderr, "[lsfg-bridge] Context opened (shared, %ux%u, x%d)\n",
+                width, height, dest_count + 1);
+        return handle;
+    } catch (const lsfgvk::backend::error& e) {
+        fprintf(stderr, "[lsfg-bridge] backend::error opening shared Context: %s\n", e.what());
+    } catch (const std::exception& e) {
+        fprintf(stderr, "[lsfg-bridge] std::exception opening shared Context: %s\n", e.what());
+    }
+    return nullptr;
+}
+
+/* -------------------------------------------------------------------------
  * me_lsfg_backend_schedule
  * ------------------------------------------------------------------------- */
 

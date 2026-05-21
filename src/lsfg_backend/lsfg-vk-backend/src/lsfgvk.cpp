@@ -108,10 +108,23 @@ namespace lsfgvk::backend {
             std::pair<HANDLE, HANDLE> sourceHandles, const std::vector<HANDLE>& destHandles, HANDLE syncHandle,
             VkExtent2D extent, bool hdr, float flow, bool perf);
 
+        /// create a context that adopts pre-existing VkImages/VkSemaphore (shared device)
+        ContextImpl(const InstanceImpl& instance,
+            std::pair<VkImage, VkImage> sourceImages,
+            std::pair<VkDeviceMemory, VkDeviceMemory> sourceMems,
+            const std::vector<VkImage>& destImages,
+            const std::vector<VkDeviceMemory>& destMems,
+            VkSemaphore syncSemaphore,
+            VkExtent2D extent, bool hdr, float flow, bool perf);
+
         /// schedule frames
         /// (see lsfg-vk documentation)
         void scheduleFrames();
     private:
+        /// shared post-construction setup: build passes and initial barriers.
+        /// Called from both ctors after sourceImages/destImages/etc are populated.
+        void buildPassesAndInit();
+
         std::pair<vk::Image, vk::Image> sourceImages;
         std::vector<vk::Image> destImages;
         vk::Image blackImage;
@@ -391,7 +404,7 @@ namespace {
     /// create prepass semaphores
     vk::TimelineSemaphore createPrepassSemaphore(const vk::Vulkan& vk) {
         try {
-            return{vk, 0};
+            return vk::TimelineSemaphore(vk, static_cast<uint32_t>(0));
         } catch (const std::exception& e) {
             throw backend::error("Unable to create prepass semaphore", e);
         }
@@ -487,6 +500,10 @@ ContextImpl::ContextImpl(const InstanceImpl& instance,
         },
         beta0(ctx, alpha1.at(0).getImages()),
         beta1(ctx, beta0.getImages()) {
+    this->buildPassesAndInit();
+}
+
+void ContextImpl::buildPassesAndInit() {
     // build main passes
     for (size_t i = 0; i < destImages.size(); ++i) {
         auto& pass = this->passes.emplace_back();
@@ -556,9 +573,14 @@ ContextImpl::ContextImpl(const InstanceImpl& instance,
         );
     }
 
-    // initialize all images
+    // initialize all images (including adopted sources/dests, which may still
+    // be in UNDEFINED — they must be in GENERAL before the backend samples them).
     std::vector<VkImage> images{};
     images.push_back(this->blackImage.handle());
+    images.push_back(this->sourceImages.first.handle());
+    images.push_back(this->sourceImages.second.handle());
+    for (const auto& dst : this->destImages)
+        images.push_back(dst.handle());
     mipmaps.prepare(images);
     for (size_t i = 0; i < 7; ++i) {
         alpha0.at(i).prepare(images);
@@ -601,6 +623,102 @@ ContextImpl::ContextImpl(const InstanceImpl& instance,
     cmdbuf.insertBarriers(ctx.vk, barriers);
     cmdbuf.end(ctx.vk);
     cmdbuf.submit(ctx.vk); // wait for completion
+}
+
+namespace {
+    /// adopt source images (shared device path)
+    std::pair<vk::Image, vk::Image> adoptImages(const vk::Vulkan& vk,
+            const std::pair<VkImage, VkImage>& srcImages,
+            const std::pair<VkDeviceMemory, VkDeviceMemory>& srcMems,
+            VkExtent2D extent, VkFormat format) {
+        try {
+            return {
+                vk::Image(vk, srcImages.first,  srcMems.first,  extent, format),
+                vk::Image(vk, srcImages.second, srcMems.second, extent, format)
+            };
+        } catch (const std::exception& e) {
+            throw backend::error("Unable to adopt source images", e);
+        }
+    }
+    /// adopt destination images (shared device path)
+    std::vector<vk::Image> adoptImages(const vk::Vulkan& vk,
+            const std::vector<VkImage>& destImages,
+            const std::vector<VkDeviceMemory>& destMems,
+            VkExtent2D extent, VkFormat format) {
+        try {
+            std::vector<vk::Image> out;
+            out.reserve(destImages.size());
+            for (size_t i = 0; i < destImages.size(); ++i)
+                out.emplace_back(vk, destImages[i], destMems[i], extent, format);
+            return out;
+        } catch (const std::exception& e) {
+            throw backend::error("Unable to adopt destination images", e);
+        }
+    }
+    /// adopt timeline semaphore (shared device path)
+    vk::TimelineSemaphore adoptTimelineSemaphore(const vk::Vulkan& vk, VkSemaphore sem) {
+        try {
+            return{vk, sem};
+        } catch (const std::exception& e) {
+            throw backend::error("Unable to adopt timeline semaphore", e);
+        }
+    }
+}
+
+ContextImpl::ContextImpl(const InstanceImpl& instance,
+            std::pair<VkImage, VkImage> sourceImagesIn,
+            std::pair<VkDeviceMemory, VkDeviceMemory> sourceMemsIn,
+            const std::vector<VkImage>& destImagesIn,
+            const std::vector<VkDeviceMemory>& destMemsIn,
+            VkSemaphore syncSemaphoreIn,
+            VkExtent2D extent, bool hdr, float flow, bool perf) :
+        sourceImages(adoptImages(instance.getVulkan(), sourceImagesIn, sourceMemsIn,
+            extent, hdr ? VK_FORMAT_R16G16B16A16_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM)),
+        destImages(adoptImages(instance.getVulkan(), destImagesIn, destMemsIn,
+            extent, hdr ? VK_FORMAT_R16G16B16A16_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM)),
+        blackImage(createBlackImage(instance.getVulkan())),
+        syncSemaphore(adoptTimelineSemaphore(instance.getVulkan(), syncSemaphoreIn)),
+        prepassSemaphore(createPrepassSemaphore(instance.getVulkan())),
+        cmdbufs(createCommandBuffers(instance.getVulkan(), destImagesIn.size() + 1)),
+        cmdbufFence(instance.getVulkan()),
+        ctx(createCtx(instance, extent, hdr, flow, perf, destImagesIn.size())),
+        mipmaps(ctx, sourceImages),
+        alpha0{
+            Alpha0(ctx, mipmaps.getImages().at(0)),
+            Alpha0(ctx, mipmaps.getImages().at(1)),
+            Alpha0(ctx, mipmaps.getImages().at(2)),
+            Alpha0(ctx, mipmaps.getImages().at(3)),
+            Alpha0(ctx, mipmaps.getImages().at(4)),
+            Alpha0(ctx, mipmaps.getImages().at(5)),
+            Alpha0(ctx, mipmaps.getImages().at(6))
+        },
+        alpha1{
+            Alpha1(ctx, 3, alpha0.at(0).getImages()),
+            Alpha1(ctx, 2, alpha0.at(1).getImages()),
+            Alpha1(ctx, 2, alpha0.at(2).getImages()),
+            Alpha1(ctx, 2, alpha0.at(3).getImages()),
+            Alpha1(ctx, 2, alpha0.at(4).getImages()),
+            Alpha1(ctx, 2, alpha0.at(5).getImages()),
+            Alpha1(ctx, 2, alpha0.at(6).getImages())
+        },
+        beta0(ctx, alpha1.at(0).getImages()),
+        beta1(ctx, beta0.getImages()) {
+    this->buildPassesAndInit();
+}
+
+Context& Instance::openContext(
+        std::pair<VkImage, VkImage> sourceImages,
+        std::pair<VkDeviceMemory, VkDeviceMemory> sourceMems,
+        const std::vector<VkImage>& destImages,
+        const std::vector<VkDeviceMemory>& destMems,
+        VkSemaphore syncSemaphore,
+        uint32_t width, uint32_t height,
+        bool hdr, float flow, bool perf) {
+    const VkExtent2D extent{ width, height };
+    return *this->m_contexts.emplace_back(std::make_unique<ContextImpl>(*this->m_impl,
+        sourceImages, sourceMems, destImages, destMems, syncSemaphore,
+        extent, hdr, flow, perf
+    )).get();
 }
 
 void Instance::scheduleFrames(Context& context) { // NOLINT (static)

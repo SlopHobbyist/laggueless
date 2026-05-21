@@ -25,6 +25,11 @@ namespace vk {
             std::optional<HANDLE> importHandle = std::nullopt,
             std::optional<HANDLE*> exportHandle = std::nullopt);
 
+        /// adopt an existing VkSemaphore (host-owned). Dtor will NOT destroy it.
+        /// @param vk the vulkan instance (unused for adoption but kept for symmetry)
+        /// @param adoptedSemaphore existing VkSemaphore (timeline) handle
+        TimelineSemaphore(const vk::Vulkan& vk, VkSemaphore adoptedSemaphore);
+
         /// signal the timeline semaphore
         /// @param vk the vulkan instance
         /// @param value the value to signal to

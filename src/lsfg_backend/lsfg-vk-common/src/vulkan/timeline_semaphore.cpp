@@ -83,6 +83,10 @@ TimelineSemaphore::TimelineSemaphore(const vk::Vulkan& vk, uint32_t initial,
         std::optional<HANDLE> importHandle, std::optional<HANDLE*> exportHandle)
     : semaphore(createTimelineSemaphore(vk, initial, importHandle, exportHandle)) {}
 
+TimelineSemaphore::TimelineSemaphore(const vk::Vulkan& /*vk*/, VkSemaphore adoptedSemaphore)
+    // deleter-less owned_ptr: heap-frees the wrapper but never calls vkDestroySemaphore
+    : semaphore(ls::owned_ptr<VkSemaphore>(new VkSemaphore(adoptedSemaphore))) {}
+
 void TimelineSemaphore::signal(const vk::Vulkan& vk, uint64_t value) const {
     const VkSemaphoreSignalInfo signalInfo{
         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO,

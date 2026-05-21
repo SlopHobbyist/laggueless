@@ -124,20 +124,18 @@ static struct {
     unsigned           lsfg_width;     /* resolution the context was opened at */
     unsigned           lsfg_height;
 
-    /* Source images (exported, RGBA8, VK_IMAGE_USAGE_STORAGE_BIT|SAMPLED_BIT). */
+    /* Source images (shared with backend via same VkDevice, RGBA8). */
     VkImage            lsfg_src[2];
     VkDeviceMemory     lsfg_src_mem[2];
-    HANDLE             lsfg_src_handle[2];
 
     /* Dest images (N = multiplier-1; for now 1 dest = 2x). */
     VkImage            lsfg_dst[4];      /* max 4x multiplier */
     VkDeviceMemory     lsfg_dst_mem[4];
-    HANDLE             lsfg_dst_handle[4];
     int                lsfg_dst_count;
 
-    /* Timeline semaphore for GPU-GPU sync between our queue and backend. */
+    /* Timeline semaphore for GPU-GPU sync between our queue and backend
+     * (shared-device path: plain VkSemaphore, no Win32 export). */
     VkSemaphore        lsfg_timeline;
-    HANDLE             lsfg_timeline_handle;
     uint64_t           lsfg_timeline_value;
 
     /* Which source slot we wrote last (0 or 1, alternating). */
@@ -966,10 +964,11 @@ int me_vk_init(HWND hwnd, unsigned max_w, unsigned max_h) {
         vkGetDeviceProcAddr(g_vk.device, "vkImportSemaphoreWin32HandleKHR");
     g_vk.pfn_GetSemaphoreWin32Handle = (PFN_vkGetSemaphoreWin32HandleKHR)
         vkGetDeviceProcAddr(g_vk.device, "vkGetSemaphoreWin32HandleKHR");
-    if (!g_vk.pfn_GetMemoryWin32Handle || !g_vk.pfn_GetSemaphoreWin32Handle ||
-        !g_vk.pfn_WaitSemaphores) {
-        fprintf(stderr, "[vk] WARNING: Win32 external memory/semaphore or timeline functions unavailable - LSFG disabled\n");
+    if (!g_vk.pfn_WaitSemaphores) {
+        fprintf(stderr, "[vk] WARNING: vkWaitSemaphores unavailable - LSFG disabled\n");
     }
+    /* pfn_GetMemoryWin32Handle/etc are no longer required (shared-device path)
+     * but we keep loading them above; unused PFN slots remain harmless. */
 #endif
 
     /* Resolve present mode. Defaults to FIFO; opt-in to MAILBOX or IMMEDIATE
@@ -1014,17 +1013,12 @@ fail:
  * ------------------------------------------------------------------------- */
 #ifdef ME_HAVE_LSFG
 
-/* Create one exportable RGBA8 image for LSFG source/dest slots. */
+/* Create a plain RGBA8 image for LSFG source/dest slots (shared-device path).
+ * No Win32 export — host and backend share the same VkDevice. */
 static int create_lsfg_image(unsigned w, unsigned h,
-                             VkImage *out_img, VkDeviceMemory *out_mem, HANDLE *out_handle) {
-    /* Export info chain. */
-    VkExternalMemoryImageCreateInfo emi = {
-        .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
-        .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT,
-    };
+                             VkImage *out_img, VkDeviceMemory *out_mem) {
     VkImageCreateInfo ici = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-        .pNext = &emi,
         .imageType = VK_IMAGE_TYPE_2D,
         .format = VK_FORMAT_R8G8B8A8_UNORM, /* LSFG expects RGBA */
         .extent = { w, h, 1 },
@@ -1033,6 +1027,7 @@ static int create_lsfg_image(unsigned w, unsigned h,
         .samples = VK_SAMPLE_COUNT_1_BIT,
         .tiling = VK_IMAGE_TILING_OPTIMAL,
         .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT | /* needed to blit OUT to swapchain */
                  VK_IMAGE_USAGE_STORAGE_BIT |
                  VK_IMAGE_USAGE_SAMPLED_BIT,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
@@ -1043,51 +1038,22 @@ static int create_lsfg_image(unsigned w, unsigned h,
     VkMemoryRequirements mr;
     vkGetImageMemoryRequirements(g_vk.device, *out_img, &mr);
 
-    VkExportMemoryAllocateInfo emai = {
-        .sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO,
-        .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT,
-    };
-    VkMemoryDedicatedAllocateInfo dai = {
-        .sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
-        .pNext = &emai,
-        .image = *out_img,
-    };
     int mt = find_mem_type(mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     if (mt < 0) return -1;
     VkMemoryAllocateInfo mai = {
         .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-        .pNext = &dai,
         .allocationSize = mr.size,
         .memoryTypeIndex = (uint32_t)mt,
     };
     if (vkAllocateMemory(g_vk.device, &mai, NULL, out_mem) != VK_SUCCESS) return -1;
     if (vkBindImageMemory(g_vk.device, *out_img, *out_mem, 0) != VK_SUCCESS) return -1;
-
-    /* Export the Win32 HANDLE. */
-    if (!g_vk.pfn_GetMemoryWin32Handle) return -1;
-    VkMemoryGetWin32HandleInfoKHR ghi = {
-        .sType = VK_STRUCTURE_TYPE_MEMORY_GET_WIN32_HANDLE_INFO_KHR,
-        .memory = *out_mem,
-        .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT,
-    };
-    if (g_vk.pfn_GetMemoryWin32Handle(g_vk.device, &ghi, out_handle) != VK_SUCCESS) return -1;
     return 0;
 }
 
-/* Create an exportable timeline semaphore for GPU-GPU sync. */
-static int create_lsfg_timeline(VkSemaphore *out_sem, HANDLE *out_handle, uint64_t initial_value) {
-    VkExportSemaphoreWin32HandleInfoKHR ehi = {
-        .sType = VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_WIN32_HANDLE_INFO_KHR,
-        .dwAccess = GENERIC_ALL,
-    };
-    VkExportSemaphoreCreateInfo esi = {
-        .sType = VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO,
-        .pNext = &ehi,
-        .handleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT,
-    };
+/* Create a plain timeline semaphore (shared-device path, no Win32 export). */
+static int create_lsfg_timeline(VkSemaphore *out_sem, uint64_t initial_value) {
     VkSemaphoreTypeCreateInfo stci = {
         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
-        .pNext = &esi,
         .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE,
         .initialValue = initial_value,
     };
@@ -1096,14 +1062,6 @@ static int create_lsfg_timeline(VkSemaphore *out_sem, HANDLE *out_handle, uint64
         .pNext = &stci,
     };
     if (vkCreateSemaphore(g_vk.device, &sci, NULL, out_sem) != VK_SUCCESS) return -1;
-
-    if (!g_vk.pfn_GetSemaphoreWin32Handle) return -1;
-    VkSemaphoreGetWin32HandleInfoKHR sghi = {
-        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_GET_WIN32_HANDLE_INFO_KHR,
-        .semaphore = *out_sem,
-        .handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT,
-    };
-    if (g_vk.pfn_GetSemaphoreWin32Handle(g_vk.device, &sghi, out_handle) != VK_SUCCESS) return -1;
     return 0;
 }
 
@@ -1114,19 +1072,16 @@ static void destroy_lsfg_images(void) {
     if (g_vk.lsfg_cmd_pool)    { vkDestroyCommandPool(g_vk.device, g_vk.lsfg_cmd_pool, NULL);  g_vk.lsfg_cmd_pool = VK_NULL_HANDLE; }
     g_vk.lsfg_cmd = VK_NULL_HANDLE;
 
-    /* Close Win32 HANDLEs then destroy Vulkan objects. */
+    /* Destroy Vulkan objects (shared-device path: host owns everything). */
     for (int i = 0; i < 2; i++) {
-        if (g_vk.lsfg_src_handle[i]) { CloseHandle(g_vk.lsfg_src_handle[i]); g_vk.lsfg_src_handle[i] = NULL; }
         if (g_vk.lsfg_src[i])        { vkDestroyImage(g_vk.device, g_vk.lsfg_src[i], NULL); g_vk.lsfg_src[i] = VK_NULL_HANDLE; }
         if (g_vk.lsfg_src_mem[i])    { vkFreeMemory(g_vk.device, g_vk.lsfg_src_mem[i], NULL); g_vk.lsfg_src_mem[i] = VK_NULL_HANDLE; }
     }
     for (int i = 0; i < g_vk.lsfg_dst_count; i++) {
-        if (g_vk.lsfg_dst_handle[i]) { CloseHandle(g_vk.lsfg_dst_handle[i]); g_vk.lsfg_dst_handle[i] = NULL; }
         if (g_vk.lsfg_dst[i])        { vkDestroyImage(g_vk.device, g_vk.lsfg_dst[i], NULL); g_vk.lsfg_dst[i] = VK_NULL_HANDLE; }
         if (g_vk.lsfg_dst_mem[i])    { vkFreeMemory(g_vk.device, g_vk.lsfg_dst_mem[i], NULL); g_vk.lsfg_dst_mem[i] = VK_NULL_HANDLE; }
     }
     g_vk.lsfg_dst_count = 0;
-    if (g_vk.lsfg_timeline_handle) { CloseHandle(g_vk.lsfg_timeline_handle); g_vk.lsfg_timeline_handle = NULL; }
     if (g_vk.lsfg_timeline)        { vkDestroySemaphore(g_vk.device, g_vk.lsfg_timeline, NULL); g_vk.lsfg_timeline = VK_NULL_HANDLE; }
     g_vk.lsfg_timeline_value = 0;
 }
@@ -1137,8 +1092,8 @@ static void destroy_lsfg_images(void) {
  * ------------------------------------------------------------------------- */
 int me_vk_lsfg_init(const char *dll_path, unsigned width, unsigned height, int multiplier) {
     if (!g_vk.active) return -1;
-    if (!g_vk.pfn_WaitSemaphores || !g_vk.pfn_GetMemoryWin32Handle) {
-        fprintf(stderr, "[vk-lsfg] required Vulkan 1.2 / Win32 functions missing\n");
+    if (!g_vk.pfn_WaitSemaphores) {
+        fprintf(stderr, "[vk-lsfg] vkWaitSemaphores PFN missing - LSFG disabled\n");
         return -1;
     }
     if (multiplier < 2) multiplier = 2;
@@ -1199,11 +1154,10 @@ int me_vk_lsfg_init(const char *dll_path, unsigned width, unsigned height, int m
         g_vk.gfx_queue, g_vk.gfx_queue_family);
     if (!g_vk.lsfg_inst) goto fail;
 
-    /* Create shared source images. */
+    /* Create shared source images (no Win32 export — host/backend share VkDevice). */
     for (int i = 0; i < 2; i++) {
         if (create_lsfg_image(width, height,
-                              &g_vk.lsfg_src[i], &g_vk.lsfg_src_mem[i],
-                              &g_vk.lsfg_src_handle[i]) != 0) {
+                              &g_vk.lsfg_src[i], &g_vk.lsfg_src_mem[i]) != 0) {
             fprintf(stderr, "[vk-lsfg] failed to create source image %d\n", i);
             goto fail;
         }
@@ -1212,8 +1166,7 @@ int me_vk_lsfg_init(const char *dll_path, unsigned width, unsigned height, int m
     /* Create shared dest images. */
     for (int i = 0; i < dst_count; i++) {
         if (create_lsfg_image(width, height,
-                              &g_vk.lsfg_dst[i], &g_vk.lsfg_dst_mem[i],
-                              &g_vk.lsfg_dst_handle[i]) != 0) {
+                              &g_vk.lsfg_dst[i], &g_vk.lsfg_dst_mem[i]) != 0) {
             fprintf(stderr, "[vk-lsfg] failed to create dest image %d\n", i);
             goto fail;
         }
@@ -1221,17 +1174,18 @@ int me_vk_lsfg_init(const char *dll_path, unsigned width, unsigned height, int m
     g_vk.lsfg_dst_count = dst_count;
 
     /* Create timeline semaphore. */
-    if (create_lsfg_timeline(&g_vk.lsfg_timeline, &g_vk.lsfg_timeline_handle, 0) != 0) {
+    if (create_lsfg_timeline(&g_vk.lsfg_timeline, 0) != 0) {
         fprintf(stderr, "[vk-lsfg] failed to create timeline semaphore\n");
         goto fail;
     }
 
-    /* Open the backend context. */
-    g_vk.lsfg_ctx = me_lsfg_backend_open(
+    /* Open the backend context via the shared-device path. */
+    g_vk.lsfg_ctx = me_lsfg_backend_open_shared(
         g_vk.lsfg_inst,
-        g_vk.lsfg_src_handle[0], g_vk.lsfg_src_handle[1],
-        g_vk.lsfg_dst_handle, dst_count,
-        g_vk.lsfg_timeline_handle,
+        g_vk.lsfg_src[0], g_vk.lsfg_src[1],
+        g_vk.lsfg_src_mem[0], g_vk.lsfg_src_mem[1],
+        g_vk.lsfg_dst, g_vk.lsfg_dst_mem, dst_count,
+        g_vk.lsfg_timeline,
         width, height,
         0 /* hdr=false */, 1.0f /* flow_scale */, 0 /* perf_mode */
     );
@@ -1691,11 +1645,15 @@ int me_vk_present(const u32 *pixels, unsigned frame_w, unsigned frame_h, unsigne
                 VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
                 0, 0, NULL, 0, NULL, 1, &sc_to_dst);
 
-            /* Blit: dest image is in GENERAL (backend leaves it there). */
+            /* Blit: dest image is in GENERAL (backend leaves it there).
+             * Source extent MUST be LSFG resolution (the dst image was created
+             * at lsfg_width x lsfg_height). Reading at swapchain extent caused
+             * over-reads and visible smearing. Destination spans the full
+             * swapchain — aspect/integer scaling is a future refinement. */
             VkImageBlit gen_blit = {
                 .srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
-                .srcOffsets = { {0,0,0}, {(int32_t)g_vk.sc_extent.width,
-                                          (int32_t)g_vk.sc_extent.height, 1} },
+                .srcOffsets = { {0,0,0}, {(int32_t)g_vk.lsfg_width,
+                                          (int32_t)g_vk.lsfg_height, 1} },
                 .dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
                 .dstOffsets = { {0,0,0}, {(int32_t)g_vk.sc_extent.width,
                                           (int32_t)g_vk.sc_extent.height, 1} },
