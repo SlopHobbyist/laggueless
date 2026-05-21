@@ -1655,23 +1655,44 @@ int me_vk_present(const u32 *pixels, unsigned frame_w, unsigned frame_h, unsigne
                 VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
                 0, 0, NULL, 0, NULL, 1, &sc_to_dst);
 
+            /* Clear swapchain to black so the area outside the integer-scaled
+             * dest rect (bars) matches the real-frame path. Without this the
+             * generated frames stretch over the bars, producing an alternating-layout
+             * scrolling-band artifact as real/generated frames swap each present. */
+            VkClearColorValue gen_clear = { .float32 = { 0.0f, 0.0f, 0.0f, 1.0f } };
+            VkImageSubresourceRange gen_clear_range = {
+                VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1
+            };
+            vkCmdClearColorImage(g_vk.lsfg_cmd,
+                g_vk.sc_images[gen_img_idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                &gen_clear, 1, &gen_clear_range);
+
+            /* Clamp the integer-scaled dest rect to the current swapchain extent
+             * (defensive — caller computed it from client-rect, but swapchain may
+             * have just been recreated at a different size). */
+            int32_t bx0 = dx, by0 = dy;
+            int32_t bx1 = dx + dw, by1 = dy + dh;
+            if (bx0 < 0) bx0 = 0;
+            if (by0 < 0) by0 = 0;
+            if (bx1 > (int32_t)g_vk.sc_extent.width)  bx1 = (int32_t)g_vk.sc_extent.width;
+            if (by1 > (int32_t)g_vk.sc_extent.height) by1 = (int32_t)g_vk.sc_extent.height;
+
             /* Blit: dest image is in GENERAL (backend leaves it there).
-             * Source extent MUST be LSFG resolution (the dst image was created
-             * at lsfg_width x lsfg_height). Reading at swapchain extent caused
-             * over-reads and visible smearing. Destination spans the full
-             * swapchain — aspect/integer scaling is a future refinement. */
+             * Source extent is LSFG resolution; dest is the integer-scaled rect
+             * so generated frames match the real-frame path's layout. */
             VkImageBlit gen_blit = {
                 .srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
                 .srcOffsets = { {0,0,0}, {(int32_t)g_vk.lsfg_width,
                                           (int32_t)g_vk.lsfg_height, 1} },
                 .dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
-                .dstOffsets = { {0,0,0}, {(int32_t)g_vk.sc_extent.width,
-                                          (int32_t)g_vk.sc_extent.height, 1} },
+                .dstOffsets = { {bx0, by0, 0}, {bx1, by1, 1} },
             };
-            vkCmdBlitImage(g_vk.lsfg_cmd,
-                g_vk.lsfg_dst[gi], VK_IMAGE_LAYOUT_GENERAL,
-                g_vk.sc_images[gen_img_idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                1, &gen_blit, VK_FILTER_NEAREST);
+            if (bx1 > bx0 && by1 > by0) {
+                vkCmdBlitImage(g_vk.lsfg_cmd,
+                    g_vk.lsfg_dst[gi], VK_IMAGE_LAYOUT_GENERAL,
+                    g_vk.sc_images[gen_img_idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    1, &gen_blit, VK_FILTER_NEAREST);
+            }
 
             /* Transition swapchain: TRANSFER_DST -> PRESENT_SRC */
             VkImageMemoryBarrier sc_to_present = {
