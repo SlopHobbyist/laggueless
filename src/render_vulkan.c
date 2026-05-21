@@ -306,6 +306,14 @@ static int create_swapchain_only(void) {
     printf("[vk] swapchain: %ux%u, %u images, format=%d, %s\n",
            g_vk.sc_extent.width, g_vk.sc_extent.height, g_vk.sc_image_count,
            (int)g_vk.sc_format, present_mode_str(g_vk.present_mode));
+    /* IMMEDIATE = the Vulkan equivalent of D3D11's ALLOW_TEARING. The Windows
+       VRR pipeline kicks in transparently when adaptive sync is enabled in
+       the driver/OS; on a fixed-rate monitor the same setting allows tearing
+       for lower latency. Vulkan exposes no portable VRR query on Windows. */
+    if (g_vk.present_mode == VK_PRESENT_MODE_IMMEDIATE_KHR) {
+        printf("[vk] note: IMMEDIATE mode = VRR if adaptive sync is enabled,\n"
+               "[vk]       otherwise tearing for lowest latency on fixed-rate displays.\n");
+    }
 
     g_vk.swapchain_needs_recreate = 0;
     return 0;
