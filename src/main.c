@@ -1015,6 +1015,13 @@ int main(int argc, char **argv) {
             snprintf(g_lsfg_dll_path, sizeof(g_lsfg_dll_path), "%s", argv[i] + 11);
             g_lsfg_enabled = 1; /* --lsfg-dll= implies --lsfg */
         }
+        else if (strncmp(argv[i], "--lsfg-multiplier=", 18) == 0) {
+            g_settings.lsfg_multiplier = atoi(argv[i] + 18);
+        }
+        else if (strncmp(argv[i], "--lsfg-flow=", 12) == 0) {
+            g_settings.lsfg_flow_scale = (float)atof(argv[i] + 12);
+        }
+        else if (strcmp(argv[i], "--lsfg-perf") == 0) g_settings.lsfg_perf_mode = 1;
         else if (strcmp(argv[i], "--pace-log") == 0) pace_log  = 1;
         else if (strcmp(argv[i], "--timing-log") == 0) timing_log = 1;
         else if (strcmp(argv[i], "--latency-log") == 0) latency_log = 1;
@@ -1053,6 +1060,9 @@ int main(int argc, char **argv) {
                 "                                 --vulkan and Lossless Scaling on Steam;\n"
                 "                                 place Lossless.dll in lsfg/ next to the exe)\n"
                 "  --lsfg-dll=<path>            path to Lossless.dll (overrides lsfg/ folder)\n"
+                "  --lsfg-multiplier=N          LSFG output multiplier: 2, 3, or 4 (default 2)\n"
+                "  --lsfg-flow=F                LSFG optical-flow scale 0.25..1.0 (default 1.0)\n"
+                "  --lsfg-perf                  LSFG performance mode (lower quality, lower GPU cost)\n"
                 "  --pace-log                   log audio pacing diagnostics\n"
                 "  --timing-log                 log frame timing diagnostics\n"
                 "  --latency-log                log per-stage latency (poll/core/present/wait)\n"
@@ -1277,7 +1287,10 @@ int main(int argc, char **argv) {
                 unsigned lsfg_w = (unsigned)(av.geometry.base_width  > 0 ? av.geometry.base_width  : g_back_max_w);
                 unsigned lsfg_h = (unsigned)(av.geometry.base_height > 0 ? av.geometry.base_height : g_back_max_h);
                 if (me_vk_lsfg_init(me_lsfg_dll_path(g_lsfg_shaders),
-                                    lsfg_w, lsfg_h, 2 /* 2x default */) != 0) {
+                                    lsfg_w, lsfg_h,
+                                    g_settings.lsfg_multiplier,
+                                    g_settings.lsfg_flow_scale,
+                                    g_settings.lsfg_perf_mode) != 0) {
                     fprintf(stderr, "[lsfg] B3 init failed - LSFG disabled, continuing with normal Vulkan\n");
                 }
             }

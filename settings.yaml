@@ -33,6 +33,24 @@ video:
 audio:
   no_audio: false        # Changes frame timing on some cores/graphics apis
 
+# LSFG 3.1 frame generation (only used when --lsfg is on the command line).
+# Steam's Lossless Scaling UI exposes a lot of options, but only these are
+# actually parameters of the LSFG SPIR-V shaders. Everything else in the Steam
+# UI (sync mode, max frame latency, capture API, etc.) is app-level behavior
+# that this renderer already controls separately.
+lsfg:
+  multiplier: 2          # 2 / 3 / 4 — number of presented frames per real frame.
+                         # Higher = smoother motion but more input latency (extra
+                         # FIFO queueing per real frame).
+                         # CLI equivalent: --lsfg-multiplier=N
+  flow_scale: 1.0        # 0.25 .. 1.0 — optical-flow resolution scale.
+                         # 1.0 = full-resolution flow (best quality, more GPU).
+                         # 0.5 = half-res flow (cheaper, slight quality loss).
+                         # CLI equivalent: --lsfg-flow=F
+  performance: false     # Reduced-quality / lower-GPU-cost path. Leave off unless
+                         # GPU-bound; an RTX 4090 has plenty of headroom for full quality.
+                         # CLI equivalent: --lsfg-perf
+
 system:
   thread_affinity: true    # Pin the emulation thread to P-cores and the audio thread
                             # to a separate core (reduces context-switch jitter on Intel

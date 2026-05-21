@@ -38,11 +38,14 @@ int  me_vk_present(const u32 *pixels, unsigned frame_w, unsigned frame_h, unsign
  * width/height — frame dimensions (should match the core's output; can be
  *                set to max_w/max_h as a first approximation)
  * multiplier  — 2, 3, or 4 (number of output frames per real frame)
+ * flow_scale  — optical-flow resolution scale, 0.25..1.0 (1.0 = full res, best quality)
+ * perf_mode   — 1 = reduced-quality / lower GPU cost
  *
  * Returns 0 on success. On failure LSFG is silently disabled.
  * me_vk_lsfg_shutdown() must be called before me_vk_shutdown().
  * ------------------------------------------------------------------------- */
-int  me_vk_lsfg_init(const char *dll_path, unsigned width, unsigned height, int multiplier);
+int  me_vk_lsfg_init(const char *dll_path, unsigned width, unsigned height,
+                     int multiplier, float flow_scale, int perf_mode);
 void me_vk_lsfg_shutdown(void);
 
 #endif

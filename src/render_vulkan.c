@@ -1090,7 +1090,8 @@ static void destroy_lsfg_images(void) {
  * me_vk_lsfg_init — B4 public API
  * Call after me_vk_init() to wire up the LSFG backend and force FIFO mode.
  * ------------------------------------------------------------------------- */
-int me_vk_lsfg_init(const char *dll_path, unsigned width, unsigned height, int multiplier) {
+int me_vk_lsfg_init(const char *dll_path, unsigned width, unsigned height,
+                    int multiplier, float flow_scale, int perf_mode) {
     if (!g_vk.active) return -1;
     if (!g_vk.pfn_WaitSemaphores) {
         fprintf(stderr, "[vk-lsfg] vkWaitSemaphores PFN missing - LSFG disabled\n");
@@ -1098,6 +1099,8 @@ int me_vk_lsfg_init(const char *dll_path, unsigned width, unsigned height, int m
     }
     if (multiplier < 2) multiplier = 2;
     if (multiplier > 4) multiplier = 4;
+    if (flow_scale < 0.25f) flow_scale = 0.25f;
+    if (flow_scale > 1.0f)  flow_scale = 1.0f;
     int dst_count = multiplier - 1;
 
     /* B4: Switch to FIFO — required for proper pacing with frame gen. */
@@ -1187,7 +1190,7 @@ int me_vk_lsfg_init(const char *dll_path, unsigned width, unsigned height, int m
         g_vk.lsfg_dst, g_vk.lsfg_dst_mem, dst_count,
         g_vk.lsfg_timeline,
         width, height,
-        0 /* hdr=false */, 1.0f /* flow_scale */, 0 /* perf_mode */
+        0 /* hdr=false */, flow_scale, perf_mode
     );
     if (!g_vk.lsfg_ctx) {
         fprintf(stderr, "[vk-lsfg] backend openContext failed\n");
@@ -1200,8 +1203,8 @@ int me_vk_lsfg_init(const char *dll_path, unsigned width, unsigned height, int m
     g_vk.lsfg_src_slot    = 0;
     g_vk.lsfg_multiplier  = multiplier;
     g_vk.lsfg_timeline_value = 0;
-    fprintf(stderr, "[vk-lsfg] B4 OK: frame gen ready (%ux%u, x%d, FIFO)\n",
-            width, height, multiplier);
+    fprintf(stderr, "[vk-lsfg] B4 OK: frame gen ready (%ux%u, x%d, flow=%.2f, perf=%s, FIFO)\n",
+            width, height, multiplier, flow_scale, perf_mode ? "on" : "off");
     return 0;
 
 fail:
@@ -1827,8 +1830,11 @@ int  me_vk_present(const u32 *pixels, unsigned frame_w, unsigned frame_h, unsign
     (void)cw; (void)ch; (void)dx; (void)dy; (void)dw; (void)dh;
     return -1;
 }
-int  me_vk_lsfg_init(const char *dll_path, unsigned width, unsigned height, int multiplier) {
-    (void)dll_path; (void)width; (void)height; (void)multiplier; return -1;
+int  me_vk_lsfg_init(const char *dll_path, unsigned width, unsigned height,
+                     int multiplier, float flow_scale, int perf_mode) {
+    (void)dll_path; (void)width; (void)height;
+    (void)multiplier; (void)flow_scale; (void)perf_mode;
+    return -1;
 }
 void me_vk_lsfg_shutdown(void) {}
 

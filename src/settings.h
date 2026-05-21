@@ -66,6 +66,11 @@ typedef struct {
     int vk_validate;        /* enable VK_LAYER_KHRONOS_validation */
     int match_display_hz;   /* snap pacing to monitor refresh when within tolerance */
 
+    /* LSFG 3.1 frame generation knobs (only meaningful with --lsfg). */
+    int   lsfg_multiplier;  /* 2/3/4 — number of presented frames per real frame */
+    float lsfg_flow_scale;  /* 0.25..1.0 — optical-flow resolution scale */
+    int   lsfg_perf_mode;   /* 1 = reduced-quality / lower GPU cost */
+
     /* audio */
     int no_audio;
 

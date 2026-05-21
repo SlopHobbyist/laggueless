@@ -140,6 +140,12 @@ void me_settings_defaults(me_settings *out) {
     memset(out, 0, sizeof(*out));
     out->aspect = ME_ASPECT_1_1;
 
+    /* LSFG defaults: 2x multiplier, full-resolution optical flow, quality mode.
+     * These match the "best quality, minimum latency cost" preset. */
+    out->lsfg_multiplier = 2;
+    out->lsfg_flow_scale = 1.0f;
+    out->lsfg_perf_mode  = 0;
+
     out->hk_cycle_aspect     = parse_chord("F1");
     out->hk_toggle_fullscreen = parse_chord("F11");
     out->hk_quit             = parse_chord("Escape");
@@ -200,6 +206,24 @@ static int scalar_bool(yaml_node_t *n, int defv) {
     if (iequals(s, "true") || iequals(s, "yes") || iequals(s, "on") || strcmp(s, "1") == 0) return 1;
     if (iequals(s, "false") || iequals(s, "no") || iequals(s, "off") || strcmp(s, "0") == 0) return 0;
     return defv;
+}
+
+static int scalar_int(yaml_node_t *n, int defv) {
+    const char *s = scalar_str(n);
+    if (!s) return defv;
+    char *end = NULL;
+    long v = strtol(s, &end, 10);
+    if (end == s) return defv;
+    return (int)v;
+}
+
+static float scalar_float(yaml_node_t *n, float defv) {
+    const char *s = scalar_str(n);
+    if (!s) return defv;
+    char *end = NULL;
+    float v = strtof(s, &end);
+    if (end == s) return defv;
+    return v;
 }
 
 static me_aspect_mode parse_aspect(const char *s, me_aspect_mode defv) {
@@ -282,6 +306,14 @@ int me_settings_load(const char *path, me_settings *out) {
         out->vk_validate = scalar_bool(map_get(&doc, video, "vk_validate"), out->vk_validate);
         out->match_display_hz = scalar_bool(map_get(&doc, video, "match_display_hz"),
                                             out->match_display_hz);
+    }
+
+    /* lsfg */
+    yaml_node_t *lsfg = map_get(&doc, root, "lsfg");
+    if (lsfg) {
+        out->lsfg_multiplier = scalar_int  (map_get(&doc, lsfg, "multiplier"),  out->lsfg_multiplier);
+        out->lsfg_flow_scale = scalar_float(map_get(&doc, lsfg, "flow_scale"),  out->lsfg_flow_scale);
+        out->lsfg_perf_mode  = scalar_bool (map_get(&doc, lsfg, "performance"), out->lsfg_perf_mode);
     }
 
     /* audio */
