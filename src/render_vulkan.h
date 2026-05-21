@@ -29,4 +29,21 @@ int  me_vk_wait_for_present(unsigned timeout_ms);
 int  me_vk_present(const u32 *pixels, unsigned frame_w, unsigned frame_h, unsigned max_w,
                    int cw, int ch, int dx, int dy, int dw, int dh);
 
+/* -------------------------------------------------------------------------
+ * B3: LSFG frame-gen integration.
+ * Call me_vk_lsfg_init() after me_vk_init() to open the backend context and
+ * wire up shared images + timeline semaphore.
+ *
+ * dll_path   — absolute path to Lossless.dll (as located by lsfg_loader)
+ * width/height — frame dimensions (should match the core's output; can be
+ *                set to max_w/max_h as a first approximation)
+ * multiplier  — 2, 3, or 4 (number of output frames per real frame)
+ *
+ * Returns 0 on success. On failure LSFG is silently disabled.
+ * me_vk_lsfg_shutdown() must be called before me_vk_shutdown().
+ * ------------------------------------------------------------------------- */
+int  me_vk_lsfg_init(const char *dll_path, unsigned width, unsigned height, int multiplier);
+void me_vk_lsfg_shutdown(void);
+
 #endif
+

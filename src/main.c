@@ -1269,6 +1269,19 @@ int main(int argc, char **argv) {
                     "[render]          is not yet bridged to Vulkan; expect a black screen.\n"
                     "[render]          Software cores (mesen, snes9x, etc.) display correctly.\n");
             }
+#ifdef ME_HAVE_LSFG
+            /* B3: Wire up the LSFG backend now that Vulkan is ready.
+             * We use the core's base frame size from av_info. At context-open time
+             * this is max_w x max_h (the backend accepts any size <= that). */
+            if (g_lsfg_enabled && g_lsfg_shaders) {
+                unsigned lsfg_w = (unsigned)(av.geometry.base_width  > 0 ? av.geometry.base_width  : g_back_max_w);
+                unsigned lsfg_h = (unsigned)(av.geometry.base_height > 0 ? av.geometry.base_height : g_back_max_h);
+                if (me_vk_lsfg_init(me_lsfg_dll_path(g_lsfg_shaders),
+                                    lsfg_w, lsfg_h, 2 /* 2x default */) != 0) {
+                    fprintf(stderr, "[lsfg] B3 init failed - LSFG disabled, continuing with normal Vulkan\n");
+                }
+            }
+#endif
         } else {
             fprintf(stderr, "[render] Vulkan init failed; falling back to D3D11/GDI\n");
         }
@@ -1735,6 +1748,7 @@ int main(int argc, char **argv) {
     timeEndPeriod(1);
     if (audio_ok) me_audio_shutdown();
     if (g_use_d3d11) me_d3d11_shutdown();
+    me_vk_lsfg_shutdown();   /* B3: must come before me_vk_shutdown */
     me_vk_shutdown();
     me_lsfg_free(g_lsfg_shaders); g_lsfg_shaders = NULL;
 

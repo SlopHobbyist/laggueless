@@ -44,6 +44,42 @@ if defined VULKAN_SDK (
     echo [build] VULKAN_SDK not set - building without Vulkan ^(--vulkan will be unavailable^).
 )
 
+REM ---- lsfg backend (C++ bridge, optional) -----------------------------------
+REM If the backend static library has been built (build_lsfg_backend.bat),
+REM compile the C++ bridge and link against it. Requires g++ for the .cpp file.
+set "LSFG_LIB=%ROOT%build\lsfg_backend\liblsfg_backend.a"
+set "LSFG_OBJ="
+set "LSFG_LDFLAGS="
+set "BRIDGE_SRC=%SRC%\lsfg_bridge.cpp"
+set "BRIDGE_OBJ=%BUILD%\lsfg_bridge.o"
+set "GPP=g++"
+where g++ >nul 2>nul
+if errorlevel 1 (
+    if exist "C:\msys64\mingw64\bin\g++.exe" set "GPP=C:\msys64\mingw64\bin\g++.exe"
+)
+
+if exist "%LSFG_LIB%" (
+    echo [build] lsfg backend: %LSFG_LIB%
+    "%GPP%" -std=c++20 -O2 -DWIN32_LEAN_AND_MEAN -DNOMINMAX -DME_HAVE_LSFG=1 ^
+        "-I%ROOT%src\lsfg_backend\lsfg-vk-backend\include" ^
+        "-I%ROOT%src\lsfg_backend\lsfg-vk-common\include" ^
+        "-I%ROOT%src\lsfg_backend\lsfg-vk-common\thirdparty\include" ^
+        "-I%SRC%" ^
+        -c "%BRIDGE_SRC%" -o "%BRIDGE_OBJ%" 2>"%BUILD%\bridge_compile.log"
+    if not errorlevel 1 (
+        set "LSFG_OBJ=!BRIDGE_OBJ!"
+        set "CFLAGS=!CFLAGS! -DME_HAVE_LSFG=1"
+        set "LSFG_LDFLAGS=-Lbuild\lsfg_backend -llsfg_backend -lstdc++ -lgcc_s"
+        echo [build] lsfg_bridge.cpp compiled OK.
+    ) else (
+        type "%BUILD%\bridge_compile.log"
+        echo [build] WARNING: lsfg_bridge.cpp failed - LSFG disabled.
+    )
+) else (
+    echo [build] lsfg backend not built yet ^(run build_lsfg_backend.bat first^).
+)
+
+
 REM ---- collect sources -------------------------------------------------------
 set "SOURCES="
 for %%F in ("%SRC%\*.c") do set "SOURCES=!SOURCES! "%%F""
@@ -51,7 +87,12 @@ for %%F in ("%SRC%\*.c") do set "SOURCES=!SOURCES! "%%F""
 echo [build] gcc: %GCC%
 echo [build] out: %OUT%
 
-%GCC% %CFLAGS% %SOURCES% -o "%OUT%" %LDFLAGS%
+REM ---- compile + link -------------------------------------------------------
+if not "%LSFG_OBJ%"=="" (
+    %GCC% %CFLAGS% %SOURCES% "%LSFG_OBJ%" -o "%OUT%" %LDFLAGS% %LSFG_LDFLAGS%
+) else (
+    %GCC% %CFLAGS% %SOURCES% -o "%OUT%" %LDFLAGS%
+)
 if errorlevel 1 (
     echo [build] FAILED.
     exit /b 1
@@ -65,6 +106,21 @@ for %%D in ("C:\msys64\mingw64\bin" "C:\mingw64\bin") do (
     )
 )
 :dll_done
+
+REM Copy MSYS2 C++ runtimes if the lsfg bridge was linked (required at runtime).
+if not "%LSFG_OBJ%"=="" (
+    for %%D in ("C:\msys64\mingw64\bin" "C:\mingw64\bin") do (
+        if exist "%%~D\libgcc_s_seh-1.dll" (
+            copy /Y "%%~D\libgcc_s_seh-1.dll" "%BUILD%\" >nul
+            copy /Y "%%~D\libwinpthread-1.dll" "%BUILD%\" >nul
+        )
+    )
+    if exist "C:\msys64\mingw64\bin\libstdc++-6.dll" (
+        copy /Y "C:\msys64\mingw64\bin\libstdc++-6.dll" "%BUILD%\" >nul
+    ) else if exist "C:\mingw64\bin\libstdc++-6.dll" (
+        copy /Y "C:\mingw64\bin\libstdc++-6.dll" "%BUILD%\" >nul
+    )
+)
 
 echo [build] OK.
 exit /b 0

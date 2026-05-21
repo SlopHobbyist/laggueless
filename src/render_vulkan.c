@@ -10,6 +10,10 @@
 #include <vulkan/vulkan.h>
 #include "shaders_vk_embedded.h"
 
+#ifdef ME_HAVE_LSFG
+#include "lsfg_bridge.h"
+#endif
+
 /* Up to FRAMES_IN_FLIGHT real frames can be CPU-side prepared at the same
    time. Two is enough to overlap CPU with GPU without queueing extra latency.
    Real swapchain image count comes from the surface (typically 2 or 3). */
@@ -97,6 +101,50 @@ static struct {
     VkPresentModeKHR present_mode;
     int pace_log; /* per-second swapchain/present diagnostics */
     int present_count; /* monotonic, for pace_log */
+
+#ifdef ME_HAVE_LSFG
+    /* B3: Shared images + timeline semaphore for LSFG frame gen.
+     * Two source images (curr/prev), N dest images (generated frames).
+     * Memory is exported as Win32 HANDLEs and handed to the backend.
+     *
+     * We keep one set at the renderer's max_w x max_h resolution.
+     * When the core changes resolution we tear down and rebuild.
+     *
+     * Source images are VK_FORMAT_B8G8R8A8_UNORM (matching upload_image).
+     * LSFG expects RGBA8 (or RGBA16F for HDR); we use RGBA8 = VK_FORMAT_R8G8B8A8_UNORM.
+     * We blit BGRX -> RGBA via a layout/swizzle copy each frame. */
+    int                lsfg_enabled;   /* 1 = backend wired up */
+    unsigned           lsfg_width;     /* resolution the context was opened at */
+    unsigned           lsfg_height;
+
+    /* Source images (exported, RGBA8, VK_IMAGE_USAGE_STORAGE_BIT|SAMPLED_BIT). */
+    VkImage            lsfg_src[2];
+    VkDeviceMemory     lsfg_src_mem[2];
+    HANDLE             lsfg_src_handle[2];
+
+    /* Dest images (N = multiplier-1; for now 1 dest = 2x). */
+    VkImage            lsfg_dst[4];      /* max 4x multiplier */
+    VkDeviceMemory     lsfg_dst_mem[4];
+    HANDLE             lsfg_dst_handle[4];
+    int                lsfg_dst_count;
+
+    /* Timeline semaphore for GPU-GPU sync between our queue and backend. */
+    VkSemaphore        lsfg_timeline;
+    HANDLE             lsfg_timeline_handle;
+    uint64_t           lsfg_timeline_value;
+
+    /* Which source slot we wrote last (0 or 1, alternating). */
+    int                lsfg_src_slot;
+
+    /* Backend objects. */
+    me_lsfg_instance  *lsfg_inst;
+    me_lsfg_context   *lsfg_ctx;
+
+    /* PFN for device-level Win32 external memory/semaphore. */
+    PFN_vkGetMemoryWin32HandleKHR          pfn_GetMemoryWin32Handle;
+    PFN_vkImportSemaphoreWin32HandleKHR    pfn_ImportSemaphoreWin32Handle;
+    PFN_vkGetSemaphoreWin32HandleKHR       pfn_GetSemaphoreWin32Handle;
+#endif /* ME_HAVE_LSFG */
 } g_vk;
 
 static VkDebugUtilsMessengerEXT g_messenger = VK_NULL_HANDLE;
@@ -835,9 +883,16 @@ int me_vk_init(HWND hwnd, unsigned max_w, unsigned max_h) {
         .queueCount = 1,
         .pQueuePriorities = &qprio,
     };
-    const char *dev_exts[2];
+    const char *dev_exts[8];
     uint32_t dev_ext_count = 0;
     dev_exts[dev_ext_count++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
+#ifdef ME_HAVE_LSFG
+    /* B3: External memory/semaphore extensions needed for HANDLE sharing. */
+    dev_exts[dev_ext_count++] = VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME;
+    dev_exts[dev_ext_count++] = VK_KHR_EXTERNAL_SEMAPHORE_WIN32_EXTENSION_NAME;
+    dev_exts[dev_ext_count++] = VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME;
+    dev_exts[dev_ext_count++] = VK_KHR_EXTERNAL_SEMAPHORE_EXTENSION_NAME;
+#endif
     VkDeviceCreateInfo dci = {
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
         .queueCreateInfoCount = 1,
@@ -847,6 +902,19 @@ int me_vk_init(HWND hwnd, unsigned max_w, unsigned max_h) {
     };
     VK_CHECK(vkCreateDevice(g_vk.phys, &dci, NULL, &g_vk.device), "vkCreateDevice");
     vkGetDeviceQueue(g_vk.device, g_vk.gfx_queue_family, 0, &g_vk.gfx_queue);
+
+#ifdef ME_HAVE_LSFG
+    /* Load Win32 external memory/semaphore device functions. */
+    g_vk.pfn_GetMemoryWin32Handle = (PFN_vkGetMemoryWin32HandleKHR)
+        vkGetDeviceProcAddr(g_vk.device, "vkGetMemoryWin32HandleKHR");
+    g_vk.pfn_ImportSemaphoreWin32Handle = (PFN_vkImportSemaphoreWin32HandleKHR)
+        vkGetDeviceProcAddr(g_vk.device, "vkImportSemaphoreWin32HandleKHR");
+    g_vk.pfn_GetSemaphoreWin32Handle = (PFN_vkGetSemaphoreWin32HandleKHR)
+        vkGetDeviceProcAddr(g_vk.device, "vkGetSemaphoreWin32HandleKHR");
+    if (!g_vk.pfn_GetMemoryWin32Handle || !g_vk.pfn_GetSemaphoreWin32Handle) {
+        fprintf(stderr, "[vk] WARNING: Win32 external memory/semaphore functions unavailable - LSFG disabled\n");
+    }
+#endif
 
     /* Resolve present mode. Defaults to FIFO; opt-in to MAILBOX or IMMEDIATE
        via env vars. Per-frame pacing (frames-in-flight=1) does the bulk of
@@ -884,6 +952,213 @@ fail:
     me_vk_shutdown();
     return -1;
 }
+
+/* -------------------------------------------------------------------------
+ * B3 LSFG shared-image helpers (compiled only with ME_HAVE_LSFG)
+ * ------------------------------------------------------------------------- */
+#ifdef ME_HAVE_LSFG
+
+/* Create one exportable RGBA8 image for LSFG source/dest slots. */
+static int create_lsfg_image(unsigned w, unsigned h,
+                             VkImage *out_img, VkDeviceMemory *out_mem, HANDLE *out_handle) {
+    /* Export info chain. */
+    VkExternalMemoryImageCreateInfo emi = {
+        .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
+        .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT,
+    };
+    VkImageCreateInfo ici = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .pNext = &emi,
+        .imageType = VK_IMAGE_TYPE_2D,
+        .format = VK_FORMAT_R8G8B8A8_UNORM, /* LSFG expects RGBA */
+        .extent = { w, h, 1 },
+        .mipLevels = 1,
+        .arrayLayers = 1,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .tiling = VK_IMAGE_TILING_OPTIMAL,
+        .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                 VK_IMAGE_USAGE_STORAGE_BIT |
+                 VK_IMAGE_USAGE_SAMPLED_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+    };
+    if (vkCreateImage(g_vk.device, &ici, NULL, out_img) != VK_SUCCESS) return -1;
+
+    VkMemoryRequirements mr;
+    vkGetImageMemoryRequirements(g_vk.device, *out_img, &mr);
+
+    VkExportMemoryAllocateInfo emai = {
+        .sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO,
+        .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT,
+    };
+    VkMemoryDedicatedAllocateInfo dai = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
+        .pNext = &emai,
+        .image = *out_img,
+    };
+    int mt = find_mem_type(mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (mt < 0) return -1;
+    VkMemoryAllocateInfo mai = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .pNext = &dai,
+        .allocationSize = mr.size,
+        .memoryTypeIndex = (uint32_t)mt,
+    };
+    if (vkAllocateMemory(g_vk.device, &mai, NULL, out_mem) != VK_SUCCESS) return -1;
+    if (vkBindImageMemory(g_vk.device, *out_img, *out_mem, 0) != VK_SUCCESS) return -1;
+
+    /* Export the Win32 HANDLE. */
+    if (!g_vk.pfn_GetMemoryWin32Handle) return -1;
+    VkMemoryGetWin32HandleInfoKHR ghi = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_GET_WIN32_HANDLE_INFO_KHR,
+        .memory = *out_mem,
+        .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT,
+    };
+    if (g_vk.pfn_GetMemoryWin32Handle(g_vk.device, &ghi, out_handle) != VK_SUCCESS) return -1;
+    return 0;
+}
+
+/* Create an exportable timeline semaphore for GPU-GPU sync. */
+static int create_lsfg_timeline(VkSemaphore *out_sem, HANDLE *out_handle, uint64_t initial_value) {
+    VkExportSemaphoreWin32HandleInfoKHR ehi = {
+        .sType = VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_WIN32_HANDLE_INFO_KHR,
+        .dwAccess = GENERIC_ALL,
+    };
+    VkExportSemaphoreCreateInfo esi = {
+        .sType = VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO,
+        .pNext = &ehi,
+        .handleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT,
+    };
+    VkSemaphoreTypeCreateInfo stci = {
+        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
+        .pNext = &esi,
+        .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE,
+        .initialValue = initial_value,
+    };
+    VkSemaphoreCreateInfo sci = {
+        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+        .pNext = &stci,
+    };
+    if (vkCreateSemaphore(g_vk.device, &sci, NULL, out_sem) != VK_SUCCESS) return -1;
+
+    if (!g_vk.pfn_GetSemaphoreWin32Handle) return -1;
+    VkSemaphoreGetWin32HandleInfoKHR sghi = {
+        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_GET_WIN32_HANDLE_INFO_KHR,
+        .semaphore = *out_sem,
+        .handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT,
+    };
+    if (g_vk.pfn_GetSemaphoreWin32Handle(g_vk.device, &sghi, out_handle) != VK_SUCCESS) return -1;
+    return 0;
+}
+
+static void destroy_lsfg_images(void) {
+    /* Close handles first. */
+    for (int i = 0; i < 2; i++) {
+        if (g_vk.lsfg_src_handle[i]) { CloseHandle(g_vk.lsfg_src_handle[i]); g_vk.lsfg_src_handle[i] = NULL; }
+        if (g_vk.lsfg_src[i])        { vkDestroyImage(g_vk.device, g_vk.lsfg_src[i], NULL); g_vk.lsfg_src[i] = VK_NULL_HANDLE; }
+        if (g_vk.lsfg_src_mem[i])    { vkFreeMemory(g_vk.device, g_vk.lsfg_src_mem[i], NULL); g_vk.lsfg_src_mem[i] = VK_NULL_HANDLE; }
+    }
+    for (int i = 0; i < g_vk.lsfg_dst_count; i++) {
+        if (g_vk.lsfg_dst_handle[i]) { CloseHandle(g_vk.lsfg_dst_handle[i]); g_vk.lsfg_dst_handle[i] = NULL; }
+        if (g_vk.lsfg_dst[i])        { vkDestroyImage(g_vk.device, g_vk.lsfg_dst[i], NULL); g_vk.lsfg_dst[i] = VK_NULL_HANDLE; }
+        if (g_vk.lsfg_dst_mem[i])    { vkFreeMemory(g_vk.device, g_vk.lsfg_dst_mem[i], NULL); g_vk.lsfg_dst_mem[i] = VK_NULL_HANDLE; }
+    }
+    g_vk.lsfg_dst_count = 0;
+    if (g_vk.lsfg_timeline_handle) { CloseHandle(g_vk.lsfg_timeline_handle); g_vk.lsfg_timeline_handle = NULL; }
+    if (g_vk.lsfg_timeline)        { vkDestroySemaphore(g_vk.device, g_vk.lsfg_timeline, NULL); g_vk.lsfg_timeline = VK_NULL_HANDLE; }
+    g_vk.lsfg_timeline_value = 0;
+}
+
+/* -------------------------------------------------------------------------
+ * me_vk_lsfg_init — B3 public API
+ * Call after me_vk_init() to wire up the LSFG backend.
+ * ------------------------------------------------------------------------- */
+int me_vk_lsfg_init(const char *dll_path, unsigned width, unsigned height, int multiplier) {
+    if (!g_vk.active) return -1;
+    if (multiplier < 2) multiplier = 2;
+    if (multiplier > 4) multiplier = 4;
+    int dst_count = multiplier - 1;
+
+    /* Create the backend instance (its own VkDevice). */
+    g_vk.lsfg_inst = me_lsfg_backend_create(dll_path);
+    if (!g_vk.lsfg_inst) return -1;
+
+    /* Create shared source images. */
+    for (int i = 0; i < 2; i++) {
+        if (create_lsfg_image(width, height,
+                              &g_vk.lsfg_src[i], &g_vk.lsfg_src_mem[i],
+                              &g_vk.lsfg_src_handle[i]) != 0) {
+            fprintf(stderr, "[vk-lsfg] failed to create source image %d\n", i);
+            goto fail;
+        }
+    }
+
+    /* Create shared dest images. */
+    for (int i = 0; i < dst_count; i++) {
+        if (create_lsfg_image(width, height,
+                              &g_vk.lsfg_dst[i], &g_vk.lsfg_dst_mem[i],
+                              &g_vk.lsfg_dst_handle[i]) != 0) {
+            fprintf(stderr, "[vk-lsfg] failed to create dest image %d\n", i);
+            goto fail;
+        }
+    }
+    g_vk.lsfg_dst_count = dst_count;
+
+    /* Create timeline semaphore. */
+    if (create_lsfg_timeline(&g_vk.lsfg_timeline, &g_vk.lsfg_timeline_handle, 0) != 0) {
+        fprintf(stderr, "[vk-lsfg] failed to create timeline semaphore\n");
+        goto fail;
+    }
+
+    /* Open the backend context. */
+    g_vk.lsfg_ctx = me_lsfg_backend_open(
+        g_vk.lsfg_inst,
+        g_vk.lsfg_src_handle[0], g_vk.lsfg_src_handle[1],
+        g_vk.lsfg_dst_handle, dst_count,
+        g_vk.lsfg_timeline_handle,
+        width, height,
+        0 /* hdr=false */, 1.0f /* flow_scale */, 0 /* perf_mode */
+    );
+    if (!g_vk.lsfg_ctx) {
+        fprintf(stderr, "[vk-lsfg] backend openContext failed\n");
+        goto fail;
+    }
+
+    g_vk.lsfg_enabled = 1;
+    g_vk.lsfg_width   = width;
+    g_vk.lsfg_height  = height;
+    g_vk.lsfg_src_slot = 0;
+    fprintf(stderr, "[vk-lsfg] B3 OK: shared images + context open (%ux%u, x%d)\n",
+            width, height, multiplier);
+    return 0;
+
+fail:
+    if (g_vk.lsfg_ctx) {
+        me_lsfg_backend_close(g_vk.lsfg_inst, g_vk.lsfg_ctx);
+        g_vk.lsfg_ctx = NULL;
+    }
+    destroy_lsfg_images();
+    if (g_vk.lsfg_inst) {
+        me_lsfg_backend_destroy(g_vk.lsfg_inst);
+        g_vk.lsfg_inst = NULL;
+    }
+    return -1;
+}
+
+void me_vk_lsfg_shutdown(void) {
+    if (!g_vk.lsfg_inst) return;
+    if (g_vk.device) vkDeviceWaitIdle(g_vk.device);
+    if (g_vk.lsfg_ctx) {
+        me_lsfg_backend_close(g_vk.lsfg_inst, g_vk.lsfg_ctx);
+        g_vk.lsfg_ctx = NULL;
+    }
+    destroy_lsfg_images();
+    me_lsfg_backend_destroy(g_vk.lsfg_inst);
+    g_vk.lsfg_inst = NULL;
+    g_vk.lsfg_enabled = 0;
+}
+
+#endif /* ME_HAVE_LSFG */
 
 void me_vk_shutdown(void) {
     if (g_vk.device) {
@@ -1052,7 +1327,100 @@ int me_vk_present(const u32 *pixels, unsigned frame_w, unsigned frame_h, unsigne
     }
     g_vk.upload_image_initialized = 1;
 
-    /* Begin the render pass. Clear color black for the bars. */
+#ifdef ME_HAVE_LSFG
+    /* B3: Copy upload image into the current LSFG source slot.
+     * We blit BGRX (upload, B8G8R8A8_UNORM) -> RGBA (src slot, R8G8B8A8_UNORM).
+     * vkCmdBlitImage with NEAREST filter handles the channel reorder via the
+     * surface format difference (Vulkan blits swizzle automatically when the
+     * component order differs between same-bitwidth formats on most hardware).
+     * The upload image is frame_w x frame_h (a sub-region); the source slot is
+     * lsfg_width x lsfg_height (== max_w x max_h at context-open time).
+     * We blit only the (frame_w, frame_h) region into the source slot. */
+    if (g_vk.lsfg_enabled && pixels && frame_w > 0 && frame_h > 0) {
+        int slot = g_vk.lsfg_src_slot;
+
+        /* 1. Transition src slot: UNDEFINED -> TRANSFER_DST */
+        VkImageMemoryBarrier lsfg_b = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .srcAccessMask = 0,
+            .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = g_vk.lsfg_src[slot],
+            .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+        };
+        vkCmdPipelineBarrier(f->cmd,
+            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            0, 0, NULL, 0, NULL, 1, &lsfg_b);
+
+        /* 2. Blit upload_image -> lsfg_src[slot].
+         * upload_image is currently in SHADER_READ_ONLY; we need TRANSFER_SRC. */
+        VkImageMemoryBarrier upload_to_src = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .srcAccessMask = VK_ACCESS_SHADER_READ_BIT,
+            .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = g_vk.upload_image,
+            .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+        };
+        vkCmdPipelineBarrier(f->cmd,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            0, 0, NULL, 0, NULL, 1, &upload_to_src);
+
+        VkImageBlit blit_region = {
+            .srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+            .srcOffsets = { {0,0,0}, {(int32_t)frame_w, (int32_t)frame_h, 1} },
+            .dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+            .dstOffsets = { {0,0,0}, {(int32_t)frame_w, (int32_t)frame_h, 1} },
+        };
+        vkCmdBlitImage(f->cmd,
+            g_vk.upload_image,      VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            g_vk.lsfg_src[slot],    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            1, &blit_region, VK_FILTER_NEAREST);
+
+        /* 3. Restore upload_image -> SHADER_READ_ONLY for the render pass. */
+        VkImageMemoryBarrier upload_back = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+            .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = g_vk.upload_image,
+            .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+        };
+        vkCmdPipelineBarrier(f->cmd,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            0, 0, NULL, 0, NULL, 1, &upload_back);
+
+        /* 4. Transition lsfg_src[slot] -> GENERAL (backend reads in GENERAL). */
+        VkImageMemoryBarrier lsfg_to_general = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+            .dstAccessMask = 0,
+            .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = g_vk.lsfg_src[slot],
+            .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+        };
+        vkCmdPipelineBarrier(f->cmd,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+            0, 0, NULL, 0, NULL, 1, &lsfg_to_general);
+
+        /* Advance source slot for next frame. */
+        g_vk.lsfg_src_slot = 1 - slot;
+    }
+#endif /* ME_HAVE_LSFG */
+
+
     VkClearValue clear = { .color = { .float32 = { 0.0f, 0.0f, 0.0f, 1.0f } } };
     VkRenderPassBeginInfo rpbi = {
         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
@@ -1117,6 +1485,16 @@ int me_vk_present(const u32 *pixels, unsigned frame_w, unsigned frame_h, unsigne
         return -1;
     }
 
+#ifdef ME_HAVE_LSFG
+    /* B3: Tell the backend a new real frame has been submitted.
+     * scheduleFrames signals the backend's GPU to start generating inserted frames.
+     * This is non-blocking; the backend uses the timeline semaphore to sequence
+     * itself after our submit. The real frame is still presented below. */
+    if (g_vk.lsfg_enabled && g_vk.lsfg_ctx) {
+        me_lsfg_backend_schedule(g_vk.lsfg_inst, g_vk.lsfg_ctx);
+    }
+#endif
+
     VkPresentInfoKHR pi = {
         .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
         .waitSemaphoreCount = 1,
@@ -1169,5 +1547,9 @@ int  me_vk_present(const u32 *pixels, unsigned frame_w, unsigned frame_h, unsign
     (void)cw; (void)ch; (void)dx; (void)dy; (void)dw; (void)dh;
     return -1;
 }
+int  me_vk_lsfg_init(const char *dll_path, unsigned width, unsigned height, int multiplier) {
+    (void)dll_path; (void)width; (void)height; (void)multiplier; return -1;
+}
+void me_vk_lsfg_shutdown(void) {}
 
 #endif
