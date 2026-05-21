@@ -1,7 +1,7 @@
 ## laggueless settings
 
 video:
-  fullscreen_on_launch: false
+  fullscreen_on_launch: true
   aspect: 1:1            # 1:1 | 4:3 | 16:9
   force_gdi: false       # force GDI for all cores (overrides force_d3d11)
   force_d3d11: false     # use D3D11 present path for 2D cores too
@@ -10,7 +10,7 @@ video:
   force_vulkan: false    # use the Vulkan present path. Software cores render
                          # correctly; GL hardware cores are not bridged yet.
                          # CLI equivalent: --vulkan
-  vk_no_vsync: false     # (Vulkan only) IMMEDIATE present mode: VRR-smooth if
+  vk_no_vsync: true     # (Vulkan only) IMMEDIATE present mode: VRR-smooth if
                          # adaptive sync is enabled in the driver/OS; otherwise
                          # tearing for lowest latency on fixed-rate displays.
                          # CLI equivalent: --no-vsync
@@ -34,7 +34,7 @@ audio:
   no_audio: false        # Changes frame timing on some cores/graphics apis
 
 system:
-  thread_affinity: false    # Pin the emulation thread to P-cores and the audio thread
+  thread_affinity: true    # Pin the emulation thread to P-cores and the audio thread
                             # to a separate core (reduces context-switch jitter on Intel
                             # Alder Lake+, AMD hybrid CPUs). Both threads also get
                             # elevated OS priority (HIGHEST for emu, TIME_CRITICAL for
@@ -51,7 +51,7 @@ system:
 # Typical useful values: 1 (most games), 2-3 (games with multi-frame input lag).
 # 0 disables. Hardware-rendered cores (GL/Vulkan) currently skip run-ahead.
 runahead:
-  frames: 0              # 0 disables; clamped to 0..10
+  frames: 1              # 0 disables; clamped to 0..10
 
 log:
   pace_log: true        # log audio pacing diagnostics

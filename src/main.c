@@ -1448,10 +1448,12 @@ int main(int argc, char **argv) {
         if (me_platform_key_pressed(hk->vk, hk->ctrl, hk->alt, hk->shift)) {
             me_platform_request_quit();
         }
+        int did_reset = 0;
         hk = &g_settings.hk_reset;
         if (me_platform_key_pressed(hk->vk, hk->ctrl, hk->alt, hk->shift)) {
             if (core->retro_reset) {
                 core->retro_reset();
+                did_reset = 1;
                 printf("[hotkey] reset\n");
             }
         }
@@ -1494,7 +1496,9 @@ int main(int argc, char **argv) {
                 for (int i = 0; i < ra_frames; i++) core->retro_run();
                 g_av_mute = 0;
                 core->retro_run();  /* this one is shown */
-                if (!core->retro_unserialize(ra_state_buf, ra_state_size)) {
+                if (did_reset) {
+                    /* Don't restore the pre-reset snapshot — the reset just happened. */
+                } else if (!core->retro_unserialize(ra_state_buf, ra_state_size)) {
                     fprintf(stderr, "[runahead] unserialize failed; disabling for rest of session\n");
                     free(ra_state_buf); ra_state_buf = NULL;
                     ra_frames = 0;
