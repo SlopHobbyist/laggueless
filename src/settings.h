@@ -50,9 +50,22 @@ typedef struct {
     int           count;
 } me_kb_bindings;
 
+/* A single XInput binding: a button bitmask (ME_XI_* values from xinput_pad.h).
+   0 = unbound. For hotkey chords all set bits must be held simultaneously. */
+typedef struct {
+    unsigned buttons; /* ME_XI_* bitmask */
+} me_xi_binding;
+
+#define ME_XI_MAX_BINDINGS 4
+typedef struct {
+    me_xi_binding b[ME_XI_MAX_BINDINGS];
+    int           count;
+} me_xi_bindings;
+
 typedef struct {
     /* Indexed by me_input_id. */
     me_kb_bindings keys[ME_IN_COUNT];
+    me_xi_bindings xi[ME_IN_COUNT];
 } me_control_map;
 
 typedef enum {
@@ -96,12 +109,21 @@ typedef struct {
     int latency_log;       /* per-stage latency breakdown: poll/core/present/wait */
     int env_trace;
 
-    /* hotkeys (keyboard only — controller bindings parsed but unused for now) */
+    /* hotkeys — keyboard and controller bindings */
     me_kb_bindings hk_cycle_aspect;
     me_kb_bindings hk_toggle_fullscreen;
     me_kb_bindings hk_exit_fullscreen;
     me_kb_bindings hk_quit;
     me_kb_bindings hk_reset;
+
+    me_xi_bindings hk_xi_cycle_aspect;
+    me_xi_bindings hk_xi_toggle_fullscreen;
+    me_xi_bindings hk_xi_exit_fullscreen;
+    me_xi_bindings hk_xi_quit;
+    me_xi_bindings hk_xi_reset;
+
+    /* XInput player index (0-based). */
+    int xi_player_index;
 
     /* Universal player-1 control map. */
     me_control_map universal;

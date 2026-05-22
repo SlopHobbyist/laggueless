@@ -6,6 +6,7 @@
 #include <ctype.h>
 #include <yaml.h>
 #include "settings.h"
+#include "xinput_pad.h"
 #include "settings_yaml_default.h"
 
 /* ---- key-name → VK table -------------------------------------------------- */
@@ -47,6 +48,74 @@ static const me_keymap g_keymap[] = {
 
 static int iequals(const char *a, const char *b) {
     return _stricmp(a, b) == 0;
+}
+
+/* ---- controller button-name → ME_XI_* bitmask ----------------------------- */
+typedef struct { const char *name; unsigned mask; } me_xi_btnmap;
+static const me_xi_btnmap g_xi_btnmap[] = {
+    { "DPadUp",    ME_XI_DPAD_UP    },
+    { "DPadDown",  ME_XI_DPAD_DOWN  },
+    { "DPadLeft",  ME_XI_DPAD_LEFT  },
+    { "DPadRight", ME_XI_DPAD_RIGHT },
+    { "Start",     ME_XI_START      },
+    { "Back",      ME_XI_BACK       },
+    { "LStick",    ME_XI_LSTICK     },
+    { "RStick",    ME_XI_RSTICK     },
+    { "LB",        ME_XI_LB         },
+    { "RB",        ME_XI_RB         },
+    { "A",         ME_XI_A          },
+    { "B",         ME_XI_B          },
+    { "X",         ME_XI_X          },
+    { "Y",         ME_XI_Y          },
+    { NULL, 0 }
+};
+
+/* Parse a controller chord like "Back+DPadUp" or "A".
+   Returns a bitmask of all named buttons. 0 = no valid buttons found. */
+static unsigned xi_chord_from_str(const char *s) {
+    if (!s || !*s) return 0;
+    unsigned mask = 0;
+    char buf[64];
+    size_t n = strlen(s);
+    if (n >= sizeof(buf)) n = sizeof(buf) - 1;
+    memcpy(buf, s, n); buf[n] = '\0';
+
+    char *p = buf;
+    while (*p) {
+        while (*p == ' ' || *p == '\t') p++;
+        char *tok = p;
+        while (*p && *p != '+') p++;
+        char *end = p;
+        while (end > tok && (end[-1] == ' ' || end[-1] == '\t')) end--;
+        char saved = *end; *end = '\0';
+        if (*tok) {
+            for (const me_xi_btnmap *m = g_xi_btnmap; m->name; m++) {
+                if (iequals(tok, m->name)) { mask |= m->mask; break; }
+            }
+        }
+        *end = saved;
+        if (*p == '+') p++;
+    }
+    return mask;
+}
+
+/* Parse a scalar or sequence YAML node into a me_xi_bindings. */
+static void parse_xi_bindings(yaml_document_t *d, yaml_node_t *node, me_xi_bindings *out) {
+    if (!node) return;
+    if (node->type == YAML_SCALAR_NODE) {
+        unsigned m = xi_chord_from_str((const char *)node->data.scalar.value);
+        if (m) { out->b[0].buttons = m; out->count = 1; }
+    } else if (node->type == YAML_SEQUENCE_NODE) {
+        out->count = 0;
+        for (yaml_node_item_t *it = node->data.sequence.items.start;
+             it < node->data.sequence.items.top && out->count < ME_XI_MAX_BINDINGS;
+             it++) {
+            yaml_node_t *item = yaml_document_get_node(d, *it);
+            if (!item || item->type != YAML_SCALAR_NODE) continue;
+            unsigned m = xi_chord_from_str((const char *)item->data.scalar.value);
+            if (m) out->b[out->count++].buttons = m;
+        }
+    }
 }
 
 /* Parse a single token like "X", "F11", "Up", "RShift". Returns VK or 0. */
@@ -153,6 +222,8 @@ void me_settings_defaults(me_settings *out) {
     out->hk_quit.b[0]              = parse_chord("Alt+F4");  out->hk_quit.count              = 1;
     out->hk_reset.b[0]             = parse_chord("Ctrl+R");  out->hk_reset.count             = 1;
 
+    out->xi_player_index = 0;
+
 /* Helper: assign a single-key default into a me_kb_bindings slot. */
 #define SET1(slot, name) do { (slot).b[0] = parse_chord(name); (slot).count = 1; } while(0)
 
@@ -253,43 +324,46 @@ static void parse_player1(yaml_document_t *d, yaml_node_t *p1, me_control_map *o
         yaml_node_t *v = doc_get(d, p->value);
         if (!v || v->type != YAML_MAPPING_NODE) continue;
         yaml_node_t *kb_node = map_get(d, v, "keyboard");
-        if (!kb_node) continue;
-        if (kb_node->type == YAML_SCALAR_NODE) {
-            const char *kb = scalar_str(kb_node);
-            if (kb && *kb) { out->keys[id].b[0] = parse_chord(kb); out->keys[id].count = 1; }
-        } else if (kb_node->type == YAML_SEQUENCE_NODE) {
-            out->keys[id].count = 0;
-            for (yaml_node_item_t *it = kb_node->data.sequence.items.start;
-                 it < kb_node->data.sequence.items.top && out->keys[id].count < ME_KB_MAX_BINDINGS;
-                 it++) {
-                const char *kb = scalar_str(doc_get(d, *it));
-                if (kb && *kb) out->keys[id].b[out->keys[id].count++] = parse_chord(kb);
+        if (kb_node) {
+            if (kb_node->type == YAML_SCALAR_NODE) {
+                const char *kb = scalar_str(kb_node);
+                if (kb && *kb) { out->keys[id].b[0] = parse_chord(kb); out->keys[id].count = 1; }
+            } else if (kb_node->type == YAML_SEQUENCE_NODE) {
+                out->keys[id].count = 0;
+                for (yaml_node_item_t *it = kb_node->data.sequence.items.start;
+                     it < kb_node->data.sequence.items.top && out->keys[id].count < ME_KB_MAX_BINDINGS;
+                     it++) {
+                    const char *kb = scalar_str(doc_get(d, *it));
+                    if (kb && *kb) out->keys[id].b[out->keys[id].count++] = parse_chord(kb);
+                }
             }
         }
+        parse_xi_bindings(d, map_get(d, v, "controller"), &out->xi[id]);
     }
 }
 
 static void parse_hotkey(yaml_document_t *d, yaml_node_t *root, const char *key,
-                         me_kb_bindings *out) {
+                         me_kb_bindings *kb_out, me_xi_bindings *xi_out) {
     yaml_node_t *m = map_get(d, root, key);
     if (!m || m->type != YAML_MAPPING_NODE) return;
-    yaml_node_t *kb_node = map_get(d, m, "keyboard");
-    if (!kb_node) return;
 
-    if (kb_node->type == YAML_SCALAR_NODE) {
-        /* Single binding: keyboard: F11 */
-        const char *kb = scalar_str(kb_node);
-        if (kb && *kb) { out->b[0] = parse_chord(kb); out->count = 1; }
-    } else if (kb_node->type == YAML_SEQUENCE_NODE) {
-        /* Multiple bindings: keyboard: [F11, Alt+Return] */
-        out->count = 0;
-        for (yaml_node_item_t *it = kb_node->data.sequence.items.start;
-             it < kb_node->data.sequence.items.top && out->count < ME_KB_MAX_BINDINGS;
-             it++) {
-            const char *kb = scalar_str(doc_get(d, *it));
-            if (kb && *kb) out->b[out->count++] = parse_chord(kb);
+    yaml_node_t *kb_node = map_get(d, m, "keyboard");
+    if (kb_node) {
+        if (kb_node->type == YAML_SCALAR_NODE) {
+            const char *kb = scalar_str(kb_node);
+            if (kb && *kb) { kb_out->b[0] = parse_chord(kb); kb_out->count = 1; }
+        } else if (kb_node->type == YAML_SEQUENCE_NODE) {
+            kb_out->count = 0;
+            for (yaml_node_item_t *it = kb_node->data.sequence.items.start;
+                 it < kb_node->data.sequence.items.top && kb_out->count < ME_KB_MAX_BINDINGS;
+                 it++) {
+                const char *kb = scalar_str(doc_get(d, *it));
+                if (kb && *kb) kb_out->b[kb_out->count++] = parse_chord(kb);
+            }
         }
     }
+
+    if (xi_out) parse_xi_bindings(d, map_get(d, m, "controller"), xi_out);
 }
 
 int me_settings_load(const char *path, me_settings *out) {
@@ -385,11 +459,17 @@ int me_settings_load(const char *path, me_settings *out) {
     /* hotkeys */
     yaml_node_t *hk = map_get(&doc, root, "hotkeys");
     if (hk) {
-        parse_hotkey(&doc, hk, "cycle_aspect_ratio", &out->hk_cycle_aspect);
-        parse_hotkey(&doc, hk, "toggle_fullscreen",  &out->hk_toggle_fullscreen);
-        parse_hotkey(&doc, hk, "exit_fullscreen",    &out->hk_exit_fullscreen);
-        parse_hotkey(&doc, hk, "quit",               &out->hk_quit);
-        parse_hotkey(&doc, hk, "reset",              &out->hk_reset);
+        parse_hotkey(&doc, hk, "cycle_aspect_ratio", &out->hk_cycle_aspect,        &out->hk_xi_cycle_aspect);
+        parse_hotkey(&doc, hk, "toggle_fullscreen",  &out->hk_toggle_fullscreen,   &out->hk_xi_toggle_fullscreen);
+        parse_hotkey(&doc, hk, "exit_fullscreen",    &out->hk_exit_fullscreen,     &out->hk_xi_exit_fullscreen);
+        parse_hotkey(&doc, hk, "quit",               &out->hk_quit,                &out->hk_xi_quit);
+        parse_hotkey(&doc, hk, "reset",              &out->hk_reset,               &out->hk_xi_reset);
+    }
+
+    /* controller */
+    yaml_node_t *ctrl_node = map_get(&doc, root, "controller");
+    if (ctrl_node) {
+        out->xi_player_index = scalar_int(map_get(&doc, ctrl_node, "player1_index"), out->xi_player_index);
     }
 
     /* controls: universal */

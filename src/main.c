@@ -13,6 +13,7 @@
 #include "gl_context.h"
 #include "libretro.h"
 #include "settings.h"
+#include "xinput_pad.h"
 #include "lsfg_loader.h"
 
 /* ---- exe-relative path helpers -------------------------------------------- */
@@ -72,6 +73,13 @@ static int hk_pressed(const me_kb_bindings *b) {
     for (int i = 0; i < b->count; i++) {
         const me_kb_binding *k = &b->b[i];
         if (me_platform_key_pressed(k->vk, k->ctrl, k->alt, k->shift)) return 1;
+    }
+    return 0;
+}
+
+static int hk_xi_pressed(const me_xi_bindings *b, int player) {
+    for (int i = 0; i < b->count; i++) {
+        if (me_xinput_button(player, b->b[i].buttons)) return 1;
     }
     return 0;
 }
@@ -655,6 +663,12 @@ static int input_down(me_input_id id) {
         if (vk_claimed_by_hotkey(b->vk)) continue;
         if (key_down_kb(b)) return 1;
     }
+    /* XInput buttons */
+    int xi_p = g_settings.xi_player_index;
+    const me_xi_bindings *xbs = &g_active_map->xi[id];
+    for (int i = 0; i < xbs->count; i++) {
+        if (me_xinput_button(xi_p, xbs->b[i].buttons)) return 1;
+    }
     return 0;
 }
 
@@ -666,6 +680,7 @@ static void me_input_poll_cb(void) {
         g_analog_lx = g_analog_ly = g_analog_rx = g_analog_ry = 0;
         return;
     }
+    me_xinput_poll(g_settings.xi_player_index);
     int up    = input_down(ME_IN_DPAD_UP);
     int down  = input_down(ME_IN_DPAD_DOWN);
     int lf    = input_down(ME_IN_DPAD_LEFT);
@@ -692,19 +707,33 @@ static void me_input_poll_cb(void) {
 
     /* Stick directions are also surfaced through RETRO_DEVICE_ANALOG so cores
        like mupen64plus_next that read the analog stick see motion. Opposing
-       directions cancel; non-opposing produce full deflection in that axis. */
-    int lu = input_down(ME_IN_LSTICK_UP),    ld = input_down(ME_IN_LSTICK_DOWN);
-    int ll = input_down(ME_IN_LSTICK_LEFT),  lr = input_down(ME_IN_LSTICK_RIGHT);
-    int ru = input_down(ME_IN_RSTICK_UP),    rd = input_down(ME_IN_RSTICK_DOWN);
-    int rl = input_down(ME_IN_RSTICK_LEFT),  rr = input_down(ME_IN_RSTICK_RIGHT);
-    if (lu && ld) lu = ld = 0;
-    if (ll && lr) ll = lr = 0;
-    if (ru && rd) ru = rd = 0;
-    if (rl && rr) rl = rr = 0;
-    g_analog_lx = (int16_t)((lr ? 32767 : 0) - (ll ? 32767 : 0));
-    g_analog_ly = (int16_t)((ld ? 32767 : 0) - (lu ? 32767 : 0));
-    g_analog_rx = (int16_t)((rr ? 32767 : 0) - (rl ? 32767 : 0));
-    g_analog_ry = (int16_t)((rd ? 32767 : 0) - (ru ? 32767 : 0));
+       directions cancel; non-opposing produce full deflection in that axis.
+       Real XInput axis values take priority over keyboard digital mappings. */
+    int xi_p = g_settings.xi_player_index;
+    int16_t xi_lx = me_xinput_axis(xi_p, ME_XI_AXIS_LX);
+    int16_t xi_ly = me_xinput_axis(xi_p, ME_XI_AXIS_LY);
+    int16_t xi_rx = me_xinput_axis(xi_p, ME_XI_AXIS_RX);
+    int16_t xi_ry = me_xinput_axis(xi_p, ME_XI_AXIS_RY);
+    if (xi_lx != 0 || xi_ly != 0 || xi_rx != 0 || xi_ry != 0) {
+        /* Real analog input present: use controller axes directly. */
+        g_analog_lx =  xi_lx;
+        g_analog_ly = -xi_ly; /* XInput Y is up-positive; libretro is down-positive */
+        g_analog_rx =  xi_rx;
+        g_analog_ry = -xi_ry;
+    } else {
+        int lu = input_down(ME_IN_LSTICK_UP),    ld = input_down(ME_IN_LSTICK_DOWN);
+        int ll = input_down(ME_IN_LSTICK_LEFT),  lr = input_down(ME_IN_LSTICK_RIGHT);
+        int ru = input_down(ME_IN_RSTICK_UP),    rd = input_down(ME_IN_RSTICK_DOWN);
+        int rl = input_down(ME_IN_RSTICK_LEFT),  rr = input_down(ME_IN_RSTICK_RIGHT);
+        if (lu && ld) lu = ld = 0;
+        if (ll && lr) ll = lr = 0;
+        if (ru && rd) ru = rd = 0;
+        if (rl && rr) rl = rr = 0;
+        g_analog_lx = (int16_t)((lr ? 32767 : 0) - (ll ? 32767 : 0));
+        g_analog_ly = (int16_t)((ld ? 32767 : 0) - (lu ? 32767 : 0));
+        g_analog_rx = (int16_t)((rr ? 32767 : 0) - (rl ? 32767 : 0));
+        g_analog_ry = (int16_t)((rd ? 32767 : 0) - (ru ? 32767 : 0));
+    }
 }
 
 static int16_t me_input_state_cb(unsigned port, unsigned device, unsigned index, unsigned id) {
@@ -1061,6 +1090,11 @@ int main(int argc, char **argv) {
         /* Reload to pick up the defaults we just wrote. */
         me_settings_load(_settings_path, &g_settings);
     }
+    if (me_xinput_init())
+        printf("[xinput] controller support active (player index %d)\n", g_settings.xi_player_index);
+    else
+        printf("[xinput] XInput not available; controller input disabled\n");
+
     int no_audio       = g_settings.no_audio;
     int force_gdi      = g_settings.force_gdi;
     int force_d3d11 = g_settings.force_d3d11;
@@ -1579,21 +1613,27 @@ int main(int argc, char **argv) {
         if (g_use_d3d11) me_d3d11_wait_for_present(1000);
         else if (me_vk_is_active()) me_vk_wait_for_present(1000);
         LARGE_INTEGER ll_t_after_wait; if (latency_log) QueryPerformanceCounter(&ll_t_after_wait);
-        if (hk_pressed(&g_settings.hk_toggle_fullscreen)) {
+        int xi_p = g_settings.xi_player_index;
+        if (hk_pressed(&g_settings.hk_toggle_fullscreen) ||
+            hk_xi_pressed(&g_settings.hk_xi_toggle_fullscreen, xi_p)) {
             me_platform_toggle_fullscreen(g_hwnd);
         }
-        if (hk_pressed(&g_settings.hk_exit_fullscreen)) {
+        if (hk_pressed(&g_settings.hk_exit_fullscreen) ||
+            hk_xi_pressed(&g_settings.hk_xi_exit_fullscreen, xi_p)) {
             me_platform_exit_fullscreen(g_hwnd);
         }
-        if (hk_pressed(&g_settings.hk_cycle_aspect)) {
+        if (hk_pressed(&g_settings.hk_cycle_aspect) ||
+            hk_xi_pressed(&g_settings.hk_xi_cycle_aspect, xi_p)) {
             g_aspect_mode = (g_aspect_mode + 1) % 3;
             printf("[aspect] %s\n", g_aspect_names[g_aspect_mode]);
         }
-        if (hk_pressed(&g_settings.hk_quit)) {
+        if (hk_pressed(&g_settings.hk_quit) ||
+            hk_xi_pressed(&g_settings.hk_xi_quit, xi_p)) {
             me_platform_request_quit();
         }
         int did_reset = 0;
-        if (hk_pressed(&g_settings.hk_reset)) {
+        if (hk_pressed(&g_settings.hk_reset) ||
+            hk_xi_pressed(&g_settings.hk_xi_reset, xi_p)) {
             if (core->retro_reset) {
                 core->retro_reset();
                 did_reset = 1;
