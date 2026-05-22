@@ -1,0 +1,1 @@
+".\release\laggueless.exe" ".\release\cores\parallel_n64_libretro.dll" ".\release\roms\Super Mario 64 (USA).z64" --vulkan
