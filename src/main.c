@@ -600,9 +600,43 @@ static int key_down_kb(const me_kb_binding *b) {
     return (GetAsyncKeyState((int)b->vk) & 0x8000) ? 1 : 0;
 }
 
+/* Returns 1 if the given VK is claimed by any currently-active hotkey chord.
+   A chord is "active" when its modifier keys are all held — at that point the
+   main key belongs to the hotkey and must not bleed through to game controls. */
+static int vk_claimed_by_hotkey(unsigned vk) {
+    if (vk == 0) return 0;
+    static const me_kb_bindings *all_hk[5];
+    static int built = 0;
+    if (!built) {
+        all_hk[0] = &g_settings.hk_toggle_fullscreen;
+        all_hk[1] = &g_settings.hk_exit_fullscreen;
+        all_hk[2] = &g_settings.hk_cycle_aspect;
+        all_hk[3] = &g_settings.hk_quit;
+        all_hk[4] = &g_settings.hk_reset;
+        built = 1;
+    }
+    int got_ctrl  = (GetAsyncKeyState(VK_CONTROL) & 0x8000) ? 1 : 0;
+    int got_alt   = (GetAsyncKeyState(VK_MENU)    & 0x8000) ? 1 : 0;
+    int got_shift = (GetAsyncKeyState(VK_SHIFT)   & 0x8000) ? 1 : 0;
+    for (int i = 0; i < 5; i++) {
+        for (int j = 0; j < all_hk[i]->count; j++) {
+            const me_kb_binding *b = &all_hk[i]->b[j];
+            if (b->vk != vk) continue;
+            /* Modifiers match → this chord is active, key is claimed. */
+            if (b->ctrl  && !got_ctrl)  continue;
+            if (b->alt   && !got_alt)   continue;
+            if (b->shift && !got_shift) continue;
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static int input_down(me_input_id id) {
     if (!g_active_map) return 0;
-    return key_down_kb(&g_active_map->keys[id]);
+    const me_kb_binding *b = &g_active_map->keys[id];
+    if (vk_claimed_by_hotkey(b->vk)) return 0;
+    return key_down_kb(b);
 }
 
 static void me_input_poll_cb(void) {
