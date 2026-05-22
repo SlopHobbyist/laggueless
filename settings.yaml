@@ -39,7 +39,7 @@ audio:
 # UI (sync mode, max frame latency, capture API, etc.) is app-level behavior
 # that this renderer already controls separately.
 lsfg:
-  multiplier: 2          # 2 / 3 / 4 — number of presented frames per real frame.
+  multiplier: 8          # 2 / 3 / 4 — number of presented frames per real frame.
                          # Higher = smoother motion but more input latency (extra
                          # FIFO queueing per real frame).
                          # CLI equivalent: --lsfg-multiplier=N
@@ -69,7 +69,7 @@ system:
 # Typical useful values: 1 (most games), 2-3 (games with multi-frame input lag).
 # 0 disables. Hardware-rendered cores (GL/Vulkan) currently skip run-ahead.
 runahead:
-  frames: 1              # 0 disables; clamped to 0..10
+  frames: 0              # 0 disables; clamped to 0..10
 
 log:
   pace_log: true        # log audio pacing diagnostics
