@@ -87,7 +87,7 @@ hotkeys:
     keyboard:   F1
     controller: Back+DPadUp
   toggle_fullscreen:
-    keyboard:   F11
+    keyboard:   [F11, Alt+Return]
     controller: Back+Start
   exit_fullscreen:
     keyboard:   Escape

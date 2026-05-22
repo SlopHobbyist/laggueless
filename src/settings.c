@@ -146,11 +146,11 @@ void me_settings_defaults(me_settings *out) {
     out->lsfg_flow_scale = 1.0f;
     out->lsfg_perf_mode  = 0;
 
-    out->hk_cycle_aspect      = parse_chord("F1");
-    out->hk_toggle_fullscreen = parse_chord("F11");
-    out->hk_exit_fullscreen   = parse_chord("Escape");
-    out->hk_quit              = parse_chord("Alt+F4");
-    out->hk_reset             = parse_chord("Ctrl+R");
+    out->hk_cycle_aspect.b[0]      = parse_chord("F1");      out->hk_cycle_aspect.count      = 1;
+    out->hk_toggle_fullscreen.b[0] = parse_chord("F11");     out->hk_toggle_fullscreen.b[1]  = parse_chord("Alt+Return"); out->hk_toggle_fullscreen.count = 2;
+    out->hk_exit_fullscreen.b[0]   = parse_chord("Escape");  out->hk_exit_fullscreen.count   = 1;
+    out->hk_quit.b[0]              = parse_chord("Alt+F4");  out->hk_quit.count              = 1;
+    out->hk_reset.b[0]             = parse_chord("Ctrl+R");  out->hk_reset.count             = 1;
 
     /* Universal defaults match what main.c used to hard-code in step 5. */
     out->universal.keys[ME_IN_DPAD_UP]    = parse_chord("Up");
@@ -253,11 +253,26 @@ static void parse_player1(yaml_document_t *d, yaml_node_t *p1, me_control_map *o
 }
 
 static void parse_hotkey(yaml_document_t *d, yaml_node_t *root, const char *key,
-                         me_kb_binding *out) {
+                         me_kb_bindings *out) {
     yaml_node_t *m = map_get(d, root, key);
     if (!m || m->type != YAML_MAPPING_NODE) return;
-    const char *kb = scalar_str(map_get(d, m, "keyboard"));
-    if (kb && *kb) *out = parse_chord(kb);
+    yaml_node_t *kb_node = map_get(d, m, "keyboard");
+    if (!kb_node) return;
+
+    if (kb_node->type == YAML_SCALAR_NODE) {
+        /* Single binding: keyboard: F11 */
+        const char *kb = scalar_str(kb_node);
+        if (kb && *kb) { out->b[0] = parse_chord(kb); out->count = 1; }
+    } else if (kb_node->type == YAML_SEQUENCE_NODE) {
+        /* Multiple bindings: keyboard: [F11, Alt+Return] */
+        out->count = 0;
+        for (yaml_node_item_t *it = kb_node->data.sequence.items.start;
+             it < kb_node->data.sequence.items.top && out->count < ME_KB_MAX_BINDINGS;
+             it++) {
+            const char *kb = scalar_str(doc_get(d, *it));
+            if (kb && *kb) out->b[out->count++] = parse_chord(kb);
+        }
+    }
 }
 
 int me_settings_load(const char *path, me_settings *out) {

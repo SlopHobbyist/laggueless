@@ -43,6 +43,13 @@ typedef struct {
     unsigned char shift;
 } me_kb_binding;
 
+/* Up to ME_KB_MAX_BINDINGS chords for one hotkey action. */
+#define ME_KB_MAX_BINDINGS 4
+typedef struct {
+    me_kb_binding b[ME_KB_MAX_BINDINGS];
+    int           count;
+} me_kb_bindings;
+
 typedef struct {
     /* Indexed by me_input_id. */
     me_kb_binding keys[ME_IN_COUNT];
@@ -90,11 +97,11 @@ typedef struct {
     int env_trace;
 
     /* hotkeys (keyboard only — controller bindings parsed but unused for now) */
-    me_kb_binding hk_cycle_aspect;
-    me_kb_binding hk_toggle_fullscreen;
-    me_kb_binding hk_exit_fullscreen;
-    me_kb_binding hk_quit;
-    me_kb_binding hk_reset;
+    me_kb_bindings hk_cycle_aspect;
+    me_kb_bindings hk_toggle_fullscreen;
+    me_kb_bindings hk_exit_fullscreen;
+    me_kb_bindings hk_quit;
+    me_kb_bindings hk_reset;
 
     /* Universal player-1 control map. */
     me_control_map universal;

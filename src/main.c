@@ -53,6 +53,14 @@ static const int g_aspect_y[3] = { 1, 3,  9 };
    missing chip; surfacing this prominently makes the cause obvious. */
 static int g_firmware_warned = 0;
 
+static int hk_pressed(const me_kb_bindings *b) {
+    for (int i = 0; i < b->count; i++) {
+        const me_kb_binding *k = &b->b[i];
+        if (me_platform_key_pressed(k->vk, k->ctrl, k->alt, k->shift)) return 1;
+    }
+    return 0;
+}
+
 static int looks_like_firmware_error(const char *s) {
     if (!s) return 0;
     /* Case-insensitive substring search for any of a few generic phrases.
@@ -1512,27 +1520,21 @@ int main(int argc, char **argv) {
         if (g_use_d3d11) me_d3d11_wait_for_present(1000);
         else if (me_vk_is_active()) me_vk_wait_for_present(1000);
         LARGE_INTEGER ll_t_after_wait; if (latency_log) QueryPerformanceCounter(&ll_t_after_wait);
-        const me_kb_binding *hk;
-        hk = &g_settings.hk_toggle_fullscreen;
-        if (me_platform_key_pressed(hk->vk, hk->ctrl, hk->alt, hk->shift)) {
+        if (hk_pressed(&g_settings.hk_toggle_fullscreen)) {
             me_platform_toggle_fullscreen(g_hwnd);
         }
-        hk = &g_settings.hk_exit_fullscreen;
-        if (me_platform_key_pressed(hk->vk, hk->ctrl, hk->alt, hk->shift)) {
+        if (hk_pressed(&g_settings.hk_exit_fullscreen)) {
             me_platform_exit_fullscreen(g_hwnd);
         }
-        hk = &g_settings.hk_cycle_aspect;
-        if (me_platform_key_pressed(hk->vk, hk->ctrl, hk->alt, hk->shift)) {
+        if (hk_pressed(&g_settings.hk_cycle_aspect)) {
             g_aspect_mode = (g_aspect_mode + 1) % 3;
             printf("[aspect] %s\n", g_aspect_names[g_aspect_mode]);
         }
-        hk = &g_settings.hk_quit;
-        if (me_platform_key_pressed(hk->vk, hk->ctrl, hk->alt, hk->shift)) {
+        if (hk_pressed(&g_settings.hk_quit)) {
             me_platform_request_quit();
         }
         int did_reset = 0;
-        hk = &g_settings.hk_reset;
-        if (me_platform_key_pressed(hk->vk, hk->ctrl, hk->alt, hk->shift)) {
+        if (hk_pressed(&g_settings.hk_reset)) {
             if (core->retro_reset) {
                 core->retro_reset();
                 did_reset = 1;
