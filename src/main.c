@@ -721,10 +721,15 @@ static void me_input_poll_cb(void) {
     int16_t xi_ry = me_xinput_axis(xi_p, ME_XI_AXIS_RY);
     if (xi_lx != 0 || xi_ly != 0 || xi_rx != 0 || xi_ry != 0) {
         /* Real analog input present: use controller axes directly. */
-        g_analog_lx =  xi_lx;
-        g_analog_ly = -xi_ly; /* XInput Y is up-positive; libretro is down-positive */
-        g_analog_rx =  xi_rx;
-        g_analog_ry = -xi_ry;
+        /* XInput X: right=+32767, matches libretro. No inversion needed.
+           XInput Y: up=+32767, but libretro expects down=+32767. Invert Y.
+           Clamp -32768 → -32767 before negating to avoid int16_t overflow. */
+        #define XI_CLAMP(v) ((v) < -32767 ? (int16_t)-32767 : (v))
+        g_analog_lx =  XI_CLAMP(xi_lx);
+        g_analog_ly = -XI_CLAMP(xi_ly);
+        g_analog_rx =  XI_CLAMP(xi_rx);
+        g_analog_ry = -XI_CLAMP(xi_ry);
+        #undef XI_CLAMP
     } else {
         int lu = input_down(ME_IN_LSTICK_UP),    ld = input_down(ME_IN_LSTICK_DOWN);
         int ll = input_down(ME_IN_LSTICK_LEFT),  lr = input_down(ME_IN_LSTICK_RIGHT);

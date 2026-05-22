@@ -224,10 +224,10 @@ cores:
       player1:
         a:
           keyboard:   [X, S]
-          controller: A
+          controller: [A, Y]
         b:
           keyboard:   [Z, A]
-          controller: B
+          controller: [B, X]
         start:
           keyboard:   Return
           controller: Start
