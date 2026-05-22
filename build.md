@@ -2,8 +2,6 @@
 
 This guide walks you through building `laggueless.exe` from scratch on a Windows 10 or 11 machine (AMD64 / x86-64). No prior C/C++ build experience is assumed.
 
-The whole process takes about 15–30 minutes depending on your internet speed.
-
 ---
 
 ## What you will install

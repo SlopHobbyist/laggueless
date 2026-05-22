@@ -1,9 +1,6 @@
 # Laggueless (RetroArch alternative)
 
-> **Note**: This entire project was written by AI (Claude Code: Sonnet 4.5, and Antigravity: Gemini 3 Pro (High)). All code, architecture decisions, and implementation details were generated through AI assistance.
->
-> I am a strong advocate for never mixing generated code into real repos.
-> Projects like these should clearly disclose as such.
+![alt text](https://raw.githubusercontent.com/SlopHobbyist/thumbnails/main/laggueless.png "Example Screenshot | Playing Mario on the NES")
 
 ## Goal
 The goal was to create a libretro core compatible emulator program. Users find RetroArch confusing, so I will force **my** favorite settings so players can focus on simply playing games. All design decisions aim to reduce visual and input lag/delay.
@@ -16,8 +13,24 @@ The goal was to create a libretro core compatible emulator program. Users find R
 ## Supported Platforms
 - ⭐ Windows x86-64
 
+## Using the Release
+1. Unzip the file with 7zip/winrar
+2. Open the folder
+3. Copy your Lossless.dll into the **lsfg** folder (optional)
+4. Open Command Prompt
+5. CD to the folder
+6. Run laggueless.exe --help
+
+## Cores
+You can download cores here: [https://buildbot.libretro.com/nightly/windows/x86_64/](https://buildbot.libretro.com/nightly/windows/x86_64/)
+Place them in the cores folder.
+
 ## Usage
 `laggueless.exe [options] <core.dll> <rom>`
+
+#### Example:
+`laggueless.exe ".\cores\mesen_libretro.dll" ".\roms\Super Mario Bros. (World).nes" --vulkan --lsfg`
+
 #### Optional Arguments:
 
 | Flag | Description |
@@ -46,27 +59,12 @@ The goal was to create a libretro core compatible emulator program. Users find R
 | `LAGGUELESS_VK_MAILBOX=1` | prefer MAILBOX present mode (no tearing, replaces queued frame) |
 | `LAGGUELESS_VK_PACE_LOG=1` | per-second swapchain/present diagnostics |
 
-#### Example:
-`release\laggueless.exe release\cores\mesen_libretro.dll "release\roms\Super Mario Bros. (World).nes" --vulkan --lsfg`
-
-## Using the Release
-1. Unzip the file with 7zip/winrar
-2. Open the folder
-3. Copy your Lossless.dll into the **lsfg** folder (optional)
-4. Open Command Prompt
-5. CD to the folder
-6. Run laggueless.exe --help
-
 ## Building
 
 For detailed build instructions, see [build.md](build.md).
 
-## Cores
-You can download cores here: [https://buildbot.libretro.com/nightly/windows/x86_64/](https://buildbot.libretro.com/nightly/windows/x86_64/)
-Place them in .\cores\
-
 ## Roms
-This repo does not enable piracy. Users must provide their own ROM files. Place them in .\roms\
+This repo does not enable piracy. Users must provide their own ROM files. Place them in the roms folder.
 
 ## LSFG 3.1 Frame Generation
 
@@ -88,3 +86,10 @@ Alternatively, point directly at the DLL: `--lsfg-dll="C:\path\to\Lossless.dll"`
 This project is licensed under the GNU General Public License v3.0 (GPL-3.0). See the [LICENSE](LICENSE) file for the full text.
 
 This project links against libretro cores, which are distributed under their own respective licenses. Cores are not included in this repository and remain the property of their respective authors. Users are responsible for obtaining cores and ROMs legally.
+
+## Disclosure
+
+> **Note**: This entire project was written by AI (Claude Code: Sonnet 4.5, and Antigravity: Gemini 3 Pro (High)). All code, architecture decisions, and implementation details were generated through AI assistance.
+>
+> I am a strong advocate for never mixing generated code into real repos.
+> Projects like these should clearly disclose as such.
