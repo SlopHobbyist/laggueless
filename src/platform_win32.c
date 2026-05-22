@@ -55,6 +55,7 @@ static LRESULT CALLBACK me_wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             EndPaint(h, &ps);
             return 0;
         }
+        case WM_SYSCHAR: return 0; /* suppress Alt+key bell */
         case WM_KEYDOWN:
         case WM_SYSKEYDOWN:
             if (wp < 256 && !g_held[wp]) {
