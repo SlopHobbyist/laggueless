@@ -218,7 +218,7 @@ cores:
 
   mesen:
     dll: mesen_libretro.dll
-    use_universal: true
+    use_universal: false
     # NES only has A/B/Start/Back — universal's A=X, B=Z are fine.
     controls:
       player1:

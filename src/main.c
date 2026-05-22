@@ -649,9 +649,13 @@ static int vk_claimed_by_hotkey(unsigned vk) {
 
 static int input_down(me_input_id id) {
     if (!g_active_map) return 0;
-    const me_kb_binding *b = &g_active_map->keys[id];
-    if (vk_claimed_by_hotkey(b->vk)) return 0;
-    return key_down_kb(b);
+    const me_kb_bindings *bs = &g_active_map->keys[id];
+    for (int i = 0; i < bs->count; i++) {
+        const me_kb_binding *b = &bs->b[i];
+        if (vk_claimed_by_hotkey(b->vk)) continue;
+        if (key_down_kb(b)) return 1;
+    }
+    return 0;
 }
 
 static void me_input_poll_cb(void) {

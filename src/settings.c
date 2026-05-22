@@ -153,19 +153,23 @@ void me_settings_defaults(me_settings *out) {
     out->hk_quit.b[0]              = parse_chord("Alt+F4");  out->hk_quit.count              = 1;
     out->hk_reset.b[0]             = parse_chord("Ctrl+R");  out->hk_reset.count             = 1;
 
+/* Helper: assign a single-key default into a me_kb_bindings slot. */
+#define SET1(slot, name) do { (slot).b[0] = parse_chord(name); (slot).count = 1; } while(0)
+
     /* Universal defaults match what main.c used to hard-code in step 5. */
-    out->universal.keys[ME_IN_DPAD_UP]    = parse_chord("Up");
-    out->universal.keys[ME_IN_DPAD_DOWN]  = parse_chord("Down");
-    out->universal.keys[ME_IN_DPAD_LEFT]  = parse_chord("Left");
-    out->universal.keys[ME_IN_DPAD_RIGHT] = parse_chord("Right");
-    out->universal.keys[ME_IN_A]          = parse_chord("X");
-    out->universal.keys[ME_IN_B]          = parse_chord("Z");
-    out->universal.keys[ME_IN_X]          = parse_chord("S");
-    out->universal.keys[ME_IN_Y]          = parse_chord("A");
-    out->universal.keys[ME_IN_LB]         = parse_chord("Q");
-    out->universal.keys[ME_IN_RB]         = parse_chord("W");
-    out->universal.keys[ME_IN_START]      = parse_chord("Return");
-    out->universal.keys[ME_IN_BACK]       = parse_chord("RShift");
+    SET1(out->universal.keys[ME_IN_DPAD_UP],    "Up");
+    SET1(out->universal.keys[ME_IN_DPAD_DOWN],  "Down");
+    SET1(out->universal.keys[ME_IN_DPAD_LEFT],  "Left");
+    SET1(out->universal.keys[ME_IN_DPAD_RIGHT], "Right");
+    SET1(out->universal.keys[ME_IN_A],          "X");
+    SET1(out->universal.keys[ME_IN_B],          "Z");
+    SET1(out->universal.keys[ME_IN_X],          "S");
+    SET1(out->universal.keys[ME_IN_Y],          "A");
+    SET1(out->universal.keys[ME_IN_LB],         "Q");
+    SET1(out->universal.keys[ME_IN_RB],         "W");
+    SET1(out->universal.keys[ME_IN_START],      "Return");
+    SET1(out->universal.keys[ME_IN_BACK],       "RShift");
+#undef SET1
 }
 
 void me_settings_free(me_settings *s) {
@@ -248,8 +252,20 @@ static void parse_player1(yaml_document_t *d, yaml_node_t *p1, me_control_map *o
         if (!input_id_from_name((const char *)k->data.scalar.value, &id)) continue;
         yaml_node_t *v = doc_get(d, p->value);
         if (!v || v->type != YAML_MAPPING_NODE) continue;
-        const char *kb = scalar_str(map_get(d, v, "keyboard"));
-        if (kb && *kb) out->keys[id] = parse_chord(kb);
+        yaml_node_t *kb_node = map_get(d, v, "keyboard");
+        if (!kb_node) continue;
+        if (kb_node->type == YAML_SCALAR_NODE) {
+            const char *kb = scalar_str(kb_node);
+            if (kb && *kb) { out->keys[id].b[0] = parse_chord(kb); out->keys[id].count = 1; }
+        } else if (kb_node->type == YAML_SEQUENCE_NODE) {
+            out->keys[id].count = 0;
+            for (yaml_node_item_t *it = kb_node->data.sequence.items.start;
+                 it < kb_node->data.sequence.items.top && out->keys[id].count < ME_KB_MAX_BINDINGS;
+                 it++) {
+                const char *kb = scalar_str(doc_get(d, *it));
+                if (kb && *kb) out->keys[id].b[out->keys[id].count++] = parse_chord(kb);
+            }
+        }
     }
 }
 

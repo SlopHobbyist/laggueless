@@ -52,7 +52,7 @@ typedef struct {
 
 typedef struct {
     /* Indexed by me_input_id. */
-    me_kb_binding keys[ME_IN_COUNT];
+    me_kb_bindings keys[ME_IN_COUNT];
 } me_control_map;
 
 typedef enum {
