@@ -69,16 +69,16 @@ system:
 # Typical useful values: 1 (most games), 2-3 (games with multi-frame input lag).
 # 0 disables. Hardware-rendered cores (GL/Vulkan) currently skip run-ahead.
 runahead:
-  frames: 0              # 0 disables; clamped to 0..10
+  frames: 1              # 0 disables; clamped to 0..10
 
 log:
-  pace_log: true        # log audio pacing diagnostics
-  timing_log: true      # log frame timing diagnostics
-  latency_log: true     # per-stage latency breakdown each second:
+  pace_log: false        # log audio pacing diagnostics
+  timing_log: false      # log frame timing diagnostics
+  latency_log: false     # per-stage latency breakdown each second:
                          # input poll → core run → present → pacing wait
                          # (+ DXGI backpressure wait when D3D11 is active).
                          # Includes frame index so regressions are easy to spot.
-  env_trace: true       # log libretro environment calls
+  env_trace: false       # log libretro environment calls
 
 hotkeys:
   # Each hotkey can have both a keyboard binding and a controller binding.

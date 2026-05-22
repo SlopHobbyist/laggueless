@@ -398,6 +398,138 @@ int me_settings_load(const char *path, me_settings *out) {
     return 0;
 }
 
+/* Generate a default settings.yaml file if it doesn't exist.
+   Returns 0 on success, -1 on error. */
+int me_settings_generate_default(const char *path) {
+    FILE *f = fopen(path, "wb");
+    if (!f) {
+        fprintf(stderr, "[settings] cannot create %s\n", path);
+        return -1;
+    }
+
+    const char *content =
+        "## laggueless settings\n"
+        "\n"
+        "video:\n"
+        "  fullscreen_on_launch: false\n"
+        "  aspect: 1:1            # 1:1 | 4:3 | 16:9\n"
+        "  force_gdi: false       # force GDI for all cores (overrides force_d3d11)\n"
+        "  force_d3d11: false     # use D3D11 present path for 2D cores too\n"
+        "  force_vulkan: true     # use the Vulkan present path\n"
+        "  vk_no_vsync: false     # (Vulkan only) IMMEDIATE present mode\n"
+        "  vk_mailbox: false      # (Vulkan only) prefer MAILBOX present mode\n"
+        "  vk_validate: false     # (Vulkan only) enable VK_LAYER_KHRONOS_validation\n"
+        "  match_display_hz: false # snap pacing to monitor refresh when within ~5%%\n"
+        "\n"
+        "audio:\n"
+        "  no_audio: false        # disable audio output\n"
+        "\n"
+        "lsfg:\n"
+        "  multiplier: 2          # 2 / 3 / 4 — frames per real frame\n"
+        "  flow_scale: 1.0        # 0.25..1.0 — optical-flow resolution scale\n"
+        "  performance: false     # reduced quality / lower GPU cost\n"
+        "\n"
+        "system:\n"
+        "  thread_affinity: true  # pin emu/audio threads to isolated cores\n"
+        "\n"
+        "runahead:\n"
+        "  frames: 1              # 0 disables; 1-10 recommended\n"
+        "\n"
+        "log:\n"
+        "  pace_log: false        # log audio pacing diagnostics\n"
+        "  timing_log: false      # log frame timing diagnostics\n"
+        "  latency_log: false     # log per-stage latency breakdown\n"
+        "  env_trace: false       # log libretro environment calls\n"
+        "\n"
+        "hotkeys:\n"
+        "  cycle_aspect_ratio:\n"
+        "    keyboard:   F1\n"
+        "  toggle_fullscreen:\n"
+        "    keyboard:   F11\n"
+        "  quit:\n"
+        "    keyboard:   Alt+F4\n"
+        "  reset:\n"
+        "    keyboard:   Ctrl+R\n"
+        "\n"
+        "controls:\n"
+        "  universal:\n"
+        "    player1:\n"
+        "      dpad_up:\n"
+        "        keyboard:   Up\n"
+        "      dpad_down:\n"
+        "        keyboard:   Down\n"
+        "      dpad_left:\n"
+        "        keyboard:   Left\n"
+        "      dpad_right:\n"
+        "        keyboard:   Right\n"
+        "      a:\n"
+        "        keyboard:   X\n"
+        "      b:\n"
+        "        keyboard:   Z\n"
+        "      x:\n"
+        "        keyboard:   S\n"
+        "      y:\n"
+        "        keyboard:   A\n"
+        "      lb:\n"
+        "        keyboard:   Q\n"
+        "      rb:\n"
+        "        keyboard:   W\n"
+        "      start:\n"
+        "        keyboard:   Return\n"
+        "      back:\n"
+        "        keyboard:   RShift\n"
+        "\n"
+        "cores:\n"
+        "  snes9x:\n"
+        "    dll: snes9x_libretro.dll\n"
+        "    use_universal: true\n"
+        "  mesen:\n"
+        "    dll: mesen_libretro.dll\n"
+        "    use_universal: true\n"
+        "  mupen64plus_next:\n"
+        "    dll: mupen64plus_next_libretro.dll\n"
+        "    use_universal: false\n"
+        "    controls:\n"
+        "      player1:\n"
+        "        lstick_up:\n"
+        "          keyboard:   Up\n"
+        "        lstick_down:\n"
+        "          keyboard:   Down\n"
+        "        lstick_left:\n"
+        "          keyboard:   Left\n"
+        "        lstick_right:\n"
+        "          keyboard:   Right\n"
+        "        a:\n"
+        "          keyboard:   X\n"
+        "        b:\n"
+        "          keyboard:   Z\n"
+        "        lb:\n"
+        "          keyboard:   Q\n"
+        "        rb:\n"
+        "          keyboard:   W\n"
+        "        lt:\n"
+        "          keyboard:   Space\n"
+        "        rstick_up:\n"
+        "          keyboard:   I\n"
+        "        rstick_down:\n"
+        "          keyboard:   K\n"
+        "        rstick_left:\n"
+        "          keyboard:   J\n"
+        "        rstick_right:\n"
+        "          keyboard:   L\n"
+        "        start:\n"
+        "          keyboard:   Return\n";
+
+    if (fputs(content, f) < 0) {
+        fprintf(stderr, "[settings] write failed: %s\n", path);
+        fclose(f);
+        return -1;
+    }
+    fclose(f);
+    printf("[settings] generated default %s\n", path);
+    return 0;
+}
+
 /* Match a core_path argv against the settings.yaml cores: table. We accept
    either the short name ("snes9x") or any path ending in the configured dll
    filename, so the user can keep using full paths on the command line. */

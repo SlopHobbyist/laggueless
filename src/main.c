@@ -262,7 +262,7 @@ static bool me_environment_cb(unsigned cmd, void *data) {
         }
         case RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY: {
             static char savedir[MAX_PATH] = {0};
-            if (savedir[0] == 0) GetFullPathNameA("firmware", MAX_PATH, savedir, NULL);
+            if (savedir[0] == 0) GetFullPathNameA("saves", MAX_PATH, savedir, NULL);
             if (data) *(const char **)data = savedir;
             return true;
         }
@@ -978,10 +978,21 @@ static LONG WINAPI me_unhandled_exception(EXCEPTION_POINTERS *ep) {
 int main(int argc, char **argv) {
     SetUnhandledExceptionFilter(me_unhandled_exception);
 
+    /* Create essential directories on first run. */
+    CreateDirectoryA("roms", NULL);
+    CreateDirectoryA("cores", NULL);
+    CreateDirectoryA("saves", NULL);
+    CreateDirectoryA("firmware", NULL);
+
     /* settings.yaml is the base layer: load defaults, then YAML overrides them,
-       then CLI flags override YAML. */
+       then CLI flags override YAML. Generate default if missing. */
     me_settings_defaults(&g_settings);
-    me_settings_load("settings.yaml", &g_settings);
+    if (me_settings_load("settings.yaml", &g_settings) == 1) {
+        /* File not found; generate default. */
+        me_settings_generate_default("settings.yaml");
+        /* Reload to pick up the defaults we just wrote. */
+        me_settings_load("settings.yaml", &g_settings);
+    }
     int no_audio       = g_settings.no_audio;
     int force_gdi      = g_settings.force_gdi;
     int force_d3d11 = g_settings.force_d3d11;

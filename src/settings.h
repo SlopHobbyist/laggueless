@@ -118,6 +118,10 @@ void me_settings_defaults(me_settings *out);
    was loaded so far. Prints a warning on stderr in either error case. */
 int  me_settings_load(const char *path, me_settings *out);
 
+/* Generate a default settings.yaml file if it doesn't exist.
+   Returns 0 on success, -1 on error. */
+int  me_settings_generate_default(const char *path);
+
 /* Free heap-allocated members (cores array). The struct itself is owned by
    the caller (typically static or stack). */
 void me_settings_free(me_settings *s);
