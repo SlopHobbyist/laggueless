@@ -95,7 +95,8 @@ void me_xinput_poll(int player_index) {
 
 int me_xinput_button(int player_index, unsigned buttons) {
     if (!g_xi_connected[player_index]) return 0;
-    return (g_xi_state[player_index].Gamepad.wButtons & (uint16_t)buttons) ? 1 : 0;
+    uint16_t mask = (uint16_t)buttons;
+    return (g_xi_state[player_index].Gamepad.wButtons & mask) == mask ? 1 : 0;
 }
 
 int16_t me_xinput_axis(int player_index, me_xi_axis axis) {
