@@ -60,7 +60,7 @@ To enable LSFG:
 
 Alternatively, point directly at the DLL: `--lsfg-dll="C:\path\to\Lossless.dll"`.
 
-> **Note:** LSFG adds input latency (one real-frame delay + FIFO queuing). This is inherent to the frame generation technique. Run-ahead latency compensation is planned for Plan C.
+> **Note:** LSFG adds input latency (one real-frame delay + FIFO queuing). This is inherent to the frame generation technique. Try using run-ahead latency to compensate.
 
 
 
