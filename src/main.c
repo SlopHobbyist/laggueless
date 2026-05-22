@@ -1517,6 +1517,10 @@ int main(int argc, char **argv) {
         if (me_platform_key_pressed(hk->vk, hk->ctrl, hk->alt, hk->shift)) {
             me_platform_toggle_fullscreen(g_hwnd);
         }
+        hk = &g_settings.hk_exit_fullscreen;
+        if (me_platform_key_pressed(hk->vk, hk->ctrl, hk->alt, hk->shift)) {
+            me_platform_exit_fullscreen(g_hwnd);
+        }
         hk = &g_settings.hk_cycle_aspect;
         if (me_platform_key_pressed(hk->vk, hk->ctrl, hk->alt, hk->shift)) {
             g_aspect_mode = (g_aspect_mode + 1) % 3;

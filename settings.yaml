@@ -89,6 +89,8 @@ hotkeys:
   toggle_fullscreen:
     keyboard:   F11
     controller: Back+Start
+  exit_fullscreen:
+    keyboard:   Escape
   quit:
     keyboard:   Alt+F4
     controller: Back+DPadDown

@@ -123,6 +123,19 @@ void me_platform_request_quit(void) {
 }
 
 /* ---- fullscreen toggle ---------------------------------------------------- */
+void me_platform_exit_fullscreen(HWND hwnd) {
+    if (!g_fs.active) return;
+    SetWindowLongA(hwnd, GWL_STYLE,   (LONG)g_fs.style);
+    SetWindowLongA(hwnd, GWL_EXSTYLE, (LONG)g_fs.exstyle);
+    SetWindowPos(hwnd, NULL,
+                 g_fs.rect.left, g_fs.rect.top,
+                 g_fs.rect.right  - g_fs.rect.left,
+                 g_fs.rect.bottom - g_fs.rect.top,
+                 SWP_NOOWNERZORDER | SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+    g_fs.active = 0;
+    me_update_cursor_visibility();
+}
+
 void me_platform_toggle_fullscreen(HWND hwnd) {
     if (!g_fs.active) {
         g_fs.style   = (DWORD)GetWindowLongA(hwnd, GWL_STYLE);

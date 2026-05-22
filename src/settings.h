@@ -92,6 +92,7 @@ typedef struct {
     /* hotkeys (keyboard only — controller bindings parsed but unused for now) */
     me_kb_binding hk_cycle_aspect;
     me_kb_binding hk_toggle_fullscreen;
+    me_kb_binding hk_exit_fullscreen;
     me_kb_binding hk_quit;
     me_kb_binding hk_reset;
 

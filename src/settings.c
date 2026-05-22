@@ -146,10 +146,11 @@ void me_settings_defaults(me_settings *out) {
     out->lsfg_flow_scale = 1.0f;
     out->lsfg_perf_mode  = 0;
 
-    out->hk_cycle_aspect     = parse_chord("F1");
+    out->hk_cycle_aspect      = parse_chord("F1");
     out->hk_toggle_fullscreen = parse_chord("F11");
-    out->hk_quit             = parse_chord("Escape");
-    out->hk_reset            = parse_chord("Ctrl+R");
+    out->hk_exit_fullscreen   = parse_chord("Escape");
+    out->hk_quit              = parse_chord("Alt+F4");
+    out->hk_reset             = parse_chord("Ctrl+R");
 
     /* Universal defaults match what main.c used to hard-code in step 5. */
     out->universal.keys[ME_IN_DPAD_UP]    = parse_chord("Up");
@@ -354,6 +355,7 @@ int me_settings_load(const char *path, me_settings *out) {
     if (hk) {
         parse_hotkey(&doc, hk, "cycle_aspect_ratio", &out->hk_cycle_aspect);
         parse_hotkey(&doc, hk, "toggle_fullscreen",  &out->hk_toggle_fullscreen);
+        parse_hotkey(&doc, hk, "exit_fullscreen",    &out->hk_exit_fullscreen);
         parse_hotkey(&doc, hk, "quit",               &out->hk_quit);
         parse_hotkey(&doc, hk, "reset",              &out->hk_reset);
     }

@@ -10,6 +10,9 @@ int  me_platform_pump(void); /* returns 0 when WM_QUIT received */
 /* Toggle borderless fullscreen on the given window. */
 void me_platform_toggle_fullscreen(HWND hwnd);
 
+/* Exit fullscreen unconditionally (no-op if already windowed). */
+void me_platform_exit_fullscreen(HWND hwnd);
+
 /* Edge-triggered key-press detection. Returns 1 the first time the key is
    queried after a WM_KEYDOWN; subsequent calls return 0 until the key is
    released and pressed again. Modifier flags (ctrl/alt/shift) must all match
