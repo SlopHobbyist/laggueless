@@ -77,11 +77,16 @@ static int hk_pressed(const me_kb_bindings *b) {
     return 0;
 }
 
-static int hk_xi_pressed(const me_xi_bindings *b, int player) {
+/* Edge-triggered XInput hotkey check. `prev` is a per-hotkey bit that tracks
+   whether the chord was down last frame; updated in place each call. */
+static int hk_xi_pressed(const me_xi_bindings *b, int player, int *prev) {
+    int down = 0;
     for (int i = 0; i < b->count; i++) {
-        if (me_xinput_button(player, b->b[i].buttons)) return 1;
+        if (me_xinput_button(player, b->b[i].buttons)) { down = 1; break; }
     }
-    return 0;
+    int fired = down && !*prev;
+    *prev = down;
+    return fired;
 }
 
 static int looks_like_firmware_error(const char *s) {
@@ -1614,26 +1619,28 @@ int main(int argc, char **argv) {
         else if (me_vk_is_active()) me_vk_wait_for_present(1000);
         LARGE_INTEGER ll_t_after_wait; if (latency_log) QueryPerformanceCounter(&ll_t_after_wait);
         int xi_p = g_settings.xi_player_index;
+        static int xi_prev_fullscreen = 0, xi_prev_exit_fs = 0, xi_prev_aspect = 0;
+        static int xi_prev_quit = 0, xi_prev_reset = 0;
         if (hk_pressed(&g_settings.hk_toggle_fullscreen) ||
-            hk_xi_pressed(&g_settings.hk_xi_toggle_fullscreen, xi_p)) {
+            hk_xi_pressed(&g_settings.hk_xi_toggle_fullscreen, xi_p, &xi_prev_fullscreen)) {
             me_platform_toggle_fullscreen(g_hwnd);
         }
         if (hk_pressed(&g_settings.hk_exit_fullscreen) ||
-            hk_xi_pressed(&g_settings.hk_xi_exit_fullscreen, xi_p)) {
+            hk_xi_pressed(&g_settings.hk_xi_exit_fullscreen, xi_p, &xi_prev_exit_fs)) {
             me_platform_exit_fullscreen(g_hwnd);
         }
         if (hk_pressed(&g_settings.hk_cycle_aspect) ||
-            hk_xi_pressed(&g_settings.hk_xi_cycle_aspect, xi_p)) {
+            hk_xi_pressed(&g_settings.hk_xi_cycle_aspect, xi_p, &xi_prev_aspect)) {
             g_aspect_mode = (g_aspect_mode + 1) % 3;
             printf("[aspect] %s\n", g_aspect_names[g_aspect_mode]);
         }
         if (hk_pressed(&g_settings.hk_quit) ||
-            hk_xi_pressed(&g_settings.hk_xi_quit, xi_p)) {
+            hk_xi_pressed(&g_settings.hk_xi_quit, xi_p, &xi_prev_quit)) {
             me_platform_request_quit();
         }
         int did_reset = 0;
         if (hk_pressed(&g_settings.hk_reset) ||
-            hk_xi_pressed(&g_settings.hk_xi_reset, xi_p)) {
+            hk_xi_pressed(&g_settings.hk_xi_reset, xi_p, &xi_prev_reset)) {
             if (core->retro_reset) {
                 core->retro_reset();
                 did_reset = 1;
