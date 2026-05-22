@@ -85,18 +85,18 @@ hotkeys:
   # Both are active simultaneously — pressing either triggers the action.
   cycle_aspect_ratio:
     keyboard:   F1
-    controller: Back+DPadUp
+    controller: None
   toggle_fullscreen:
     keyboard:   [F11, Alt+Return]
-    controller: Back+Start
+    controller: None
   exit_fullscreen:
     keyboard:   Escape
   quit:
     keyboard:   Alt+F4
-    controller: Back+DPadDown
+    controller: None
   reset:
     keyboard:   Ctrl+R
-    controller: Back+DPadLeft
+    controller: None
 
 # Controls
 # ---------
