@@ -2,6 +2,7 @@
 
 # Build output
 build/
+src/settings_yaml_default.h
 *.exe
 *.obj
 *.o

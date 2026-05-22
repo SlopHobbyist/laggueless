@@ -81,6 +81,12 @@ if exist "%LSFG_LIB%" (
 )
 
 
+REM ---- embed settings.yaml as a C header ------------------------------------
+python "%ROOT%gen_settings_default.py"
+if errorlevel 1 (
+    echo [build] WARNING: gen_settings_default.py failed - default settings header may be stale.
+)
+
 REM ---- collect sources -------------------------------------------------------
 set "SOURCES="
 for %%F in ("%SRC%\*.c") do set "SOURCES=!SOURCES! "%%F""
