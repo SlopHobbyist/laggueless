@@ -223,10 +223,10 @@ cores:
     controls:
       player1:
         a:
-          keyboard:   X
+          keyboard:   [X, S]
           controller: A
         b:
-          keyboard:   Z
+          keyboard:   [Z, A]
           controller: B
         start:
           keyboard:   Return

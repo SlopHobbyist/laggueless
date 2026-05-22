@@ -15,6 +15,21 @@
 #include "settings.h"
 #include "lsfg_loader.h"
 
+/* ---- exe-relative path helpers -------------------------------------------- */
+static char g_exedir[MAX_PATH];
+
+static void init_exedir(void) {
+    GetModuleFileNameA(NULL, g_exedir, sizeof(g_exedir));
+    char *slash = strrchr(g_exedir, '\\');
+    if (slash) slash[1] = '\0'; else g_exedir[0] = '\0';
+}
+
+/* Concatenate g_exedir + rel into buf; returns buf. */
+static char *exepath(char *buf, size_t sz, const char *rel) {
+    snprintf(buf, sz, "%s%s", g_exedir, rel);
+    return buf;
+}
+
 /* ---- global state for callbacks (single core, single ROM) ----------------- */
 static enum retro_pixel_format g_pixel_format = RETRO_PIXEL_FORMAT_0RGB1555;
 
@@ -264,13 +279,13 @@ static bool me_environment_cb(unsigned cmd, void *data) {
                in particular) pass this straight into LoadLibrary / fopen
                for plugins/INIs and break on relative paths. */
             static char sysdir[MAX_PATH] = {0};
-            if (sysdir[0] == 0) GetFullPathNameA("firmware", MAX_PATH, sysdir, NULL);
+            if (sysdir[0] == 0) exepath(sysdir, sizeof(sysdir), "firmware");
             if (data) *(const char **)data = sysdir;
             return true;
         }
         case RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY: {
             static char savedir[MAX_PATH] = {0};
-            if (savedir[0] == 0) GetFullPathNameA("saves", MAX_PATH, savedir, NULL);
+            if (savedir[0] == 0) exepath(savedir, sizeof(savedir), "saves");
             if (data) *(const char **)data = savedir;
             return true;
         }
@@ -817,9 +832,11 @@ static int me_build_save_path(const char *core_path, const char *rom_path,
     if (!core_base[0] || !rom_base[0]) return -1;
 
     char dir[MAX_PATH];
-    int n = snprintf(dir, sizeof(dir), "saves\\%s", core_base);
+    int n = snprintf(dir, sizeof(dir), "%ssaves\\%s", g_exedir, core_base);
     if (n < 0 || (size_t)n >= sizeof(dir)) return -1;
-    CreateDirectoryA("saves", NULL);
+    char saves_base[MAX_PATH];
+    exepath(saves_base, sizeof(saves_base), "saves");
+    CreateDirectoryA(saves_base, NULL);
     CreateDirectoryA(dir, NULL);
 
     n = snprintf(out, out_sz, "%s\\%s.srm", dir, rom_base);
@@ -1019,22 +1036,26 @@ static LONG WINAPI me_unhandled_exception(EXCEPTION_POINTERS *ep) {
 
 int main(int argc, char **argv) {
     SetUnhandledExceptionFilter(me_unhandled_exception);
+    init_exedir();
 
-    /* Create essential directories on first run. */
-    CreateDirectoryA("roms", NULL);
-    CreateDirectoryA("cores", NULL);
-    CreateDirectoryA("saves", NULL);
-    CreateDirectoryA("firmware", NULL);
-    CreateDirectoryA("lsfg", NULL);
+    /* Create essential directories on first run (relative to exe). */
+    char _tmp[MAX_PATH];
+    CreateDirectoryA(exepath(_tmp, sizeof(_tmp), "roms"),     NULL);
+    CreateDirectoryA(exepath(_tmp, sizeof(_tmp), "cores"),    NULL);
+    CreateDirectoryA(exepath(_tmp, sizeof(_tmp), "saves"),    NULL);
+    CreateDirectoryA(exepath(_tmp, sizeof(_tmp), "firmware"), NULL);
+    CreateDirectoryA(exepath(_tmp, sizeof(_tmp), "lsfg"),     NULL);
 
     /* settings.yaml is the base layer: load defaults, then YAML overrides them,
        then CLI flags override YAML. Generate default if missing. */
     me_settings_defaults(&g_settings);
-    if (me_settings_load("settings.yaml", &g_settings) == 1) {
+    char _settings_path[MAX_PATH];
+    exepath(_settings_path, sizeof(_settings_path), "settings.yaml");
+    if (me_settings_load(_settings_path, &g_settings) == 1) {
         /* File not found; generate default. */
-        me_settings_generate_default("settings.yaml");
+        me_settings_generate_default(_settings_path);
         /* Reload to pick up the defaults we just wrote. */
-        me_settings_load("settings.yaml", &g_settings);
+        me_settings_load(_settings_path, &g_settings);
     }
     int no_audio       = g_settings.no_audio;
     int force_gdi      = g_settings.force_gdi;
