@@ -983,6 +983,7 @@ int main(int argc, char **argv) {
     CreateDirectoryA("cores", NULL);
     CreateDirectoryA("saves", NULL);
     CreateDirectoryA("firmware", NULL);
+    CreateDirectoryA("lsfg", NULL);
 
     /* settings.yaml is the base layer: load defaults, then YAML overrides them,
        then CLI flags override YAML. Generate default if missing. */

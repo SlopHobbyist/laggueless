@@ -10,8 +10,8 @@ The goal was to create a libretro core compatible emulator program. Users find R
 
 ## Features
 - "integer (pixel-perfect) scaling" similar to bsnes-mt but for all cores
-- 'adaptive sync" for gsync/freesync monitors
-- optional lsfg frame gen for higher framerates
+- "adaptive sync" for gsync/freesync monitors
+- lsfg frame gen for higher framerates (optional)
 
 ## Supported Platforms
 - ⭐ Windows x86-64
@@ -49,6 +49,14 @@ The goal was to create a libretro core compatible emulator program. Users find R
 #### Example:
 `release\laggueless.exe release\cores\mesen_libretro.dll "release\roms\Super Mario Bros. (World).nes" --vulkan --lsfg`
 
+## Using the Release
+1. Unzip the file with 7zip/winrar
+2. Open the folder
+3. Copy your Lossless.dll into the **lsfg** folder (optional)
+4. Open Command Prompt
+5. CD to the folder
+6. Run laggueless.exe --help
+
 ## Building
 
 For detailed build instructions, see [build.md](build.md).
@@ -74,9 +82,6 @@ To enable LSFG:
 Alternatively, point directly at the DLL: `--lsfg-dll="C:\path\to\Lossless.dll"`.
 
 > **Note:** LSFG adds input latency (one real-frame delay + FIFO queuing). This is inherent to the frame generation technique. Try using run-ahead latency to compensate.
-
-
-
 
 ## License
 
