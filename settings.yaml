@@ -69,7 +69,7 @@ system:
 # Typical useful values: 1 (most games), 2-3 (games with multi-frame input lag).
 # 0 disables. Hardware-rendered cores (GL/Vulkan) currently skip run-ahead.
 runahead:
-  frames: 1              # 0 disables; clamped to 0..10
+  frames: 0              # 0 disables; clamped to 0..10
 
 log:
   pace_log: false        # log audio pacing diagnostics
