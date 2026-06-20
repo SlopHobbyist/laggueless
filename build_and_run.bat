@@ -83,7 +83,7 @@ if defined FAILED (
     echo.
     echo [WARN] Some steps failed:%FAILED% -- attempting launch anyway
 )
-"%ROOT%release\laggueless.exe" ".\release\cores\mesen_libretro.dll" ".\release\roms\Super Mario Bros. (World).nes" --vulkan --lsfg
+"%ROOT%release\laggueless.exe" "%ROOT%release\cores\mesen_libretro.dll" "%ROOT%release\roms\Super Mario Bros. (Japan, USA).nes" --vulkan --lsfg
 if errorlevel 1 (
     echo [FAIL] laggueless.exe exited with error
     set FAILED=%FAILED% launch
