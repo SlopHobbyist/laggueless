@@ -1,0 +1,33 @@
+Results:
+Folder is in ..\results\
+
+Prompt:
+I ran the test. What do the .\results tell us about the different backends for our emulator?
+Claude:
+Here's what the results tell us:
+Three tiers of backend performance:
+Vulkan & D3D11 are roughly tied — medians cluster between ~14–19 ms. The differences within this group are small and likely within noise given the ~9 ms standard deviations across all configs.
+GDI is clearly worse — medians of ~24–28 ms, about 10 ms slower than Vulkan/D3D11. The minimum values (~13 ms) are also notably higher. GDI is the only backend that meaningfully hurts latency.
+Among Vulkan present modes, immediate and mailbox edge out fifo slightly, but all three are competitive. FIFO configs tend to land in the bottom half of the Vulkan results.
+The tuning flags (aff, matchhz, noaudio) matter less than you'd expect. They shuffle configs around by a few ms but don't produce consistent wins — the same backend appears at both ends of the range depending on flag combo. The standard deviations (~9 ms) are larger than most of the median differences between configs, so many of these rankings aren't statistically significant.
+Bottom line: Use Vulkan (immediate or mailbox) or D3D11 — they're all good. Avoid GDI. The other tweaks are marginal and probably not worth obsessing over.
+Prompt:
+1. What backends did I NOT implement or test? List the most common ones.
+2. Should I persue Vulkan or D3D11 for minimal lag in the future?
+3. I'll implement exclusive fullscreen soon. Will that and other fullscreen stuff effect lag?
+4. I used HDMI out on a 4090 to the monitor, but both also have display port. Should I re-run with display port next? Will that make any difference?
+Claude:
+1. Missing backends:
+OpenGL — still the most common emulator backend (RetroArch, mGBA, Dolphin all default to it or offer it). This is the biggest gap in your test.
+D3D12 — modern Windows alternative to D3D11, though few emulators use it yet.
+Software/CPU rendering — some emulators offer this; would be the GDI-like baseline comparison.
+Metal / SDL renderer — not applicable on Windows, but worth noting if you ever test on macOS.
+2. Vulkan vs D3D11:
+Stick with Vulkan immediate/mailbox. Your results show them tied or slightly ahead of D3D11, and Vulkan gives you more explicit control over the swap chain, present modes, and frame pacing — which matters more once you start adding features like exclusive fullscreen or variable refresh rate. D3D11 abstracts those away, which is convenient but limits your ability to squeeze out the last few ms. Vulkan is also the direction most serious emulator frontends are moving (Dolphin, RPCS3, Duckstation).
+3. Exclusive fullscreen and latency:
+Yes, it should reduce latency. Windowed/borderless modes go through the DWM compositor, which adds a frame of latency (~6–16 ms depending on refresh rate). Exclusive fullscreen bypasses the compositor entirely. This is likely a contributor to the variance you're seeing now — DWM introduces variable scheduling delays. Expect your medians to drop and your stdev to tighten noticeably. This is probably a bigger win than any of the flags you tested.
+Other fullscreen considerations:
+Borderless fullscreen still composites through DWM (no latency benefit over windowed on modern Windows 10/11)
+Fullscreen optimizations in Windows 10+ sometimes auto-promote borderless to "fake" exclusive — inconsistent behavior, test both explicitly
+4. DisplayPort vs HDMI:
+At the resolutions and refresh rates you're likely testing (1080p/1440p 60–144 Hz), it won't make a meaningful difference to click-to-photon latency. The signal encoding and transport latency differences between HDMI 2.1 and DP 1.4 are sub-microsecond — well below your measurement noise floor. The only scenario where it matters is if your HDMI connection is forcing a lower refresh rate or color format that triggers different monitor processing. Check that both connections give you the same refresh rate and that the monitor isn't applying extra processing on one input vs the other. If they match, don't bother re-running — spend that time on the exclusive fullscreen test instead, which will actually move the needle.
