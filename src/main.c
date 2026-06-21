@@ -1494,7 +1494,12 @@ int main(int argc, char **argv) {
         printf("[audio] disabled via --no-audio; using Sleep-based pacing\n");
         g_dev_rate = g_core_rate;
     } else {
-        audio_ok = (me_audio_init(&g_dev_rate) == 0);
+        int audio_mode = ME_AUDIO_MODE_SHARED;
+        if (g_settings.exclusive_mode)
+            audio_mode = ME_AUDIO_MODE_EXCLUSIVE;
+        else if (g_settings.low_latency)
+            audio_mode = ME_AUDIO_MODE_LOW_LATENCY;
+        audio_ok = (me_audio_init(&g_dev_rate, audio_mode) == 0);
         if (!audio_ok) {
             fprintf(stderr, "[audio] init failed; falling back to Sleep pacing\n");
             g_dev_rate = g_core_rate;

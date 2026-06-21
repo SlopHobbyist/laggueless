@@ -10,7 +10,7 @@ video:
   force_vulkan: true    # use the Vulkan present path. Software cores render
                          # correctly; GL hardware cores are not bridged yet.
                          # CLI equivalent: --vulkan
-  vk_no_vsync: false     # (Vulkan only) IMMEDIATE present mode: VRR-smooth if
+  vk_no_vsync: true      # (Vulkan only) IMMEDIATE present mode: VRR-smooth if
                          # adaptive sync is enabled in the driver/OS; otherwise
                          # tearing for lowest latency on fixed-rate displays.
                          # CLI equivalent: --no-vsync
@@ -22,7 +22,7 @@ video:
                          # Requires the Vulkan SDK installed. Adds significant
                          # overhead; only useful for debugging.
                          # Env equivalent: LAGGUELESS_VK_VALIDATE=1
-  match_display_hz: false # if the monitor's refresh rate is within ~5%
+  match_display_hz: true  # if the monitor's refresh rate is within ~5%
                          # of the core's nominal fps, snap the pacing
                          # deadline to the display's actual period.
                          # Eliminates residual judder when core Hz ≠
@@ -32,6 +32,11 @@ video:
 
 audio:
   no_audio: false        # Changes frame timing on some cores/graphics apis
+  exclusive_mode: false  # WASAPI exclusive — bypasses Windows mixer, ~3ms buffer.
+                         # Locks the device: other apps go silent while running.
+  low_latency: true      # IAudioClient3 shared low-latency — requests device minimum
+                         # period while keeping other apps audible. Requires Win10 1607+.
+                         # Falls back to regular shared mode if unavailable.
 
 # LSFG 3.1 frame generation (only used when --lsfg is on the command line).
 # Steam's Lossless Scaling UI exposes a lot of options, but only these are

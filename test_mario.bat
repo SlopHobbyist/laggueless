@@ -1,1 +1,1 @@
-".\release\laggueless.exe" ".\release\cores\mesen_libretro.dll" ".\release\roms\Super Mario Bros. (World).nes" --vulkan
+".\release\laggueless.exe" ".\release\cores\mesen_libretro.dll" ".\release\roms\Super Mario Bros. (Japan, USA).nes" --vulkan

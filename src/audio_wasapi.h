@@ -4,9 +4,16 @@
 #include "types.h"
 #include <stddef.h>
 
-/* Initialize a WASAPI render stream in shared mode. *out_device_rate receives
-   the device sample rate. Returns 0 on success, nonzero on failure. */
-int  me_audio_init(unsigned *out_device_rate);
+/* Audio mode constants for me_audio_init. */
+#define ME_AUDIO_MODE_SHARED       0  /* regular WASAPI shared, ~20ms buffer */
+#define ME_AUDIO_MODE_LOW_LATENCY  1  /* IAudioClient3 shared, minimum period */
+#define ME_AUDIO_MODE_EXCLUSIVE    2  /* WASAPI exclusive, minimum device period */
+
+/* Initialize a WASAPI render stream. *out_device_rate receives the device
+   sample rate. mode selects the WASAPI path (ME_AUDIO_MODE_*). Higher modes
+   fall back automatically: exclusive → low-latency → shared.
+   Returns 0 on success, nonzero on failure. */
+int  me_audio_init(unsigned *out_device_rate, int mode);
 void me_audio_shutdown(void);
 
 unsigned me_audio_device_rate(void);

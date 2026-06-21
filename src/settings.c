@@ -210,6 +210,12 @@ static int input_id_from_name(const char *name, me_input_id *out) {
 void me_settings_defaults(me_settings *out) {
     memset(out, 0, sizeof(*out));
     out->aspect = ME_ASPECT_1_1;
+    out->force_vulkan     = 1;
+    out->vk_no_vsync      = 1;
+    out->match_display_hz = 1;
+    out->thread_affinity  = 1;
+    out->exclusive_mode   = 0;
+    out->low_latency      = 1;
 
     /* LSFG defaults: 2x multiplier, full-resolution optical flow, quality mode.
      * These match the "best quality, minimum latency cost" preset. */
@@ -428,6 +434,8 @@ int me_settings_load(const char *path, me_settings *out) {
     yaml_node_t *audio = map_get(&doc, root, "audio");
     if (audio) {
         out->no_audio        = scalar_bool(map_get(&doc, audio, "no_audio"),       out->no_audio);
+        out->exclusive_mode  = scalar_bool(map_get(&doc, audio, "exclusive_mode"),  out->exclusive_mode);
+        out->low_latency     = scalar_bool(map_get(&doc, audio, "low_latency"),     out->low_latency);
     }
 
     /* system */

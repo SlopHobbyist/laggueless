@@ -93,6 +93,8 @@ typedef struct {
 
     /* audio */
     int no_audio;
+    int exclusive_mode;  /* WASAPI exclusive — bypasses mixer, ~3ms buffer, locks device */
+    int low_latency;     /* IAudioClient3 shared low-latency (Win10 1607+) */
 
     /* thread affinity: pin emulation and audio threads to isolated cores.
        Reduces context-switch jitter on hybrid CPUs (Alder Lake+, Ryzen). */
