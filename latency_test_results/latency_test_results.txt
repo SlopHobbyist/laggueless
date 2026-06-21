@@ -1,5 +1,5 @@
 Results:
-Folder is in ..\results\
+Actual data is in results folder
 
 Prompt:
 I ran the test. What do the .\results tell us about the different backends for our emulator?

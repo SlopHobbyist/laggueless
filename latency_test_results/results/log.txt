@@ -1,0 +1,138 @@
+
+C:\Users\stewie\Downloads\latency_test>python run_sweep.py
+[sweep] 40 configs, started 2026-06-21 13:17:03. First fresh run is calibration; will abort if it fails.
+
+[run] gdi+aff: force_gdi,thread_affinity
+       OK -> OSLTT-LIGHT-001  (3m25s)
+[run] gdi+aff+noaudio: force_gdi,thread_affinity,no_audio
+       OK -> OSLTT-LIGHT-002  (3m30s)
+[run] gdi+aff+matchhz: force_gdi,thread_affinity,match_display_hz
+       OK -> OSLTT-LIGHT-003  (3m28s)
+[run] gdi+aff+matchhz+noaudio: force_gdi,thread_affinity,match_display_hz,no_audio
+       OK -> OSLTT-LIGHT-004  (3m29s)
+[run] gdi+noaff: force_gdi
+       OK -> OSLTT-LIGHT-005  (3m41s)
+[run] gdi+noaff+noaudio: force_gdi,no_audio
+       OK -> OSLTT-LIGHT-006  (3m39s)
+[run] gdi+noaff+matchhz: force_gdi,match_display_hz
+       OK -> OSLTT-LIGHT-007  (3m38s)
+[run] gdi+noaff+matchhz+noaudio: force_gdi,match_display_hz,no_audio
+       OK -> OSLTT-LIGHT-008  (3m37s)
+[run] d3d11+aff: force_d3d11,thread_affinity
+       OK -> OSLTT-LIGHT-009  (3m33s)
+[run] d3d11+aff+noaudio: force_d3d11,thread_affinity,no_audio
+       OK -> OSLTT-LIGHT-010  (3m34s)
+[run] d3d11+aff+matchhz: force_d3d11,thread_affinity,match_display_hz
+       OK -> OSLTT-LIGHT-011  (3m33s)
+[run] d3d11+aff+matchhz+noaudio: force_d3d11,thread_affinity,match_display_hz,no_audio
+       OK -> OSLTT-LIGHT-012  (3m33s)
+[run] d3d11+noaff: force_d3d11
+       OK -> OSLTT-LIGHT-013  (3m43s)
+[run] d3d11+noaff+noaudio: force_d3d11,no_audio
+       OK -> OSLTT-LIGHT-014  (3m42s)
+[run] d3d11+noaff+matchhz: force_d3d11,match_display_hz
+       OK -> OSLTT-LIGHT-015  (3m40s)
+[run] d3d11+noaff+matchhz+noaudio: force_d3d11,match_display_hz,no_audio
+       OK -> OSLTT-LIGHT-016  (3m42s)
+[run] vk_fifo+aff: force_vulkan,thread_affinity
+       OK -> OSLTT-LIGHT-017  (3m36s)
+[run] vk_fifo+aff+noaudio: force_vulkan,thread_affinity,no_audio
+       OK -> OSLTT-LIGHT-018  (3m31s)
+[run] vk_fifo+aff+matchhz: force_vulkan,thread_affinity,match_display_hz
+       OK -> OSLTT-LIGHT-019  (3m35s)
+[run] vk_fifo+aff+matchhz+noaudio: force_vulkan,thread_affinity,match_display_hz,no_audio
+       OK -> OSLTT-LIGHT-020  (3m35s)
+[run] vk_fifo+noaff: force_vulkan
+       OK -> OSLTT-LIGHT-021  (3m41s)
+[run] vk_fifo+noaff+noaudio: force_vulkan,no_audio
+       OK -> OSLTT-LIGHT-022  (3m39s)
+[run] vk_fifo+noaff+matchhz: force_vulkan,match_display_hz
+       OK -> OSLTT-LIGHT-023  (3m37s)
+[run] vk_fifo+noaff+matchhz+noaudio: force_vulkan,match_display_hz,no_audio
+       OK -> OSLTT-LIGHT-024  (3m38s)
+[run] vk_immediate+aff: force_vulkan,vk_no_vsync,thread_affinity
+       OK -> OSLTT-LIGHT-025  (3m33s)
+[run] vk_immediate+aff+noaudio: force_vulkan,vk_no_vsync,thread_affinity,no_audio
+       OK -> OSLTT-LIGHT-026  (3m32s)
+[run] vk_immediate+aff+matchhz: force_vulkan,vk_no_vsync,thread_affinity,match_display_hz
+       OK -> OSLTT-LIGHT-027  (3m34s)
+[run] vk_immediate+aff+matchhz+noaudio: force_vulkan,vk_no_vsync,thread_affinity,match_display_hz,no_audio
+       OK -> OSLTT-LIGHT-028  (3m32s)
+[run] vk_immediate+noaff: force_vulkan,vk_no_vsync
+       OK -> OSLTT-LIGHT-029  (3m42s)
+[run] vk_immediate+noaff+noaudio: force_vulkan,vk_no_vsync,no_audio
+       OK -> OSLTT-LIGHT-030  (3m39s)
+[run] vk_immediate+noaff+matchhz: force_vulkan,vk_no_vsync,match_display_hz
+       OK -> OSLTT-LIGHT-031  (3m38s)
+[run] vk_immediate+noaff+matchhz+noaudio: force_vulkan,vk_no_vsync,match_display_hz,no_audio
+       OK -> OSLTT-LIGHT-032  (3m40s)
+[run] vk_mailbox+aff: force_vulkan,vk_mailbox,thread_affinity
+       OK -> OSLTT-LIGHT-033  (3m31s)
+[run] vk_mailbox+aff+noaudio: force_vulkan,vk_mailbox,thread_affinity,no_audio
+       OK -> OSLTT-LIGHT-034  (3m33s)
+[run] vk_mailbox+aff+matchhz: force_vulkan,vk_mailbox,thread_affinity,match_display_hz
+       OK -> OSLTT-LIGHT-035  (3m32s)
+[run] vk_mailbox+aff+matchhz+noaudio: force_vulkan,vk_mailbox,thread_affinity,match_display_hz,no_audio
+       OK -> OSLTT-LIGHT-036  (3m33s)
+[run] vk_mailbox+noaff: force_vulkan,vk_mailbox
+       OK -> OSLTT-LIGHT-037  (3m42s)
+[run] vk_mailbox+noaff+noaudio: force_vulkan,vk_mailbox,no_audio
+       OK -> OSLTT-LIGHT-038  (3m39s)
+[run] vk_mailbox+noaff+matchhz: force_vulkan,vk_mailbox,match_display_hz
+       OK -> OSLTT-LIGHT-039  (3m39s)
+[run] vk_mailbox+noaff+matchhz+noaudio: force_vulkan,vk_mailbox,match_display_hz,no_audio
+       OK -> OSLTT-LIGHT-040  (3m40s)
+[done] restored original settings.yaml
+[done] manifest -> C:\Users\stewie\Downloads\latency_test\results\manifest.csv
+[done] timing   -> C:\Users\stewie\Downloads\latency_test\results\timing.txt
+[done] TOTAL: 145m50s (145.8 min) this session, 40/40 configs ok
+[init] created empty summary -> C:\Users\stewie\Downloads\latency_test\results\summary.csv
+[init] created empty report  -> C:\Users\stewie\Downloads\latency_test\results\report.md
+
+ #  config                        median    mean    min    n
+------------------------------------------------------------
+ 1  vk_immediate+aff+matchhz+noaudio  14.043  16.560  1.686  100
+ 2  vk_mailbox+aff+matchhz        14.914  16.393  3.545  100
+ 3  vk_mailbox+aff                15.136  17.384  4.031  100
+ 4  vk_immediate+aff+matchhz      15.530  17.111  2.615  100
+ 5  vk_immediate+noaff+matchhz+noaudio  15.553  18.175  4.056  100
+ 6  vk_mailbox+noaff+matchhz+noaudio  15.554  16.844  2.243  100
+ 7  vk_immediate+noaff            15.785  17.777  3.870  100
+ 8  vk_immediate+noaff+noaudio    15.939  17.874  3.638  100
+ 9  d3d11+noaff+noaudio           16.441  17.838  3.846  100
+10  vk_fifo+aff+matchhz+noaudio   16.470  17.821  3.893  100
+11  vk_mailbox+noaff              16.610  17.657  3.242  100
+12  d3d11+noaff+matchhz           16.716  17.816  2.638  100
+13  vk_fifo+noaff+noaudio         16.750  18.213  3.056  100
+14  vk_mailbox+aff+noaudio        16.761  17.879  2.244  100
+15  d3d11+noaff+matchhz+noaudio   16.865  17.509  3.382  100
+16  d3d11+noaff                   16.880  18.406  4.335  100
+17  vk_fifo+noaff+matchhz+noaudio  16.969  18.305  3.336  100
+18  vk_fifo+aff+matchhz           16.983  19.367  4.102  100
+19  d3d11+aff+matchhz             17.297  18.255  2.359  100
+20  d3d11+aff+noaudio             17.426  18.660  2.987  100
+21  vk_fifo+aff+noaudio           17.492  18.652  3.869  100
+22  vk_mailbox+noaff+noaudio      17.597  18.789  2.523  100
+23  vk_mailbox+noaff+matchhz      17.670  18.259  2.477  100
+24  vk_immediate+noaff+matchhz    17.736  19.139  3.986  100
+25  d3d11+aff                     17.901  18.815  3.126  100
+26  vk_mailbox+aff+matchhz+noaudio  17.934  18.130  3.707  100
+27  vk_fifo+noaff                 18.307  19.652  2.755  100
+28  d3d11+aff+matchhz+noaudio     18.735  19.710  3.219  100
+29  vk_fifo+aff                   18.816  19.214  4.103  100
+30  vk_fifo+noaff+matchhz         19.072  19.033  2.406  100
+31  vk_immediate+aff              19.188  20.222  2.755  100
+32  vk_immediate+aff+noaudio      19.571  19.105  3.405  100
+33  gdi+aff+matchhz+noaudio       24.326  26.745 13.464  100
+34  gdi+noaff                     25.842  28.243 14.789  100
+35  gdi+noaff+noaudio             26.168  27.854 13.883  100
+36  gdi+aff+matchhz               26.202  27.745 13.881  100
+37  gdi+aff                       26.773  27.963 13.137  100
+38  gdi+noaff+matchhz             27.274  29.803 13.720  100
+39  gdi+aff+noaudio               27.309  28.494 13.275  100
+40  gdi+noaff+matchhz+noaudio     27.669  29.812 14.994  100
+
+[analyze] report -> C:\Users\stewie\Downloads\latency_test\results\report.md
+[analyze] summary -> C:\Users\stewie\Downloads\latency_test\results\summary.csv
+
+C:\Users\stewie\Downloads\latency_test>

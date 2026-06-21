@@ -1,0 +1,49 @@
+laggueless latency sweep - timing
+==================================================
+started:  2026-06-21 13:17:03
+finished: 2026-06-21 15:42:53
+total:    145m50s  (145.8 min, this session)
+configs:  40 total, 40 ok, 0 failed
+per cfg:  avg 3m36s, min 3m26s, max 3m43s (run this session)
+--------------------------------------------------
+  started      dur  st    config
+ 13:17:03    3m25s  OK    gdi+aff
+ 13:20:32    3m30s  OK    gdi+aff+noaudio
+ 13:24:05    3m28s  OK    gdi+aff+matchhz
+ 13:27:36    3m29s  OK    gdi+aff+matchhz+noaudio
+ 13:31:09    3m41s  OK    gdi+noaff
+ 13:34:52    3m39s  OK    gdi+noaff+noaudio
+ 13:38:34    3m38s  OK    gdi+noaff+matchhz
+ 13:42:15    3m37s  OK    gdi+noaff+matchhz+noaudio
+ 13:45:55    3m33s  OK    d3d11+aff
+ 13:49:31    3m34s  OK    d3d11+aff+noaudio
+ 13:53:08    3m33s  OK    d3d11+aff+matchhz
+ 13:56:44    3m33s  OK    d3d11+aff+matchhz+noaudio
+ 14:00:20    3m43s  OK    d3d11+noaff
+ 14:04:06    3m42s  OK    d3d11+noaff+noaudio
+ 14:07:50    3m40s  OK    d3d11+noaff+matchhz
+ 14:11:33    3m42s  OK    d3d11+noaff+matchhz+noaudio
+ 14:15:17    3m36s  OK    vk_fifo+aff
+ 14:18:56    3m31s  OK    vk_fifo+aff+noaudio
+ 14:22:30    3m35s  OK    vk_fifo+aff+matchhz
+ 14:26:08    3m35s  OK    vk_fifo+aff+matchhz+noaudio
+ 14:29:46    3m41s  OK    vk_fifo+noaff
+ 14:33:29    3m39s  OK    vk_fifo+noaff+noaudio
+ 14:37:11    3m37s  OK    vk_fifo+noaff+matchhz
+ 14:40:51    3m38s  OK    vk_fifo+noaff+matchhz+noaudio
+ 14:44:31    3m33s  OK    vk_immediate+aff
+ 14:48:07    3m32s  OK    vk_immediate+aff+noaudio
+ 14:51:41    3m34s  OK    vk_immediate+aff+matchhz
+ 14:55:18    3m32s  OK    vk_immediate+aff+matchhz+noaudio
+ 14:58:53    3m42s  OK    vk_immediate+noaff
+ 15:02:38    3m39s  OK    vk_immediate+noaff+noaudio
+ 15:06:20    3m38s  OK    vk_immediate+noaff+matchhz
+ 15:10:01    3m40s  OK    vk_immediate+noaff+matchhz+noaudio
+ 15:13:43    3m31s  OK    vk_mailbox+aff
+ 15:17:17    3m33s  OK    vk_mailbox+aff+noaudio
+ 15:20:52    3m32s  OK    vk_mailbox+aff+matchhz
+ 15:24:27    3m33s  OK    vk_mailbox+aff+matchhz+noaudio
+ 15:28:03    3m42s  OK    vk_mailbox+noaff
+ 15:31:47    3m39s  OK    vk_mailbox+noaff+noaudio
+ 15:35:29    3m39s  OK    vk_mailbox+noaff+matchhz
+ 15:39:10    3m40s  OK    vk_mailbox+noaff+matchhz+noaudio
