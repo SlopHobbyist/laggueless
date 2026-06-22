@@ -75,7 +75,16 @@ static DWORD WINAPI audio_thread(LPVOID arg) {
         if (avail == 0) continue;
 
         BYTE *dst = NULL;
-        if (FAILED(IAudioRenderClient_GetBuffer(g_rc, avail, &dst))) continue;
+        HRESULT gbhr = IAudioRenderClient_GetBuffer(g_rc, avail, &dst);
+        if (FAILED(gbhr)) {
+            if (g_audio_mode == ME_AUDIO_MODE_EXCLUSIVE) {
+                static int gb_errs = 0;
+                if (gb_errs++ < 5)
+                    fprintf(stderr, "[audio] exclusive GetBuffer(%u) failed hr=0x%08lx\n",
+                            avail, (unsigned long)gbhr);
+            }
+            continue;
+        }
 
         unsigned ch = g_device_channels;
         EnterCriticalSection(&g_ring_cs);
@@ -152,11 +161,14 @@ static int reactivate_client(void) {
 }
 
 /* Try to Initialize exclusive mode with a given format. Handles the
-   BUFFER_SIZE_NOT_ALIGNED retry loop. Returns the HRESULT. */
+   BUFFER_SIZE_NOT_ALIGNED retry loop. Uses 3x the minimum period for
+   reliability with USB audio interfaces while still being much lower
+   latency than shared mode (~9ms vs ~20ms). Returns the HRESULT. */
 static HRESULT try_exclusive_init(WAVEFORMATEX *fmt, REFERENCE_TIME minPeriod) {
+    REFERENCE_TIME usePeriod = minPeriod * 3;
     HRESULT hr = IAudioClient_Initialize(g_ac, AUDCLNT_SHAREMODE_EXCLUSIVE,
                                          AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-                                         minPeriod, minPeriod, fmt, NULL);
+                                         usePeriod, usePeriod, fmt, NULL);
     if (hr == AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED) {
         UINT32 aligned = 0;
         IAudioClient_GetBufferSize(g_ac, &aligned);
@@ -208,8 +220,8 @@ static int init_exclusive(WAVEFORMATEX *mix) {
     unsigned rate = (unsigned)mix->nSamplesPerSec;
     unsigned nch  = (unsigned)mix->nChannels;
     struct { WORD bits; WORD valid; } pcm_fmts[] = {
-        { 16, 16 },
         { 32, 24 },
+        { 16, 16 },
     };
     for (int i = 0; i < (int)(sizeof(pcm_fmts)/sizeof(pcm_fmts[0])); i++) {
         WORD bits  = pcm_fmts[i].bits;
@@ -351,6 +363,18 @@ int me_audio_init(unsigned *out_device_rate, int mode) {
     if (!com_ok(IAudioClient_SetEventHandle(g_ac, g_ev), "SetEventHandle")) return 1;
     if (!com_ok(IAudioClient_GetService(g_ac, &ME_IID_IAudioRenderClient, (void **)&g_rc),
                 "GetService(RenderClient)")) return 1;
+
+    /* Exclusive mode requires prefilling the buffer with silence before Start().
+       Without this, the device plays uninitialized memory on the first period. */
+    if (g_audio_mode == ME_AUDIO_MODE_EXCLUSIVE) {
+        BYTE *prefill = NULL;
+        hr = IAudioRenderClient_GetBuffer(g_rc, g_buffer_frames, &prefill);
+        if (SUCCEEDED(hr)) {
+            memset(prefill, 0, (size_t)g_buffer_frames * g_device_channels *
+                   (g_exclusive_bps ? g_exclusive_bps / 8 : 4));
+            IAudioRenderClient_ReleaseBuffer(g_rc, g_buffer_frames, 0);
+        }
+    }
 
     if (!com_ok(IAudioClient_Start(g_ac), "IAudioClient::Start")) return 1;
     g_thread = CreateThread(NULL, 0, audio_thread, NULL, 0, NULL);

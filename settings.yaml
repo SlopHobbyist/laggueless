@@ -32,8 +32,10 @@ video:
 
 audio:
   no_audio: false        # Changes frame timing on some cores/graphics apis
-  exclusive_mode: false  # WASAPI exclusive — bypasses Windows mixer, ~3ms buffer.
+  exclusive_mode: false  # WASAPI exclusive — bypasses Windows mixer, ~9ms buffer.
                          # Locks the device: other apps go silent while running.
+                         # EXPERIMENTAL: may not work with USB audio interfaces
+                         # (e.g. Focusrite Scarlett). Use low_latency instead.
   low_latency: true      # IAudioClient3 shared low-latency — requests device minimum
                          # period while keeping other apps audible. Requires Win10 1607+.
                          # Falls back to regular shared mode if unavailable.
