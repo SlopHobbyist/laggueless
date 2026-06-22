@@ -31,6 +31,41 @@ static char *exepath(char *buf, size_t sz, const char *rel) {
     return buf;
 }
 
+/* Exact refresh rate for a GDI device (e.g. "\\.\DISPLAY1") as a real number.
+   EnumDisplaySettings only reports integer Hz (240 for a 239.760 Hz mode),
+   which is useless for refresh matching: 240/4 = 60.000 still beats against the
+   true 59.940 sub-rate. QueryDisplayConfig returns the precise rational
+   (240000/1001 = 239.760), so refresh/N lands exactly on 59.940. Returns 0 on
+   failure so the caller can fall back to the integer path. */
+static double me_query_exact_refresh_hz(const char *gdi_device) {
+    UINT32 npath = 0, nmode = 0;
+    if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &npath, &nmode) != ERROR_SUCCESS)
+        return 0.0;
+    DISPLAYCONFIG_PATH_INFO *paths = calloc(npath, sizeof(*paths));
+    DISPLAYCONFIG_MODE_INFO *modes = calloc(nmode, sizeof(*modes));
+    double hz = 0.0;
+    if (paths && modes &&
+        QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &npath, paths, &nmode, modes, NULL) == ERROR_SUCCESS) {
+        for (UINT32 i = 0; i < npath; i++) {
+            DISPLAYCONFIG_SOURCE_DEVICE_NAME src = {0};
+            src.header.type      = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+            src.header.size      = sizeof(src);
+            src.header.adapterId = paths[i].sourceInfo.adapterId;
+            src.header.id        = paths[i].sourceInfo.id;
+            if (DisplayConfigGetDeviceInfo(&src.header) != ERROR_SUCCESS) continue;
+            char name[CCHDEVICENAME] = {0};
+            wcstombs(name, src.viewGdiDeviceName, sizeof(name) - 1);
+            if (strcmp(name, gdi_device) != 0) continue;
+            DISPLAYCONFIG_RATIONAL r = paths[i].targetInfo.refreshRate;
+            if (r.Denominator) hz = (double)r.Numerator / (double)r.Denominator;
+            break;
+        }
+    }
+    free(paths);
+    free(modes);
+    return hz;
+}
+
 /* ---- global state for callbacks (single core, single ROM) ----------------- */
 static enum retro_pixel_format g_pixel_format = RETRO_PIXEL_FORMAT_0RGB1555;
 
@@ -1468,22 +1503,35 @@ int main(int argc, char **argv) {
         mi.cbSize = sizeof(mi);
         double disp_hz = 0.0;
         if (GetMonitorInfoA(mon, (MONITORINFO *)&mi)) {
-            DEVMODEA dm = {0};
-            dm.dmSize = sizeof(dm);
-            if (EnumDisplaySettingsA(mi.szDevice, ENUM_CURRENT_SETTINGS, &dm)
-                && dm.dmDisplayFrequency > 1) {
-                /* dmDisplayFrequency is integer Hz. Treat 59 as 59.94 (NTSC). */
-                disp_hz = (dm.dmDisplayFrequency == 59) ? 59.94 : (double)dm.dmDisplayFrequency;
+            /* Prefer the exact rational refresh; fall back to integer Hz. */
+            disp_hz = me_query_exact_refresh_hz(mi.szDevice);
+            if (disp_hz <= 1.0) {
+                DEVMODEA dm = {0};
+                dm.dmSize = sizeof(dm);
+                if (EnumDisplaySettingsA(mi.szDevice, ENUM_CURRENT_SETTINGS, &dm)
+                    && dm.dmDisplayFrequency > 1) {
+                    /* dmDisplayFrequency is integer Hz. Treat 59 as 59.94 (NTSC). */
+                    disp_hz = (dm.dmDisplayFrequency == 59) ? 59.94 : (double)dm.dmDisplayFrequency;
+                }
             }
         }
         if (disp_hz > 1.0) {
-            double ratio = disp_hz / fps;
+            /* The display may run at an integer multiple of the core rate
+               (e.g. 239.760 Hz panel vs 60.0998 Hz NES = ~4x). Pace to
+               refresh/N so FIFO holds every frame for exactly N refreshes —
+               no judder, no tearing, no VRR. N==1 reduces to the plain
+               near-match case. */
+            long n = (long)(disp_hz / fps + 0.5);
+            if (n < 1) n = 1;
+            double target = disp_hz / (double)n;
+            double ratio = target / fps;
             if (ratio > 0.95 && ratio < 1.05) {
-                printf("[pace] match_display_hz: core %.4f -> display %.4f Hz\n", fps, disp_hz);
-                fps = disp_hz;
+                printf("[pace] match_display_hz: core %.4f -> %.4f Hz (display %.4f / %ld)\n",
+                       fps, target, disp_hz, n);
+                fps = target;
             } else {
-                printf("[pace] match_display_hz: display %.4f Hz outside 5%% of core %.4f; keeping core rate\n",
-                       disp_hz, fps);
+                printf("[pace] match_display_hz: display %.4f Hz / %ld = %.4f outside 5%% of core %.4f; keeping core rate\n",
+                       disp_hz, n, target, fps);
             }
         } else {
             printf("[pace] match_display_hz: could not query display refresh; keeping core rate\n");
