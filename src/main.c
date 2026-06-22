@@ -1525,12 +1525,17 @@ int main(int argc, char **argv) {
             if (n < 1) n = 1;
             double target = disp_hz / (double)n;
             double ratio = target / fps;
-            if (ratio > 0.95 && ratio < 1.05) {
+            /* Only snap when the display is a near-exact integer multiple of the
+               core rate. A true multiple lands within ~0.3% (NTSC's 1000/1001
+               gives 59.940 vs a 60.0998 core); anything past 1% means no clean
+               hold count exists (e.g. 144 Hz, or 700 Hz for a 60 Hz core), so we
+               keep the native rate rather than run the game off-speed. */
+            if (ratio > 0.99 && ratio < 1.01) {
                 printf("[pace] match_display_hz: core %.4f -> %.4f Hz (display %.4f / %ld)\n",
                        fps, target, disp_hz, n);
                 fps = target;
             } else {
-                printf("[pace] match_display_hz: display %.4f Hz / %ld = %.4f outside 5%% of core %.4f; keeping core rate\n",
+                printf("[pace] match_display_hz: display %.4f Hz / %ld = %.4f not within 1%% of core %.4f; keeping core rate\n",
                        disp_hz, n, target, fps);
             }
         } else {
