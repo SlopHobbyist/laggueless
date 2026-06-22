@@ -1492,11 +1492,14 @@ int main(int argc, char **argv) {
     g_core_rate = (unsigned)(av.timing.sample_rate > 0 ? av.timing.sample_rate : 48000);
     double fps = av.timing.fps > 1.0 ? av.timing.fps : 60.0;
 
-    /* Refresh-rate matching: if the monitor's actual rate is within 5% of the
-       core's nominal fps, snap the pacing deadline to the display's period.
+    /* Refresh-rate matching: if the monitor's actual rate is a near-exact
+       integer multiple of the core's nominal fps, snap the pacing deadline to
+       refresh/N so FIFO holds every frame for exactly N refreshes (no judder).
        Removes residual judder when core Hz ≠ display Hz (e.g. 60.10 vs 59.94)
        at the cost of a tiny core-vs-device clock mismatch the audio DRC
-       already absorbs. Opt-in via settings.yaml. */
+       already absorbs. fps here is the per-core rate from the AV info, so the
+       target adapts to whatever console/region is loaded. Opt-in via
+       settings.yaml. */
     if (g_settings.match_display_hz) {
         HMONITOR mon = MonitorFromWindow(g_hwnd, MONITOR_DEFAULTTONEAREST);
         MONITORINFOEXA mi = {0};
@@ -1530,13 +1533,21 @@ int main(int argc, char **argv) {
                gives 59.940 vs a 60.0998 core); anything past 1% means no clean
                hold count exists (e.g. 144 Hz, or 700 Hz for a 60 Hz core), so we
                keep the native rate rather than run the game off-speed. */
+            double dev_pct = (target / fps - 1.0) * 100.0;
             if (ratio > 0.99 && ratio < 1.01) {
-                printf("[pace] match_display_hz: core %.4f -> %.4f Hz (display %.4f / %ld)\n",
-                       fps, target, disp_hz, n);
+                printf("[pace] match_display_hz: core %.4f Hz -> %.4f Hz "
+                       "(display %.4f / %ld), game speed %+.3f%%\n",
+                       fps, target, disp_hz, n, dev_pct);
                 fps = target;
             } else {
-                printf("[pace] match_display_hz: display %.4f Hz / %ld = %.4f not within 1%% of core %.4f; keeping core rate\n",
-                       disp_hz, n, target, fps);
+                fprintf(stderr,
+                    "[pace] WARNING: display %.4f Hz is not an integer multiple of the\n"
+                    "[pace]          %.4f Hz core rate (closest is /%ld = %.4f Hz, %+.2f%% off).\n"
+                    "[pace]          Running the NATIVE core rate for speed accuracy; expect minor\n"
+                    "[pace]          judder during scrolling. For smooth AND accurate playback use a\n"
+                    "[pace]          refresh that divides the core rate evenly (e.g. 60/120/240/360\n"
+                    "[pace]          for ~60fps cores; 50/100/150/200 for ~50fps PAL) or enable VRR.\n",
+                    disp_hz, fps, n, target, dev_pct);
             }
         } else {
             printf("[pace] match_display_hz: could not query display refresh; keeping core rate\n");
