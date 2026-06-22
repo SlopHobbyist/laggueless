@@ -216,6 +216,7 @@ void me_settings_defaults(me_settings *out) {
     out->thread_affinity  = 1;
     out->exclusive_mode   = 0;
     out->low_latency      = 1;
+    out->match_strict     = 1;  /* competition-safe by default */
 
     /* LSFG defaults: 2x multiplier, full-resolution optical flow, quality mode.
      * These match the "best quality, minimum latency cost" preset. */
@@ -420,6 +421,8 @@ int me_settings_load(const char *path, me_settings *out) {
         out->vk_validate = scalar_bool(map_get(&doc, video, "vk_validate"), out->vk_validate);
         out->match_display_hz = scalar_bool(map_get(&doc, video, "match_display_hz"),
                                             out->match_display_hz);
+        out->match_strict = scalar_bool(map_get(&doc, video, "match_strict"),
+                                        out->match_strict);
     }
 
     /* lsfg */

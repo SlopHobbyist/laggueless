@@ -10,7 +10,7 @@ video:
   force_vulkan: true    # use the Vulkan present path. Software cores render
                          # correctly; GL hardware cores are not bridged yet.
                          # CLI equivalent: --vulkan
-  vk_no_vsync: false      # (Vulkan only) IMMEDIATE present mode: VRR-smooth if
+  vk_no_vsync: true      # (Vulkan only) IMMEDIATE present mode: VRR-smooth if
                          # adaptive sync is enabled in the driver/OS; otherwise
                          # tearing for lowest latency on fixed-rate displays.
                          # CLI equivalent: --no-vsync
@@ -22,13 +22,23 @@ video:
                          # Requires the Vulkan SDK installed. Adds significant
                          # overhead; only useful for debugging.
                          # Env equivalent: LAGGUELESS_VK_VALIDATE=1
-  match_display_hz: true  # if the monitor's refresh rate is within ~5%
-                         # of the core's nominal fps, snap the pacing
-                         # deadline to the display's actual period.
-                         # Eliminates residual judder when core Hz ≠
-                         # display Hz (e.g. 60.10 NTSC on a 59.94 panel).
-                         # Audio drift is absorbed by the existing DRC
-                         # resampler, so pitch shift stays inaudible.
+  match_display_hz: true  # if the monitor refresh is a near-integer multiple
+                         # of the core's nominal fps, snap the pacing deadline
+                         # to refresh/N so vsync holds every frame for exactly
+                         # N refreshes — eliminates scroll judder with no
+                         # tearing and no VRR. Audio drift is absorbed by the
+                         # DRC resampler, so any pitch shift is inaudible.
+  match_strict: false     # speed-accuracy policy for match_display_hz:
+                         #   true  = COMPETITION: only snap when the speed error
+                         #           is negligible (<0.05%), i.e. a true exact-
+                         #           multiple refresh. Standard 60/120/240Hz
+                         #           panels run 59.94xN, so they do NOT snap —
+                         #           the game runs at exact native speed (legal
+                         #           for speedruns) with minor judder.
+                         #   false = CASUAL: allow up to 0.30% speed error so
+                         #           standard panels are smooth out of the box.
+                         #           NOT competition-legal (~0.27% = ~10s/hour).
+                         # The console logs the exact resulting speed either way.
 
 audio:
   no_audio: false        # Changes frame timing on some cores/graphics apis

@@ -85,6 +85,8 @@ typedef struct {
     int vk_mailbox;         /* Vulkan MAILBOX present mode (ignored if vk_no_vsync) */
     int vk_validate;        /* enable VK_LAYER_KHRONOS_validation */
     int match_display_hz;   /* snap pacing to monitor refresh when within tolerance */
+    int match_strict;       /* 1=competition (snap only at <0.05% speed error),
+                               0=casual (allow up to 0.3% error for smoothness) */
 
     /* LSFG 3.1 frame generation knobs (only meaningful with --lsfg). */
     int   lsfg_multiplier;  /* 2/3/4 — number of presented frames per real frame */

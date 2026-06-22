@@ -1528,25 +1528,42 @@ int main(int argc, char **argv) {
             if (n < 1) n = 1;
             double target = disp_hz / (double)n;
             double ratio = target / fps;
-            /* Only snap when the display is a near-exact integer multiple of the
-               core rate. A true multiple lands within ~0.3% (NTSC's 1000/1001
-               gives 59.940 vs a 60.0998 core); anything past 1% means no clean
-               hold count exists (e.g. 144 Hz, or 700 Hz for a 60 Hz core), so we
-               keep the native rate rather than run the game off-speed. */
             double dev_pct = (target / fps - 1.0) * 100.0;
-            if (ratio > 0.99 && ratio < 1.01) {
+
+            /* Snapping the game to refresh/N kills judder but changes its speed
+               by dev_pct, because a standard panel is never an exact multiple of
+               the console rate (a "240 Hz" panel is 59.940x4, not 60.0998x4).
+               competition mode (match_strict) only snaps when that error is
+               negligible — i.e. a true exact-multiple refresh; casual mode
+               tolerates the ~0.27% NTSC offset for plug-and-play smoothness.
+               Past ~0.3% no clean hold count exists at all (144 Hz, 700 Hz, ...). */
+            const double TOL_STRICT = 0.0005; /* 0.05% — competition */
+            const double TOL_CASUAL = 0.003;  /* 0.30% — casual smoothness */
+            double tol = g_settings.match_strict ? TOL_STRICT : TOL_CASUAL;
+
+            if (ratio > 1.0 - tol && ratio < 1.0 + tol) {
                 printf("[pace] match_display_hz: core %.4f Hz -> %.4f Hz "
-                       "(display %.4f / %ld), game speed %+.3f%%\n",
-                       fps, target, disp_hz, n, dev_pct);
+                       "(display %.4f / %ld), game speed %+.3f%% [%s]\n",
+                       fps, target, disp_hz, n, dev_pct,
+                       g_settings.match_strict ? "competition" : "casual");
                 fps = target;
+            } else if (ratio > 1.0 - TOL_CASUAL && ratio < 1.0 + TOL_CASUAL) {
+                /* A clean multiple, but the speed error exceeds competition
+                   tolerance — only reachable in strict mode. */
+                fprintf(stderr,
+                    "[pace] competition mode: display %.4f Hz / %ld = %.4f Hz is a clean multiple\n"
+                    "[pace]   but %+.2f%% off the %.4f Hz core rate. Keeping NATIVE speed (legal);\n"
+                    "[pace]   expect minor judder. For smooth+legal: create a custom refresh of\n"
+                    "[pace]   %.3f Hz (= core x%ld). For smooth+casual: set match_strict: false.\n",
+                    disp_hz, n, target, dev_pct, fps, fps * (double)n, n);
             } else {
                 fprintf(stderr,
                     "[pace] WARNING: display %.4f Hz is not an integer multiple of the\n"
                     "[pace]          %.4f Hz core rate (closest is /%ld = %.4f Hz, %+.2f%% off).\n"
-                    "[pace]          Running the NATIVE core rate for speed accuracy; expect minor\n"
-                    "[pace]          judder during scrolling. For smooth AND accurate playback use a\n"
-                    "[pace]          refresh that divides the core rate evenly (e.g. 60/120/240/360\n"
-                    "[pace]          for ~60fps cores; 50/100/150/200 for ~50fps PAL) or enable VRR.\n",
+                    "[pace]          Running NATIVE core rate for speed accuracy; expect judder\n"
+                    "[pace]          during scrolling. For smooth playback use a refresh that\n"
+                    "[pace]          divides the core rate evenly (e.g. 60/120/240/360 for ~60fps\n"
+                    "[pace]          cores; 50/100/150/200 for ~50fps PAL) or enable VRR.\n",
                     disp_hz, fps, n, target, dev_pct);
             }
         } else {
