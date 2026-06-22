@@ -1,0 +1,1 @@
+".\release\laggueless.exe" ".\release\cores\quicknes_libretro.dll" ".\release\roms\Super Mario Bros. 2 (USA) (Rev 1).nes" --vulkan

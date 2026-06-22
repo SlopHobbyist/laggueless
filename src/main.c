@@ -1219,7 +1219,8 @@ int main(int argc, char **argv) {
                 "  --vk-exclusive               (Vulkan only) acquire exclusive fullscreen\n"
                 "                                 (VK_EXT_full_screen_exclusive): bypasses the\n"
                 "                                 DWM compositor for the lowest input-to-pixel\n"
-                "                                 latency. Forces fullscreen on launch. (default on)\n"
+                "                                 latency. Engages only while the window covers\n"
+                "                                 the whole monitor (fullscreen). (default on)\n"
                 "  --no-vk-exclusive            disable exclusive fullscreen (composited swapchain)\n"
                 "  --lsfg                       enable LSFG 3.1 frame generation (requires\n"
                 "                                 --vulkan and Lossless Scaling on Steam;\n"
@@ -1424,10 +1425,7 @@ int main(int argc, char **argv) {
     if (win_h < 240) win_h = 480;
     g_hwnd = me_platform_create_window("laggueless", win_w, win_h);
     if (!g_hwnd) { fprintf(stderr, "window create failed\n"); return 1; }
-    /* Exclusive fullscreen needs the window to cover the whole monitor, so
-       force fullscreen on launch when it's enabled with the Vulkan path. */
-    if (g_settings.fullscreen_on_launch ||
-        (g_force_vulkan && g_settings.vk_exclusive_fullscreen)) {
+    if (g_settings.fullscreen_on_launch) {
         me_platform_toggle_fullscreen(g_hwnd);
     }
 

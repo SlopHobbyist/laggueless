@@ -377,6 +377,21 @@ static void compute_extent(VkExtent2D *out) {
     out->height = h;
 }
 
+/* True only when the window's outer rect covers the whole monitor it's on.
+   Exclusive fullscreen is only meaningful (and only cleanly grantable) when
+   the window actually owns the display — a small windowed surface should stay
+   composited. NVIDIA will otherwise grant exclusive mode even to a windowed
+   surface, triggering a needless display mode-switch. */
+static int window_covers_monitor(HWND hwnd) {
+    HMONITOR mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi = { .cbSize = sizeof(mi) };
+    if (!GetMonitorInfoA(mon, &mi)) return 0;
+    RECT wr;
+    if (!GetWindowRect(hwnd, &wr)) return 0;
+    return wr.left  <= mi.rcMonitor.left  && wr.top    <= mi.rcMonitor.top &&
+           wr.right >= mi.rcMonitor.right && wr.bottom >= mi.rcMonitor.bottom;
+}
+
 static int create_swapchain_only(void) {
     VkSurfaceCapabilitiesKHR caps;
     if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g_vk.phys, g_vk.surface, &caps) != VK_SUCCESS) {
@@ -404,7 +419,8 @@ static int create_swapchain_only(void) {
     /* Exclusive fullscreen: chain the application-controlled mode + the target
        HMONITOR onto the swapchain. We acquire the mode explicitly after creation
        (below) so we can recover from MODE_LOST without tearing down the device. */
-    int want_exclusive = g_vk.exclusive_requested && g_vk.exclusive_supported;
+    int want_exclusive = g_vk.exclusive_requested && g_vk.exclusive_supported &&
+                         window_covers_monitor(g_vk.hwnd);
     VkSurfaceFullScreenExclusiveWin32InfoEXT fse_win32 = {
         .sType = VK_STRUCTURE_TYPE_SURFACE_FULL_SCREEN_EXCLUSIVE_WIN32_INFO_EXT,
         .hmonitor = MonitorFromWindow(g_vk.hwnd, MONITOR_DEFAULTTONEAREST),

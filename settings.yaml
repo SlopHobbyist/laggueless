@@ -27,9 +27,11 @@ video:
                          # directly to the display, bypassing the DWM compositor —
                          # removes a frame of compositor latency and unlocks real
                          # tearing / direct VRR for the lowest input-to-pixel delay.
-                         # Forces fullscreen on launch (the window must cover the
-                         # whole monitor). Falls back to a composited swapchain if
-                         # the driver doesn't support it or the mode can't be taken.
+                         # Engages only while the window covers the whole monitor
+                         # (i.e. when fullscreen — toggle with F11 / Alt+Enter), and
+                         # is released automatically when you leave fullscreen.
+                         # Falls back to a composited swapchain if the driver
+                         # doesn't support it or the mode can't be taken.
                          # CLI equivalent: --vk-exclusive / --no-vk-exclusive
                          # Env equivalent: LAGGUELESS_VK_EXCLUSIVE=1
   match_display_hz: true  # if the monitor refresh is a near-integer multiple
