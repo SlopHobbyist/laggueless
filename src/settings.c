@@ -212,6 +212,7 @@ void me_settings_defaults(me_settings *out) {
     out->aspect = ME_ASPECT_1_1;
     out->force_vulkan     = 1;
     out->vk_no_vsync      = 1;
+    out->vk_exclusive_fullscreen = 1;
     out->match_display_hz = 1;
     out->thread_affinity  = 1;
     out->exclusive_mode   = 0;
@@ -419,6 +420,8 @@ int me_settings_load(const char *path, me_settings *out) {
         out->vk_no_vsync = scalar_bool(map_get(&doc, video, "vk_no_vsync"), out->vk_no_vsync);
         out->vk_mailbox  = scalar_bool(map_get(&doc, video, "vk_mailbox"),  out->vk_mailbox);
         out->vk_validate = scalar_bool(map_get(&doc, video, "vk_validate"), out->vk_validate);
+        out->vk_exclusive_fullscreen = scalar_bool(map_get(&doc, video, "vk_exclusive_fullscreen"),
+                                                   out->vk_exclusive_fullscreen);
         out->match_display_hz = scalar_bool(map_get(&doc, video, "match_display_hz"),
                                             out->match_display_hz);
         out->match_strict = scalar_bool(map_get(&doc, video, "match_strict"),

@@ -102,6 +102,17 @@ static struct {
     int pace_log; /* per-second swapchain/present diagnostics */
     int present_count; /* monotonic, for pace_log */
 
+    /* Exclusive fullscreen (VK_EXT_full_screen_exclusive). Lowest input-to-pixel
+       latency: the swapchain bypasses the DWM compositor and scans out directly
+       to the display, removing one frame of compositor queueing and unlocking
+       true tearing / direct VRR. Opt-in (env LAGGUELESS_VK_EXCLUSIVE); the window
+       must already cover the whole monitor (borderless fullscreen). */
+    int exclusive_requested;  /* user asked for it */
+    int exclusive_supported;  /* instance + device extensions present */
+    int exclusive_active;     /* mode currently acquired on the live swapchain */
+    PFN_vkAcquireFullScreenExclusiveModeEXT pfn_AcquireFullScreenExclusive;
+    PFN_vkReleaseFullScreenExclusiveModeEXT pfn_ReleaseFullScreenExclusive;
+
     /* Swapchain extension PFNs resolved via vkGetDeviceProcAddr so we don't
      * go through the loader trampoline. The trampoline's WSI dispatch can
      * get corrupted on Windows + NVIDIA when a second VkInstance is created
@@ -202,6 +213,7 @@ static const char *vk_result_str(VkResult r) {
         case VK_ERROR_FEATURE_NOT_PRESENT: return "VK_ERROR_FEATURE_NOT_PRESENT";
         case VK_ERROR_INCOMPATIBLE_DRIVER: return "VK_ERROR_INCOMPATIBLE_DRIVER";
         case VK_ERROR_OUT_OF_DATE_KHR: return "VK_ERROR_OUT_OF_DATE_KHR";
+        case VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT: return "VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT";
         case VK_ERROR_SURFACE_LOST_KHR: return "VK_ERROR_SURFACE_LOST_KHR";
         case VK_ERROR_DEVICE_LOST: return "VK_ERROR_DEVICE_LOST";
         default: return "VK_ERROR_?";
@@ -226,6 +238,38 @@ static int layer_available(const char *name) {
     if (vkEnumerateInstanceLayerProperties(&count, props) == VK_SUCCESS) {
         for (uint32_t i = 0; i < count; i++) {
             if (strcmp(props[i].layerName, name) == 0) { found = 1; break; }
+        }
+    }
+    free(props);
+    return found;
+}
+
+static int instance_ext_available(const char *name) {
+    uint32_t count = 0;
+    if (vkEnumerateInstanceExtensionProperties(NULL, &count, NULL) != VK_SUCCESS || count == 0)
+        return 0;
+    VkExtensionProperties *props = calloc(count, sizeof(*props));
+    if (!props) return 0;
+    int found = 0;
+    if (vkEnumerateInstanceExtensionProperties(NULL, &count, props) == VK_SUCCESS) {
+        for (uint32_t i = 0; i < count; i++) {
+            if (strcmp(props[i].extensionName, name) == 0) { found = 1; break; }
+        }
+    }
+    free(props);
+    return found;
+}
+
+static int device_ext_available(VkPhysicalDevice phys, const char *name) {
+    uint32_t count = 0;
+    if (vkEnumerateDeviceExtensionProperties(phys, NULL, &count, NULL) != VK_SUCCESS || count == 0)
+        return 0;
+    VkExtensionProperties *props = calloc(count, sizeof(*props));
+    if (!props) return 0;
+    int found = 0;
+    if (vkEnumerateDeviceExtensionProperties(phys, NULL, &count, props) == VK_SUCCESS) {
+        for (uint32_t i = 0; i < count; i++) {
+            if (strcmp(props[i].extensionName, name) == 0) { found = 1; break; }
         }
     }
     free(props);
@@ -357,8 +401,23 @@ static int create_swapchain_only(void) {
 
     VkSwapchainKHR old = g_vk.swapchain;
 
+    /* Exclusive fullscreen: chain the application-controlled mode + the target
+       HMONITOR onto the swapchain. We acquire the mode explicitly after creation
+       (below) so we can recover from MODE_LOST without tearing down the device. */
+    int want_exclusive = g_vk.exclusive_requested && g_vk.exclusive_supported;
+    VkSurfaceFullScreenExclusiveWin32InfoEXT fse_win32 = {
+        .sType = VK_STRUCTURE_TYPE_SURFACE_FULL_SCREEN_EXCLUSIVE_WIN32_INFO_EXT,
+        .hmonitor = MonitorFromWindow(g_vk.hwnd, MONITOR_DEFAULTTONEAREST),
+    };
+    VkSurfaceFullScreenExclusiveInfoEXT fse_info = {
+        .sType = VK_STRUCTURE_TYPE_SURFACE_FULL_SCREEN_EXCLUSIVE_INFO_EXT,
+        .pNext = &fse_win32,
+        .fullScreenExclusive = VK_FULL_SCREEN_EXCLUSIVE_APPLICATION_CONTROLLED_EXT,
+    };
+
     VkSwapchainCreateInfoKHR sci = {
         .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
+        .pNext = want_exclusive ? &fse_info : NULL,
         .surface = g_vk.surface,
         .minImageCount = want,
         .imageFormat = g_vk.sc_format,
@@ -379,16 +438,35 @@ static int create_swapchain_only(void) {
         fprintf(stderr, "[vk] vkCreateSwapchainKHR failed: %s\n", vk_result_str(r));
         return -1;
     }
+    /* Destroying the old swapchain implicitly releases any exclusive mode it
+       held; the new swapchain starts un-acquired. */
+    g_vk.exclusive_active = 0;
     if (old != VK_NULL_HANDLE) {
         vkDestroySwapchainKHR(g_vk.device, old, NULL);
+    }
+
+    /* Take exclusive control now that the swapchain exists. Non-fatal on
+       failure (e.g. the window isn't truly fullscreen, or another app holds
+       the display): we keep the composited swapchain and just log it. */
+    if (want_exclusive) {
+        VkResult er = g_vk.pfn_AcquireFullScreenExclusive(g_vk.device, g_vk.swapchain);
+        if (er == VK_SUCCESS) {
+            g_vk.exclusive_active = 1;
+        } else {
+            fprintf(stderr, "[vk] vkAcquireFullScreenExclusiveModeEXT failed: %s "
+                            "(continuing composited; ensure the window is fullscreen)\n",
+                    vk_result_str(er));
+        }
     }
 
     g_vk.sc_image_count = MAX_SWAPCHAIN_IMAGES;
     vkGetSwapchainImagesKHR(g_vk.device, g_vk.swapchain, &g_vk.sc_image_count, g_vk.sc_images);
 
-    printf("[vk] swapchain: %ux%u, %u images, format=%d, %s\n",
+    printf("[vk] swapchain: %ux%u, %u images, format=%d, %s%s\n",
            g_vk.sc_extent.width, g_vk.sc_extent.height, g_vk.sc_image_count,
-           (int)g_vk.sc_format, present_mode_str(g_vk.present_mode));
+           (int)g_vk.sc_format, present_mode_str(g_vk.present_mode),
+           g_vk.exclusive_active ? ", EXCLUSIVE fullscreen" :
+           (g_vk.exclusive_requested ? ", exclusive requested (not active)" : ""));
     /* IMMEDIATE = the Vulkan equivalent of D3D11's ALLOW_TEARING. The Windows
        VRR pipeline kicks in transparently when adaptive sync is enabled in
        the driver/OS; on a fixed-rate monitor the same setting allows tearing
@@ -807,6 +885,19 @@ int me_vk_init(HWND hwnd, unsigned max_w, unsigned max_h) {
     }
     g_vk.validation_enabled = want_validation;
 
+    const char *ex = getenv("LAGGUELESS_VK_EXCLUSIVE");
+    g_vk.exclusive_requested = (ex && ex[0] && ex[0] != '0');
+    /* VK_EXT_full_screen_exclusive is a device extension but depends on the
+       instance-level VK_KHR_get_surface_capabilities2. If that instance
+       extension isn't present we can't offer exclusive mode at all. */
+    int want_surfcaps2 = g_vk.exclusive_requested &&
+                         instance_ext_available(VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME);
+    if (g_vk.exclusive_requested && !want_surfcaps2) {
+        fprintf(stderr, "[vk] exclusive fullscreen requested but %s unavailable - disabling\n",
+                VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME);
+        g_vk.exclusive_requested = 0;
+    }
+
     VkApplicationInfo app = {
         .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
         .pApplicationName = "laggueless",
@@ -820,6 +911,7 @@ int me_vk_init(HWND hwnd, unsigned max_w, unsigned max_h) {
     inst_exts[inst_ext_count++] = VK_KHR_SURFACE_EXTENSION_NAME;
     inst_exts[inst_ext_count++] = VK_KHR_WIN32_SURFACE_EXTENSION_NAME;
     if (want_validation) inst_exts[inst_ext_count++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
+    if (want_surfcaps2) inst_exts[inst_ext_count++] = VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME;
     const char *inst_layers[2];
     uint32_t inst_layer_count = 0;
     if (want_validation) inst_layers[inst_layer_count++] = "VK_LAYER_KHRONOS_validation";
@@ -924,9 +1016,21 @@ int me_vk_init(HWND hwnd, unsigned max_w, unsigned max_h) {
         .queueCount = 1,
         .pQueuePriorities = &qprio,
     };
-    const char *dev_exts[8];
+    const char *dev_exts[12];
     uint32_t dev_ext_count = 0;
     dev_exts[dev_ext_count++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
+
+    /* Exclusive fullscreen device extension (gated on the instance extension
+       resolved above). */
+    if (g_vk.exclusive_requested &&
+        device_ext_available(g_vk.phys, VK_EXT_FULL_SCREEN_EXCLUSIVE_EXTENSION_NAME)) {
+        dev_exts[dev_ext_count++] = VK_EXT_FULL_SCREEN_EXCLUSIVE_EXTENSION_NAME;
+        g_vk.exclusive_supported = 1;
+    } else if (g_vk.exclusive_requested) {
+        fprintf(stderr, "[vk] %s not supported by the device - exclusive fullscreen disabled\n",
+                VK_EXT_FULL_SCREEN_EXCLUSIVE_EXTENSION_NAME);
+        g_vk.exclusive_requested = 0;
+    }
 #ifdef ME_HAVE_LSFG
     /* B3: External memory/semaphore extensions needed for HANDLE sharing.
      * Timeline semaphore extension is enabled in addition to the 1.2 feature
@@ -969,6 +1073,18 @@ int me_vk_init(HWND hwnd, unsigned max_w, unsigned max_h) {
     if (!g_vk.pfn_AcquireNextImage || !g_vk.pfn_QueuePresent) {
         fprintf(stderr, "[vk] failed to resolve swapchain device PFNs\n");
         goto fail;
+    }
+
+    if (g_vk.exclusive_supported) {
+        g_vk.pfn_AcquireFullScreenExclusive = (PFN_vkAcquireFullScreenExclusiveModeEXT)
+            vkGetDeviceProcAddr(g_vk.device, "vkAcquireFullScreenExclusiveModeEXT");
+        g_vk.pfn_ReleaseFullScreenExclusive = (PFN_vkReleaseFullScreenExclusiveModeEXT)
+            vkGetDeviceProcAddr(g_vk.device, "vkReleaseFullScreenExclusiveModeEXT");
+        if (!g_vk.pfn_AcquireFullScreenExclusive || !g_vk.pfn_ReleaseFullScreenExclusive) {
+            fprintf(stderr, "[vk] failed to resolve full-screen-exclusive PFNs - disabling\n");
+            g_vk.exclusive_supported = 0;
+            g_vk.exclusive_requested = 0;
+        }
     }
 
 #ifdef ME_HAVE_LSFG
@@ -1457,6 +1573,10 @@ void me_vk_shutdown(void) {
     if (g_vk.upload_image)    vkDestroyImage(g_vk.device, g_vk.upload_image, NULL);
     if (g_vk.upload_mem)      vkFreeMemory(g_vk.device, g_vk.upload_mem, NULL);
 
+    if (g_vk.exclusive_active && g_vk.pfn_ReleaseFullScreenExclusive && g_vk.swapchain) {
+        g_vk.pfn_ReleaseFullScreenExclusive(g_vk.device, g_vk.swapchain);
+        g_vk.exclusive_active = 0;
+    }
     if (g_vk.swapchain)       vkDestroySwapchainKHR(g_vk.device, g_vk.swapchain, NULL);
 
     if (g_vk.device) {
@@ -1515,7 +1635,10 @@ int me_vk_present(const u32 *pixels, unsigned frame_w, unsigned frame_h, unsigne
     uint32_t img_idx = 0;
     VkResult r = g_vk.pfn_AcquireNextImage(g_vk.device, g_vk.swapchain, UINT64_MAX,
                                        f->image_available, VK_NULL_HANDLE, &img_idx);
-    if (r == VK_ERROR_OUT_OF_DATE_KHR) {
+    if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT) {
+        /* MODE_LOST: the OS revoked exclusive control (alt-tab, overlay, etc).
+           Recreate the swapchain, which re-attempts the acquire. */
+        if (r == VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT) g_vk.exclusive_active = 0;
         g_vk.swapchain_needs_recreate = 1;
         return 0;
     }
@@ -1801,7 +1924,9 @@ int me_vk_present(const u32 *pixels, unsigned frame_w, unsigned frame_h, unsigne
             .pImageIndices = &img_idx,
         };
         r = g_vk.pfn_QueuePresent(g_vk.gfx_queue, &pi);
-        if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) {
+        if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR ||
+            r == VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT) {
+            if (r == VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT) g_vk.exclusive_active = 0;
             g_vk.swapchain_needs_recreate = 1;
             goto lsfg_present_done;
         } else if (r != VK_SUCCESS) {
@@ -1828,7 +1953,8 @@ int me_vk_present(const u32 *pixels, unsigned frame_w, unsigned frame_h, unsigne
             uint32_t gen_img_idx = 0;
             r = g_vk.pfn_AcquireNextImage(g_vk.device, g_vk.swapchain, UINT64_MAX,
                                       g_vk.lsfg_acquire_sem, VK_NULL_HANDLE, &gen_img_idx);
-            if (r == VK_ERROR_OUT_OF_DATE_KHR) {
+            if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT) {
+                if (r == VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT) g_vk.exclusive_active = 0;
                 g_vk.swapchain_needs_recreate = 1;
                 goto lsfg_present_done;
             }
@@ -1948,7 +2074,9 @@ int me_vk_present(const u32 *pixels, unsigned frame_w, unsigned frame_h, unsigne
                 .pImageIndices = &gen_img_idx,
             };
             r = g_vk.pfn_QueuePresent(g_vk.gfx_queue, &gen_pi);
-            if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) {
+            if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR ||
+                r == VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT) {
+                if (r == VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT) g_vk.exclusive_active = 0;
                 g_vk.swapchain_needs_recreate = 1;
                 goto lsfg_present_done;
             }
@@ -1989,7 +2117,9 @@ int me_vk_present(const u32 *pixels, unsigned frame_w, unsigned frame_h, unsigne
         .pImageIndices = &img_idx,
     };
     r = g_vk.pfn_QueuePresent(g_vk.gfx_queue, &pi);
-    if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) {
+    if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR ||
+        r == VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT) {
+        if (r == VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT) g_vk.exclusive_active = 0;
         g_vk.swapchain_needs_recreate = 1;
     } else if (r != VK_SUCCESS) {
         fprintf(stderr, "[vk] vkQueuePresentKHR: %s\n", vk_result_str(r));

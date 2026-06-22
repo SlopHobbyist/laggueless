@@ -84,6 +84,7 @@ typedef struct {
     int vk_no_vsync;        /* Vulkan IMMEDIATE present mode */
     int vk_mailbox;         /* Vulkan MAILBOX present mode (ignored if vk_no_vsync) */
     int vk_validate;        /* enable VK_LAYER_KHRONOS_validation */
+    int vk_exclusive_fullscreen; /* VK_EXT_full_screen_exclusive: bypass DWM for lowest latency */
     int match_display_hz;   /* snap pacing to monitor refresh when within tolerance */
     int match_strict;       /* 1=competition (snap only at <0.05% speed error),
                                0=casual (allow up to 0.3% error for smoothness) */

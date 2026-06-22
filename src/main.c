@@ -1168,6 +1168,8 @@ int main(int argc, char **argv) {
         else if (strcmp(argv[i], "--d3d11")    == 0) force_d3d11 = 1;
         else if (strcmp(argv[i], "--vulkan")   == 0) g_force_vulkan = 1;
         else if (strcmp(argv[i], "--no-vsync") == 0) g_no_vsync = 1;
+        else if (strcmp(argv[i], "--vk-exclusive")    == 0) g_settings.vk_exclusive_fullscreen = 1;
+        else if (strcmp(argv[i], "--no-vk-exclusive") == 0) g_settings.vk_exclusive_fullscreen = 0;
         else if (strcmp(argv[i], "--lsfg")     == 0) g_lsfg_enabled = 1;
         else if (strncmp(argv[i], "--lsfg-dll=", 11) == 0) {
             snprintf(g_lsfg_dll_path, sizeof(g_lsfg_dll_path), "%s", argv[i] + 11);
@@ -1214,6 +1216,11 @@ int main(int argc, char **argv) {
                 "                                 required for LSFG frame generation)\n"
                 "  --no-vsync                   (Vulkan only) use IMMEDIATE present mode\n"
                 "                                 (allows tearing, lowest latency)\n"
+                "  --vk-exclusive               (Vulkan only) acquire exclusive fullscreen\n"
+                "                                 (VK_EXT_full_screen_exclusive): bypasses the\n"
+                "                                 DWM compositor for the lowest input-to-pixel\n"
+                "                                 latency. Forces fullscreen on launch. (default on)\n"
+                "  --no-vk-exclusive            disable exclusive fullscreen (composited swapchain)\n"
                 "  --lsfg                       enable LSFG 3.1 frame generation (requires\n"
                 "                                 --vulkan and Lossless Scaling on Steam;\n"
                 "                                 place Lossless.dll in lsfg/ next to the exe)\n"
@@ -1417,7 +1424,10 @@ int main(int argc, char **argv) {
     if (win_h < 240) win_h = 480;
     g_hwnd = me_platform_create_window("laggueless", win_w, win_h);
     if (!g_hwnd) { fprintf(stderr, "window create failed\n"); return 1; }
-    if (g_settings.fullscreen_on_launch) {
+    /* Exclusive fullscreen needs the window to cover the whole monitor, so
+       force fullscreen on launch when it's enabled with the Vulkan path. */
+    if (g_settings.fullscreen_on_launch ||
+        (g_force_vulkan && g_settings.vk_exclusive_fullscreen)) {
         me_platform_toggle_fullscreen(g_hwnd);
     }
 
@@ -1428,6 +1438,8 @@ int main(int argc, char **argv) {
 #ifdef ME_HAVE_VULKAN
         /* CLI flag → env var consumed by me_vk_init. */
         if (g_no_vsync) _putenv("LAGGUELESS_VK_NO_VSYNC=1");
+        if (g_settings.vk_exclusive_fullscreen && !getenv("LAGGUELESS_VK_EXCLUSIVE"))
+            _putenv("LAGGUELESS_VK_EXCLUSIVE=1");
         if (pace_log)   _putenv("LAGGUELESS_VK_PACE_LOG=1");
         if (me_vk_init(g_hwnd, g_back_max_w, g_back_max_h) == 0) {
             vk_initialized = 1;
