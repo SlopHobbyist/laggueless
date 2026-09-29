@@ -1568,6 +1568,9 @@ void me_vk_lsfg_shutdown(void) {
 
 #endif /* ME_HAVE_LSFG */
 
+#ifndef ME_HAVE_LSFG
+void me_vk_lsfg_shutdown(void) {}
+#endif
 
 void me_vk_shutdown(void) {
     if (g_vk.device) {
