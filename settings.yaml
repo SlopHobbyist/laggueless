@@ -40,7 +40,7 @@ video:
                          # N refreshes — eliminates scroll judder with no
                          # tearing and no VRR. Audio drift is absorbed by the
                          # DRC resampler, so any pitch shift is inaudible.
-  match_strict: false     # speed-accuracy policy for match_display_hz:
+  match_strict: true      # speed-accuracy policy for match_display_hz:
                          #   true  = COMPETITION: only snap when the speed error
                          #           is negligible (<0.05%), i.e. a true exact-
                          #           multiple refresh. Standard 60/120/240Hz
