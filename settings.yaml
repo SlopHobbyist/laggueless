@@ -3,6 +3,8 @@
 video:
   fullscreen_on_launch: false
   aspect: 1:1            # 1:1 | 4:3 | 16:9
+  screens: both          # both | top | bottom — which DS screen(s) to show
+                         # (View > Screen)
   force_gdi: false       # force GDI for all cores (overrides force_d3d11)
   force_d3d11: false     # use D3D11 present path for 2D cores too
                          # (enables VRR / lower latency, but may tear

@@ -34,7 +34,17 @@ typedef struct {
                            <name>_libretro.dll */
     int players;        /* controller ports on the console */
     const me_adapter *adapters;  /* NULL, or a list ended by a NULL id */
+    unsigned flags;     /* ME_CONSOLE_* */
 } me_console;
+
+enum {
+    /* Two 4:3 screens the cores draw into one frame, top screen first (DS):
+       View > Screen can show just one. */
+    ME_CONSOLE_TWO_SCREENS = 1u << 0,
+    /* A touch screen: the mouse reaches the core as RETRO_DEVICE_POINTER
+       and RETRO_DEVICE_MOUSE. */
+    ME_CONSOLE_TOUCH       = 1u << 1,
+};
 
 int               me_console_count(void);
 const me_console *me_console_at(int i);

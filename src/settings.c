@@ -474,6 +474,15 @@ static float scalar_float(yaml_node_t *n, float defv) {
     return v;
 }
 
+static const char *const g_screens_names[] = { "both", "top", "bottom" };
+
+static me_screens parse_screens(const char *s, me_screens defv) {
+    if (!s) return defv;
+    for (int i = 0; i < 3; i++)
+        if (_stricmp(s, g_screens_names[i]) == 0) return (me_screens)i;
+    return defv;
+}
+
 static me_aspect_mode parse_aspect(const char *s, me_aspect_mode defv) {
     if (!s) return defv;
     if (strcmp(s, "1:1") == 0)  return ME_ASPECT_1_1;
@@ -546,6 +555,7 @@ static void load_document(yaml_document_t *doc, yaml_node_t *root, me_settings *
         out->fullscreen_on_launch = scalar_bool(map_get(doc, video, "fullscreen_on_launch"),
                                                 out->fullscreen_on_launch);
         out->aspect      = parse_aspect(scalar_str(map_get(doc, video, "aspect")), out->aspect);
+        out->screens     = parse_screens(scalar_str(map_get(doc, video, "screens")), out->screens);
         out->force_gdi   = scalar_bool(map_get(doc, video, "force_gdi"),   out->force_gdi);
         out->force_d3d11 = scalar_bool(map_get(doc, video, "force_d3d11"), out->force_d3d11);
         out->force_vulkan = scalar_bool(map_get(doc, video, "force_vulkan"), out->force_vulkan);
@@ -828,6 +838,7 @@ int me_settings_save(const char *path, const me_settings *s) {
     fprintf(f, "video:\n");
     fprintf(f, "  fullscreen_on_launch: %s\n", yn(s->fullscreen_on_launch));
     fprintf(f, "  aspect: \"%s\"\n", aspect_names[(int)s->aspect <= 2 ? (int)s->aspect : 0]);
+    fprintf(f, "  screens: %s\n", g_screens_names[(unsigned)s->screens <= 2 ? (int)s->screens : 0]);
     fprintf(f, "  force_gdi: %s\n", yn(s->force_gdi));
     fprintf(f, "  force_d3d11: %s\n", yn(s->force_d3d11));
     fprintf(f, "  force_vulkan: %s\n", yn(s->force_vulkan));

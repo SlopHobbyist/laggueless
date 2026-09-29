@@ -34,13 +34,17 @@ enum {
     IDM_DOWNLOAD_CORES = 150,
     IDM_SET_CORES,
     IDM_ADAPTER_FIRST = 160,  /* .. + ME_ADAPTERS_MAX - 1 */
+    IDM_SCREEN_TOP = 170,     /* View > Screen, in me_screens order from here */
+    IDM_SCREEN_BOTTOM,
+    IDM_SCREEN_BOTH,
     IDM_RECENT_FIRST = 200,   /* .. IDM_RECENT_FIRST + ME_RECENT_MAX - 1 */
 };
 
 /* Most adapters a console has (the Mega Drive's two). */
 #define ME_ADAPTERS_MAX 4
 
-static HMENU g_recent_menu, g_console_menu, g_controls_menu, g_view_menu, g_backend_menu;
+static HMENU g_recent_menu, g_console_menu, g_controls_menu, g_view_menu, g_backend_menu,
+             g_screen_menu;
 
 HMENU me_ui_create_menu(void) {
     HMENU bar = CreateMenu();
@@ -73,7 +77,12 @@ HMENU me_ui_create_menu(void) {
     AppendMenuA(g_backend_menu, MF_STRING, IDM_BACKEND_VULKAN, "&Vulkan");
     AppendMenuA(g_backend_menu, MF_STRING, IDM_BACKEND_GDI,    "&GDI");
     AppendMenuA(g_backend_menu, MF_STRING, IDM_BACKEND_D3D11,  "&D3D11");
+    g_screen_menu = CreatePopupMenu();
+    AppendMenuA(g_screen_menu, MF_STRING, IDM_SCREEN_TOP,    "&Top Screen");
+    AppendMenuA(g_screen_menu, MF_STRING, IDM_SCREEN_BOTTOM, "&Bottom Screen");
+    AppendMenuA(g_screen_menu, MF_STRING, IDM_SCREEN_BOTH,   "B&oth");
     AppendMenuA(g_view_menu, MF_STRING, IDM_FULLSCREEN, "Toggle &Full Screen");
+    AppendMenuA(g_view_menu, MF_POPUP, (UINT_PTR)g_screen_menu, "&Screen");
     AppendMenuA(g_view_menu, MF_STRING, IDM_FRAME_GEN,  "Frame &Gen");
     AppendMenuA(g_view_menu, MF_POPUP, (UINT_PTR)g_backend_menu, "&Rendering Backend (requires restart)");
     AppendMenuA(bar, MF_POPUP, (UINT_PTR)g_view_menu, "&View");
@@ -173,6 +182,15 @@ static void recent_push(me_settings *s, const char *path) {
 }
 
 static void patch_recent(me_settings *s, const void *ctx) { recent_push(s, (const char *)ctx); }
+
+static void patch_screens(me_settings *s, const void *ctx) {
+    s->screens = *(const me_screens *)ctx;
+}
+
+static const UINT k_screen_ids[] = {
+    [ME_SCREENS_BOTH] = IDM_SCREEN_BOTH, [ME_SCREENS_TOP] = IDM_SCREEN_TOP,
+    [ME_SCREENS_BOTTOM] = IDM_SCREEN_BOTTOM,
+};
 
 static void patch_frame_gen(me_settings *s, const void *ctx) {
     s->lsfg_enabled = *(const int *)ctx;
@@ -361,6 +379,14 @@ static void refresh_menu(HMENU m) {
                        (st.frame_gen_supported ? MF_ENABLED : MF_GRAYED));
         CheckMenuItem(m, IDM_FRAME_GEN, MF_BYCOMMAND |
                       (s->lsfg_enabled ? MF_CHECKED : MF_UNCHECKED));
+    } else if (m == g_screen_menu) {
+        /* Only two-screen consoles (DS) have a choice; the pick is kept for
+           the next one. */
+        const me_console *c = me_console_at(st.console);
+        UINT on = (!st.game_running || (c && (c->flags & ME_CONSOLE_TWO_SCREENS))) ? MF_ENABLED : MF_GRAYED;
+        for (int i = 0; i < 3; i++) EnableMenuItem(m, k_screen_ids[i], MF_BYCOMMAND | on);
+        CheckMenuRadioItem(m, IDM_SCREEN_TOP, IDM_SCREEN_BOTH,
+                           k_screen_ids[(unsigned)s->screens <= 2 ? s->screens : 0], MF_BYCOMMAND);
     } else if (m == g_backend_menu) {
         static const UINT ids[] = { 0, IDM_BACKEND_VULKAN, IDM_BACKEND_GDI, IDM_BACKEND_D3D11 };
         backend_choice b = backend_of(s);
@@ -429,6 +455,16 @@ static void on_command(HWND h, UINT id) {
         case IDM_SET_CORES:  me_ui_set_cores_dialog(h); break;
         case IDM_FULLSCREEN: me_platform_toggle_fullscreen(h); break;
         case IDM_FRAME_GEN:  me_cmd_post(ME_CMD_FRAME_GEN, !s->lsfg_enabled, NULL); break;
+        case IDM_SCREEN_TOP:
+        case IDM_SCREEN_BOTTOM:
+        case IDM_SCREEN_BOTH: {
+            /* The emulation thread reads it at the next present. */
+            me_screens v = id == IDM_SCREEN_TOP    ? ME_SCREENS_TOP
+                         : id == IDM_SCREEN_BOTTOM ? ME_SCREENS_BOTTOM : ME_SCREENS_BOTH;
+            s->screens = v;
+            me_ui_persist(patch_screens, &v);
+            break;
+        }
         case IDM_BACKEND_VULKAN:
         case IDM_BACKEND_GDI:
         case IDM_BACKEND_D3D11: {

@@ -35,6 +35,21 @@ static HWND   g_hwnd;
 static HMENU  g_menu;
 static HANDLE g_ui_thread;
 
+/* Mouse buttons pressed over the client area (bits: 1 left, 2 right,
+   4 middle), for touch screens. g_mouse_hit also keeps every press the
+   emulation thread hasn't taken yet, so a click shorter than a frame still
+   reaches the game. Clicks on menus never arrive here. */
+static volatile LONG g_mouse_down;
+static volatile LONG g_mouse_hit;
+
+static LONG mouse_bit(UINT msg) {
+    switch (msg) {
+        case WM_LBUTTONDOWN: case WM_LBUTTONUP: return 1;
+        case WM_RBUTTONDOWN: case WM_RBUTTONUP: return 2;
+        default:                                return 4;
+    }
+}
+
 /* ShowCursor maintains an internal counter; only call it when the desired state
    actually differs from what we last set, so we never stack up hides/shows.
    The cursor belongs to the window's thread, so this runs on the UI thread. */
@@ -134,6 +149,25 @@ static LRESULT CALLBACK me_wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             EndPaint(h, &ps);
             return 0;
         }
+        /* The click that brings the window forward mustn't also touch the game. */
+        case WM_MOUSEACTIVATE:
+            if (LOWORD(lp) == HTCLIENT) return MA_ACTIVATEANDEAT;
+            break;
+        case WM_LBUTTONDOWN:
+        case WM_RBUTTONDOWN:
+        case WM_MBUTTONDOWN:
+            InterlockedOr(&g_mouse_down, mouse_bit(msg));
+            InterlockedOr(&g_mouse_hit,  mouse_bit(msg));
+            if (GetCapture() != h) SetCapture(h);  /* see the release even if it lands outside */
+            return 0;
+        case WM_LBUTTONUP:
+        case WM_RBUTTONUP:
+        case WM_MBUTTONUP:
+            if (InterlockedAnd(&g_mouse_down, ~mouse_bit(msg)) == mouse_bit(msg)) ReleaseCapture();
+            return 0;
+        case WM_CAPTURECHANGED:
+            InterlockedExchange(&g_mouse_down, 0);
+            return 0;
         case WM_SYSCHAR: return 0; /* suppress Alt+key bell */
         /* Keys never reach DefWindowProc: Alt/F10 must not open the menu bar
            mid-game (the menu is mouse-only). */
@@ -238,6 +272,18 @@ int me_platform_key_pressed(unsigned vk, unsigned ctrl, unsigned alt, unsigned s
     if ((ctrl  && !got_ctrl)  || (!ctrl  && got_ctrl  && (vk != VK_CONTROL && vk != VK_LCONTROL && vk != VK_RCONTROL))) return 0;
     if ((alt   && !got_alt)   || (!alt   && got_alt   && (vk != VK_MENU    && vk != VK_LMENU    && vk != VK_RMENU)))    return 0;
     if ((shift && !got_shift) || (!shift && got_shift && (vk != VK_SHIFT   && vk != VK_LSHIFT   && vk != VK_RSHIFT)))   return 0;
+    return 1;
+}
+
+unsigned me_platform_mouse_buttons(void) {
+    return (unsigned)(InterlockedExchange(&g_mouse_hit, 0) | g_mouse_down);
+}
+
+int me_platform_cursor_pos(int *x, int *y) {
+    POINT p;
+    if (!g_hwnd || !GetCursorPos(&p) || !ScreenToClient(g_hwnd, &p)) return 0;
+    *x = p.x;
+    *y = p.y;
     return 1;
 }
 

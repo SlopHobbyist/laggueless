@@ -33,6 +33,15 @@ int  me_platform_is_fullscreen(void);
    the current modifier state — use this to handle chords like Ctrl+R. */
 int  me_platform_key_pressed(unsigned vk, unsigned ctrl, unsigned alt, unsigned shift);
 
+/* Mouse buttons (bits: 1 left, 2 right, 4 middle) held over the client
+   area, plus any pressed since the last call even if already released.
+   Clicks on the menu bar or its menus, and the click that activates the
+   window, don't count. */
+unsigned me_platform_mouse_buttons(void);
+
+/* Cursor position in client coordinates. Returns 0 if unknown. */
+int  me_platform_cursor_pos(int *x, int *y);
+
 /* Request graceful shutdown. Safe from any thread. */
 void me_platform_request_quit(void);
 

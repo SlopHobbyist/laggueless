@@ -2029,12 +2029,15 @@ int me_vk_present(const u32 *pixels, unsigned frame_w, unsigned frame_h, unsigne
             if (by1 > (int32_t)g_vk.sc_extent.height) by1 = (int32_t)g_vk.sc_extent.height;
 
             /* Blit: dest image is in GENERAL (backend leaves it there).
-             * Source extent is LSFG resolution; dest is the integer-scaled rect
-             * so generated frames match the real-frame path's layout. */
+             * Source extent is this frame's size within the LSFG images (a
+             * frame smaller than the base geometry, e.g. one DS screen, only
+             * fills their top-left); dest is the integer-scaled rect so
+             * generated frames match the real-frame path's layout. */
+            uint32_t gen_w = frame_w < g_vk.lsfg_width  ? frame_w : g_vk.lsfg_width;
+            uint32_t gen_h = frame_h < g_vk.lsfg_height ? frame_h : g_vk.lsfg_height;
             VkImageBlit gen_blit = {
                 .srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
-                .srcOffsets = { {0,0,0}, {(int32_t)g_vk.lsfg_width,
-                                          (int32_t)g_vk.lsfg_height, 1} },
+                .srcOffsets = { {0,0,0}, {(int32_t)gen_w, (int32_t)gen_h, 1} },
                 .dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
                 .dstOffsets = { {bx0, by0, 0}, {bx1, by1, 1} },
             };

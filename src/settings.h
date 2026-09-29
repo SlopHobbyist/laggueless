@@ -101,10 +101,18 @@ typedef enum {
     ME_ASPECT_16_9 = 2,
 } me_aspect_mode;
 
+/* Which screens of a two-screen console (DS) to show: View > Screen. */
+typedef enum {
+    ME_SCREENS_BOTH   = 0,
+    ME_SCREENS_TOP    = 1,
+    ME_SCREENS_BOTTOM = 2,
+} me_screens;
+
 typedef struct {
     /* video */
     int fullscreen_on_launch;
     me_aspect_mode aspect;
+    me_screens screens;
     int force_gdi;
     int force_d3d11;
     int force_vulkan;       /* use the Vulkan present path */

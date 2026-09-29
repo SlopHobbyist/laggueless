@@ -555,6 +555,11 @@ static bool me_environment_cb(unsigned cmd, void *data) {
                 set_input_layout(&l);
             }
             return true;
+        case RETRO_ENVIRONMENT_GET_INPUT_DEVICE_CAPABILITIES: /* 24 */
+            if (!data) return false;
+            *(uint64_t *)data = (1u << RETRO_DEVICE_JOYPAD) | (1u << RETRO_DEVICE_ANALOG) |
+                                (1u << RETRO_DEVICE_MOUSE)  | (1u << RETRO_DEVICE_POINTER);
+            return true;
         case RETRO_ENVIRONMENT_SET_CONTROLLER_INFO:   /* 35 */
             if (g_env_trace) me_log(ME_LOG_ENV, "[env] SET_CONTROLLER_INFO -> true\n");
             if (data) store_controller_info((const struct retro_controller_info *)data);
@@ -763,6 +768,8 @@ static size_t me_audio_sample_batch_cb(const int16_t *data, size_t frames) {
    map, or the core's own map when it has one. The UI thread edits these maps
    in place under me_settings_lock(). */
 static int16_t g_pad[ME_MAX_PLAYERS][16];
+/* Input devices (bit per RETRO_DEVICE_*) the core has read, for --env-trace. */
+static unsigned g_devices_read;
 /* Sticks per player, -32767..32767: left x/y, right x/y. */
 static int16_t g_analog[ME_MAX_PLAYERS][4];
 enum { AN_LX = 0, AN_LY, AN_RX, AN_RY };
@@ -908,14 +915,136 @@ static void poll_player(int p) {
     }
 }
 
+/* Where one screen of a two-screen console is in the core's (fw x fh)
+   frame. Cores draw its 4:3 screens top screen first, one above the other
+   (maybe with a gap between) or side by side. Returns 0 and leaves the rect
+   alone for other consoles and layouts (hybrid, rotated). */
+static int find_screen(unsigned fw, unsigned fh, int bottom,
+                       unsigned *x, unsigned *y, unsigned *w, unsigned *h) {
+    const me_console *c = me_console_at(g_console);
+    if (!c || !(c->flags & ME_CONSOLE_TWO_SCREENS)) return 0;
+    if ((fw * 3) % 4 == 0 && fw * 3 / 4 * 2 <= fh) {          /* stacked */
+        *x = 0;
+        *w = fw;
+        *h = fw * 3 / 4;
+        *y = bottom ? fh - *h : 0;
+        return 1;
+    }
+    if ((fh * 4) % 3 == 0 && fh * 4 / 3 * 2 <= fw) {          /* side by side */
+        *y = 0;
+        *h = fh;
+        *w = fh * 4 / 3;
+        *x = bottom ? fw - *w : 0;
+        return 1;
+    }
+    return 0;
+}
+
+/* What present() last drew: the (sx, sy, sw, sh) part of the core's
+   (fw x fh) frame, scaled into the client-area rect (dx, dy, dw, dh). The
+   touch screen maps the cursor back through it. Emulation thread only. */
+static struct {
+    int valid;
+    int dx, dy, dw, dh;
+    unsigned sx, sy, sw, sh, fw, fh;
+} g_view;
+
+/* Touch screen: the mouse over the game image, for consoles that have one
+   (and unknown ones, which get every input). Cores read it as
+   RETRO_DEVICE_POINTER, absolute across the core's whole frame so the core
+   maps it through its own screen layout, or as RETRO_DEVICE_MOUSE, relative
+   in frame pixels. A mouse core keeps its own cursor on the touch screen, so
+   the mouse moves as if clamped to it (the bottom screen of a two-screen
+   console, else the image shown): once pushed against an edge the core's
+   cursor lines up with the real one. */
+static struct {
+    int      inside;     /* cursor over the image */
+    unsigned buttons;    /* 1 left, 2 right, 4 middle; only while inside */
+    int16_t  x, y;       /* pointer, -0x7fff..0x7fff */
+    int      px, py;     /* cursor in frame pixels */
+    int      primed;     /* px/py hold a previous position */
+    int16_t  mx, my;     /* mouse motion since the last poll */
+} g_touch;
+
+/* v clamped to the pixels [start, start + len). */
+static double clampd(double v, unsigned start, unsigned len) {
+    if (v < start) return start;
+    if (v > start + len - 0.5) return start + len - 0.5;
+    return v;
+}
+
+static int console_has_touch(void) {
+    const me_console *c = me_console_at(g_console);
+    return !c || (c->flags & ME_CONSOLE_TOUCH);
+}
+
+static void poll_touch(void) {
+    unsigned buttons = me_platform_mouse_buttons();  /* taken every poll so old clicks don't linger */
+    int cx, cy;
+    g_touch.mx = g_touch.my = 0;
+    g_touch.inside = 0;
+    g_touch.buttons = 0;
+    if (!console_has_touch() || !g_view.valid || !me_platform_cursor_pos(&cx, &cy)) return;
+
+    g_touch.inside = cx >= g_view.dx && cx < g_view.dx + g_view.dw &&
+                     cy >= g_view.dy && cy < g_view.dy + g_view.dh;
+    if (g_touch.inside) g_touch.buttons = buttons;
+
+    /* Client pixel -> frame pixel. The pointer stays on the part of the
+       frame shown. */
+    double fx = g_view.sx + (cx - g_view.dx + 0.5) * g_view.sw / g_view.dw;
+    double fy = g_view.sy + (cy - g_view.dy + 0.5) * g_view.sh / g_view.dh;
+    g_touch.x = (int16_t)((int)(clampd(fx, g_view.sx, g_view.sw) * 65534.0 / g_view.fw) - 32767);
+    g_touch.y = (int16_t)((int)(clampd(fy, g_view.sy, g_view.sh) * 65534.0 / g_view.fh) - 32767);
+
+    unsigned tx = g_view.sx, ty = g_view.sy, tw = g_view.sw, th = g_view.sh;
+    find_screen(g_view.fw, g_view.fh, 1, &tx, &ty, &tw, &th);
+    int px = (int)clampd(fx, tx, tw), py = (int)clampd(fy, ty, th);
+    if (g_touch.primed) {
+        g_touch.mx = (int16_t)(px - g_touch.px);
+        g_touch.my = (int16_t)(py - g_touch.py);
+    }
+    g_touch.px = px;
+    g_touch.py = py;
+    g_touch.primed = 1;
+}
+
+static int16_t touch_state(unsigned port, unsigned device, unsigned index, unsigned id) {
+    if (port != 0) return 0;
+    if (device == RETRO_DEVICE_POINTER) {
+        if (index != 0) return 0;  /* one finger */
+        switch (id) {
+            case RETRO_DEVICE_ID_POINTER_X:            return g_touch.x;
+            case RETRO_DEVICE_ID_POINTER_Y:            return g_touch.y;
+            case RETRO_DEVICE_ID_POINTER_PRESSED:      return (g_touch.buttons & 1) ? 1 : 0;
+            case RETRO_DEVICE_ID_POINTER_COUNT:        return (g_touch.buttons & 1) ? 1 : 0;
+            case RETRO_DEVICE_ID_POINTER_IS_OFFSCREEN: return g_touch.inside ? 0 : 1;
+        }
+        return 0;
+    }
+    switch (id) {  /* RETRO_DEVICE_MOUSE */
+        case RETRO_DEVICE_ID_MOUSE_X:      return g_touch.mx;
+        case RETRO_DEVICE_ID_MOUSE_Y:      return g_touch.my;
+        case RETRO_DEVICE_ID_MOUSE_LEFT:   return (g_touch.buttons & 1) ? 1 : 0;
+        case RETRO_DEVICE_ID_MOUSE_RIGHT:  return (g_touch.buttons & 2) ? 1 : 0;
+        case RETRO_DEVICE_ID_MOUSE_MIDDLE: return (g_touch.buttons & 4) ? 1 : 0;
+    }
+    return 0;
+}
+
 static void me_input_poll_cb(void) {
     if (g_latency_log) QueryPerformanceCounter(&g_poll_qpc);
     /* Don't read keys when our window isn't foreground. */
     if (GetForegroundWindow() != g_hwnd) {
         memset(g_pad, 0, sizeof(g_pad));
         memset(g_analog, 0, sizeof(g_analog));
+        g_touch.inside = 0;
+        g_touch.buttons = 0;
+        g_touch.mx = g_touch.my = 0;
+        me_platform_mouse_buttons();
         return;
     }
+    poll_touch();
     me_settings_lock();
     /* Each distinct pad slot once, for the players the game has. */
     for (int p = 0; p < g_players; p++) {
@@ -930,6 +1059,13 @@ static void me_input_poll_cb(void) {
 static int16_t me_input_state_cb(unsigned port, unsigned device, unsigned index, unsigned id) {
     /* Ports the console doesn't have (without its adapter) stay empty. */
     if (port >= (unsigned)g_players) return 0;
+    unsigned base = device & RETRO_DEVICE_MASK;
+    if (g_env_trace && base < 32 && !(g_devices_read & (1u << base))) {
+        g_devices_read |= 1u << base;
+        me_log(ME_LOG_ENV, "[input] core reads device %u (port %u)\n", base, port);
+    }
+    if (base == RETRO_DEVICE_POINTER || base == RETRO_DEVICE_MOUSE)
+        return touch_state(port, base, index, id);
     if (device == RETRO_DEVICE_JOYPAD) {
         if (id >= sizeof(g_pad[0]) / sizeof(g_pad[0][0])) return 0;
         return g_pad[port][id];
@@ -948,7 +1084,19 @@ static int16_t me_input_state_cb(unsigned port, unsigned device, unsigned index,
 }
 
 /* ---- present -------------------------------------------------------------- */
+/* The part of the core's (fw x fh) frame View > Screen shows; the whole
+   frame unless it picks one screen of a layout find_screen knows. */
+static void view_source(unsigned fw, unsigned fh,
+                        unsigned *sx, unsigned *sy, unsigned *sw, unsigned *sh) {
+    *sx = *sy = 0;
+    *sw = fw;
+    *sh = fh;
+    me_screens which = g_settings.screens;
+    if (which != ME_SCREENS_BOTH) find_screen(fw, fh, which == ME_SCREENS_BOTTOM, sx, sy, sw, sh);
+}
+
 static void present(HWND hwnd) {
+    g_view.valid = 0;
     if (!g_back || g_frame_w == 0 || g_frame_h == 0) return;
 
     RECT cr;
@@ -957,21 +1105,37 @@ static void present(HWND hwnd) {
     int ch = cr.bottom - cr.top;
     if (cw <= 0 || ch <= 0) return;
 
-    /* Integer-scale to the current target aspect inside the client area. */
+    /* The GL interop path samples the core's own texture, which can't be
+       cropped here; it always shows the whole frame. */
+    unsigned sx = 0, sy = 0, sw = g_frame_w, sh = g_frame_h;
+    if (!(g_hw_render_accepted && me_gl_interop_active()))
+        view_source(g_frame_w, g_frame_h, &sx, &sy, &sw, &sh);
+    const u32 *src = g_back + (size_t)sy * g_back_max_w + sx;
+
+    /* Integer-scale inside the client area: square pixels, or the current
+       target aspect. */
     i32 rx, ry;
-    me_iscale_ratios(cw, ch, (i32)g_frame_w, (i32)g_frame_h,
-                     g_aspect_x[g_aspect_mode], g_aspect_y[g_aspect_mode], &rx, &ry);
-    int dw = (int)g_frame_w * rx;
-    int dh = (int)g_frame_h * ry;
+    if (g_aspect_mode == 0)
+        rx = ry = me_iscale_ratio(cw, ch, (i32)sw, (i32)sh);
+    else
+        me_iscale_ratios(cw, ch, (i32)sw, (i32)sh,
+                         g_aspect_x[g_aspect_mode], g_aspect_y[g_aspect_mode], &rx, &ry);
+    int dw = (int)sw * rx;
+    int dh = (int)sh * ry;
     if (dw > cw) dw = cw;
     if (dh > ch) dh = ch;
     int dx = (cw - dw) / 2;
     int dy = (ch - dh) / 2;
 
+    g_view.dx = dx; g_view.dy = dy; g_view.dw = dw; g_view.dh = dh;
+    g_view.sx = sx; g_view.sy = sy; g_view.sw = sw; g_view.sh = sh;
+    g_view.fw = g_frame_w; g_view.fh = g_frame_h;
+    g_view.valid = 1;
+
     /* Vulkan present path: upload the active region of the BGRX backbuffer
        and draw a textured quad sized to the integer-scaled rect. */
     if (me_vk_is_active()) {
-        me_vk_present(g_back, g_frame_w, g_frame_h, g_back_max_w,
+        me_vk_present(src, sw, sh, g_back_max_w,
                       cw, ch, dx, dy, dw, dh);
         return;
     }
@@ -981,8 +1145,8 @@ static void present(HWND hwnd) {
        composites it at the desktop refresh — no visible tearing on a
        non-VRR display, and frame-perfect inputs land as expected. */
     if (g_use_d3d11) {
-        me_d3d11_upload(g_back, g_frame_w, g_frame_h, g_back_max_w);
-        me_d3d11_present(cw, ch, dx, dy, dw, dh, g_frame_w, g_frame_h);
+        me_d3d11_upload(src, sw, sh, g_back_max_w);
+        me_d3d11_present(cw, ch, dx, dy, dw, dh, sw, sh);
         return;
     }
 
@@ -998,8 +1162,8 @@ static void present(HWND hwnd) {
 
     BITMAPINFO bmi = {0};
     bmi.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
-    bmi.bmiHeader.biWidth       = (LONG)g_frame_w;
-    bmi.bmiHeader.biHeight      = -(LONG)g_frame_h;
+    bmi.bmiHeader.biWidth       = (LONG)sw;
+    bmi.bmiHeader.biHeight      = -(LONG)sh;
     bmi.bmiHeader.biPlanes      = 1;
     bmi.bmiHeader.biBitCount    = 32;
     bmi.bmiHeader.biCompression = BI_RGB;
@@ -1008,20 +1172,20 @@ static void present(HWND hwnd) {
        than DIB width is unreliable on some GDI paths). */
     static u32 *tight = NULL;
     static size_t tight_cap = 0;
-    size_t need = (size_t)g_frame_w * g_frame_h;
+    size_t need = (size_t)sw * sh;
     if (need > tight_cap) {
         free(tight);
         tight = (u32 *)malloc(need * sizeof(u32));
         tight_cap = need;
     }
     if (tight) {
-        for (unsigned y = 0; y < g_frame_h; y++) {
-            memcpy(tight + y * g_frame_w, g_back + y * g_back_max_w, g_frame_w * sizeof(u32));
+        for (unsigned y = 0; y < sh; y++) {
+            memcpy(tight + y * sw, src + y * g_back_max_w, sw * sizeof(u32));
         }
         SetStretchBltMode(hdc, COLORONCOLOR);
         StretchDIBits(hdc,
                       dx, dy, dw, dh,
-                      0, 0, (int)g_frame_w, (int)g_frame_h,
+                      0, 0, (int)sw, (int)sh,
                       tight, &bmi, DIB_RGB_COLORS, SRCCOPY);
     }
 
@@ -1362,6 +1526,9 @@ static void session_reset_globals(void) {
     memset(g_active_map, 0, sizeof(g_active_map));
     memset(g_pad, 0, sizeof(g_pad));
     memset(g_analog, 0, sizeof(g_analog));
+    g_devices_read = 0;
+    memset(&g_view, 0, sizeof(g_view));
+    memset(&g_touch, 0, sizeof(g_touch));
 }
 
 /* Tear down a session. Safe on a partially opened one (session_open's
