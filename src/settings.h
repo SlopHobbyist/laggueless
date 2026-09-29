@@ -68,6 +68,28 @@ typedef struct {
     me_xi_bindings xi[ME_IN_COUNT];
 } me_control_map;
 
+/* libretro ports we feed input to (players 3/4 aren't supported). */
+#define ME_MAX_PLAYERS 2
+
+/* Which devices drive a player (or the hotkeys). */
+typedef enum {
+    ME_SRC_BOTH = 0,
+    ME_SRC_KEYBOARD,
+    ME_SRC_CONTROLLER,
+} me_input_source;
+
+typedef enum {
+    ME_HK_CYCLE_ASPECT = 0,
+    ME_HK_TOGGLE_FULLSCREEN,
+    ME_HK_EXIT_FULLSCREEN,
+    ME_HK_QUIT,
+    ME_HK_HARD_RESET,
+    ME_HK_COUNT
+} me_hotkey_id;
+
+/* File > Open Recent length. */
+#define ME_RECENT_MAX 20
+
 typedef enum {
     ME_ASPECT_1_1 = 0,
     ME_ASPECT_4_3 = 1,
@@ -89,7 +111,8 @@ typedef struct {
     int match_strict;       /* 1=competition (snap only at <0.05% speed error),
                                0=casual (allow up to 0.3% error for smoothness) */
 
-    /* LSFG 3.1 frame generation knobs (only meaningful with --lsfg). */
+    /* LSFG 3.1 frame generation (View > Frame Gen, or --lsfg). */
+    int   lsfg_enabled;
     int   lsfg_multiplier;  /* 2/3/4 — number of presented frames per real frame */
     float lsfg_flow_scale;  /* 0.25..1.0 — optical-flow resolution scale */
     int   lsfg_perf_mode;   /* 1 = reduced-quality / lower GPU cost */
@@ -114,33 +137,34 @@ typedef struct {
     int latency_log;       /* per-stage latency breakdown: poll/core/present/wait */
     int env_trace;
 
-    /* hotkeys — keyboard and controller bindings */
-    me_kb_bindings hk_cycle_aspect;
-    me_kb_bindings hk_toggle_fullscreen;
-    me_kb_bindings hk_exit_fullscreen;
-    me_kb_bindings hk_quit;
-    me_kb_bindings hk_reset;
+    /* hotkeys — keyboard and controller bindings, indexed by me_hotkey_id */
+    me_kb_bindings  hk[ME_HK_COUNT];
+    me_xi_bindings  hk_xi[ME_HK_COUNT];
+    me_input_source hk_source;
+    int             hk_xi_index;   /* XInput slot 0..3 that triggers hotkeys */
 
-    me_xi_bindings hk_xi_cycle_aspect;
-    me_xi_bindings hk_xi_toggle_fullscreen;
-    me_xi_bindings hk_xi_exit_fullscreen;
-    me_xi_bindings hk_xi_quit;
-    me_xi_bindings hk_xi_reset;
+    /* Per player: devices in use and XInput slot (0..3). */
+    me_input_source input_source[ME_MAX_PLAYERS];
+    int             xi_index[ME_MAX_PLAYERS];
 
-    /* XInput player index (0-based). */
-    int xi_player_index;
-
-    /* Universal player-1 control map. */
-    me_control_map universal;
+    /* Universal control maps, one per player. */
+    me_control_map universal[ME_MAX_PLAYERS];
 
     /* Per-core entry. */
     struct me_core_entry {
         char  name[64];          /* short name from yaml (e.g. "snes9x") */
         char  dll[260];          /* dll filename or path */
         int   use_universal;
-        me_control_map controls; /* used when use_universal == 0 */
+        me_control_map controls[ME_MAX_PLAYERS]; /* used when use_universal == 0 */
+        /* Bit per me_input_id: set when this core overrides the input; the
+           rest follow the universal map. */
+        unsigned overrides[ME_MAX_PLAYERS];
     } *cores;
     size_t cores_n;
+
+    /* Recently played ROMs, most recent first, no duplicates. */
+    char recent[ME_RECENT_MAX][260];
+    int  recent_n;
 } me_settings;
 
 /* Fill `out` with hard-coded defaults (used when settings.yaml is missing or
@@ -152,6 +176,15 @@ void me_settings_defaults(me_settings *out);
    yourself before loading). On parse error returns -1 and leaves whatever
    was loaded so far. Prints a warning on stderr in either error case. */
 int  me_settings_load(const char *path, me_settings *out);
+
+/* Defaults as a fresh install gets them: hard-coded defaults overlaid with
+   the settings.yaml template embedded in the exe. Used by the "Default"
+   buttons in the binding dialogs. */
+void me_settings_load_template(me_settings *out);
+
+/* Write every setting to `path` (replacing the file and its comments).
+   Returns 0 on success. */
+int  me_settings_save(const char *path, const me_settings *s);
 
 /* Generate a default settings.yaml file if it doesn't exist.
    Returns 0 on success, -1 on error. */
@@ -166,5 +199,28 @@ void me_settings_free(me_settings *s);
    entry matches. */
 const struct me_core_entry *me_settings_find_core(const me_settings *s,
                                                   const char *core_path);
+
+/* Replace player's universal map; cores follow it for the inputs they don't
+   override. */
+void me_settings_set_universal(me_settings *s, int player, const me_control_map *m);
+
+/* Replace a core's own map for `player`; inputs that differ from universal
+   become overrides. */
+void me_settings_set_core_map(me_settings *s, int core, int player, const me_control_map *m);
+
+/* Same match as me_settings_find_core, as an index into s->cores (-1 if none). */
+int me_settings_find_core_index(const me_settings *s, const char *core_path);
+
+/* Display names for the binding dialogs. */
+const char *me_input_label(me_input_id id);
+const char *me_hotkey_label(me_hotkey_id id);
+
+/* Human/YAML text for bindings, e.g. "Ctrl+R", "RShift", "Back+Start".
+   Empty string for an unbound slot. */
+void me_kb_binding_str(const me_kb_binding *b, char *out, size_t out_sz);
+void me_xi_chord_str(unsigned buttons, char *out, size_t out_sz);
+
+int  me_kb_bindings_equal(const me_kb_bindings *a, const me_kb_bindings *b);
+int  me_xi_bindings_equal(const me_xi_bindings *a, const me_xi_bindings *b);
 
 #endif

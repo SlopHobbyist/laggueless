@@ -16,6 +16,8 @@
 #include "xinput_pad.h"
 #include "lsfg_loader.h"
 #include "rom_cores.h"
+#include "app.h"
+#include "ui.h"
 
 /* ---- exe-relative path helpers -------------------------------------------- */
 static char g_exedir[MAX_PATH];
@@ -238,16 +240,19 @@ typedef enum {
 static const char *g_log_names[ME_LOG_COUNT] = { "pace", "timing", "latency", "env" };
 static FILE *g_log_files[ME_LOG_COUNT] = {0};
 static int   g_log_dir_tried = 0;
+/* Absolute ./logs, fixed at startup: the Open ROM dialog changes the
+   process's working directory while it is open. */
+static char  g_log_dir[MAX_PATH] = "logs";
 
 static FILE *me_log_open(me_log_stream s) {
     if (s >= ME_LOG_COUNT) return NULL;
     if (g_log_files[s]) return g_log_files[s];
     if (!g_log_dir_tried) {
         g_log_dir_tried = 1;
-        CreateDirectoryA("logs", NULL); /* ignore ALREADY_EXISTS */
+        CreateDirectoryA(g_log_dir, NULL); /* ignore ALREADY_EXISTS */
     }
-    char path[64];
-    snprintf(path, sizeof(path), "logs\\%s.log", g_log_names[s]);
+    char path[MAX_PATH + 16];
+    snprintf(path, sizeof(path), "%s\\%s.log", g_log_dir, g_log_names[s]);
     FILE *f = fopen(path, "a");
     if (!f) {
         fprintf(stderr, "[log] cannot open %s; falling back to stderr for %s stream\n",
@@ -626,14 +631,16 @@ static size_t me_audio_sample_batch_cb(const int16_t *data, size_t frames) {
     resample_and_push(data, frames);
     return frames;
 }
-/* Player 1 RetroPad state, refreshed in input_poll. The active control map
-   is selected at startup based on settings.yaml: either `g_settings.universal`
-   or the per-core entry's controls. */
-static int16_t g_pad1[16];
-static int16_t g_analog_lx = 0, g_analog_ly = 0;  /* left stick, -32767..32767 */
-static int16_t g_analog_rx = 0, g_analog_ry = 0;  /* right stick */
+/* RetroPad state per player (libretro port), refreshed in input_poll. The
+   active control maps are chosen per game from settings.yaml: the universal
+   map, or the core's own map when it has one. The UI thread edits these maps
+   in place under me_settings_lock(). */
+static int16_t g_pad[ME_MAX_PLAYERS][16];
+/* Sticks per player, -32767..32767: left x/y, right x/y. */
+static int16_t g_analog[ME_MAX_PLAYERS][4];
+enum { AN_LX = 0, AN_LY, AN_RX, AN_RY };
 
-static const me_control_map *g_active_map = NULL;
+static const me_control_map *g_active_map[ME_MAX_PLAYERS];
 static me_settings g_settings;
 
 /* Some cores (NES, GB/GBC, PCE, SMS, ...) only have 2 face buttons. Several of
@@ -666,25 +673,17 @@ static int key_down_kb(const me_kb_binding *b) {
 
 /* Returns 1 if the given VK is claimed by any currently-active hotkey chord.
    A chord is "active" when its modifier keys are all held — at that point the
-   main key belongs to the hotkey and must not bleed through to game controls. */
+   main key belongs to the hotkey and must not bleed through to game controls.
+   Caller holds the settings lock. */
 static int vk_claimed_by_hotkey(unsigned vk) {
-    if (vk == 0) return 0;
-    static const me_kb_bindings *all_hk[5];
-    static int built = 0;
-    if (!built) {
-        all_hk[0] = &g_settings.hk_toggle_fullscreen;
-        all_hk[1] = &g_settings.hk_exit_fullscreen;
-        all_hk[2] = &g_settings.hk_cycle_aspect;
-        all_hk[3] = &g_settings.hk_quit;
-        all_hk[4] = &g_settings.hk_reset;
-        built = 1;
-    }
+    if (vk == 0 || g_settings.hk_source == ME_SRC_CONTROLLER) return 0;
     int got_ctrl  = (GetAsyncKeyState(VK_CONTROL) & 0x8000) ? 1 : 0;
     int got_alt   = (GetAsyncKeyState(VK_MENU)    & 0x8000) ? 1 : 0;
     int got_shift = (GetAsyncKeyState(VK_SHIFT)   & 0x8000) ? 1 : 0;
-    for (int i = 0; i < 5; i++) {
-        for (int j = 0; j < all_hk[i]->count; j++) {
-            const me_kb_binding *b = &all_hk[i]->b[j];
+    for (int i = 0; i < ME_HK_COUNT; i++) {
+        const me_kb_bindings *hk = &g_settings.hk[i];
+        for (int j = 0; j < hk->count; j++) {
+            const me_kb_binding *b = &hk->b[j];
             if (b->vk != vk) continue;
             /* Modifiers match → this chord is active, key is claimed. */
             if (b->ctrl  && !got_ctrl)  continue;
@@ -696,105 +695,126 @@ static int vk_claimed_by_hotkey(unsigned vk) {
     return 0;
 }
 
-static int input_down(me_input_id id) {
-    if (!g_active_map) return 0;
-    const me_kb_bindings *bs = &g_active_map->keys[id];
-    for (int i = 0; i < bs->count; i++) {
-        const me_kb_binding *b = &bs->b[i];
-        if (vk_claimed_by_hotkey(b->vk)) continue;
-        if (key_down_kb(b)) return 1;
+/* Caller holds the settings lock. */
+static int input_down(int player, me_input_id id) {
+    const me_control_map *map = g_active_map[player];
+    if (!map) return 0;
+    me_input_source src = g_settings.input_source[player];
+    if (src != ME_SRC_CONTROLLER) {
+        const me_kb_bindings *bs = &map->keys[id];
+        for (int i = 0; i < bs->count; i++) {
+            const me_kb_binding *b = &bs->b[i];
+            if (vk_claimed_by_hotkey(b->vk)) continue;
+            if (key_down_kb(b)) return 1;
+        }
     }
-    /* XInput buttons */
-    int xi_p = g_settings.xi_player_index;
-    const me_xi_bindings *xbs = &g_active_map->xi[id];
-    for (int i = 0; i < xbs->count; i++) {
-        if (me_xinput_button(xi_p, xbs->b[i].buttons)) return 1;
+    if (src != ME_SRC_KEYBOARD) {
+        int slot = g_settings.xi_index[player];
+        const me_xi_bindings *xbs = &map->xi[id];
+        for (int i = 0; i < xbs->count; i++) {
+            if (me_xinput_button(slot, xbs->b[i].buttons)) return 1;
+        }
     }
     return 0;
 }
 
-static void me_input_poll_cb(void) {
-    if (g_latency_log) QueryPerformanceCounter(&g_poll_qpc);
-    /* Don't read keys when our window isn't foreground. */
-    if (GetForegroundWindow() != g_hwnd) {
-        memset(g_pad1, 0, sizeof(g_pad1));
-        g_analog_lx = g_analog_ly = g_analog_rx = g_analog_ry = 0;
-        return;
-    }
-    me_xinput_poll(g_settings.xi_player_index);
-    int up    = input_down(ME_IN_DPAD_UP);
-    int down  = input_down(ME_IN_DPAD_DOWN);
-    int lf    = input_down(ME_IN_DPAD_LEFT);
-    int right = input_down(ME_IN_DPAD_RIGHT);
+/* Caller holds the settings lock. */
+static void poll_player(int p) {
+    int16_t *pad = g_pad[p];
+    int up    = input_down(p, ME_IN_DPAD_UP);
+    int down  = input_down(p, ME_IN_DPAD_DOWN);
+    int lf    = input_down(p, ME_IN_DPAD_LEFT);
+    int right = input_down(p, ME_IN_DPAD_RIGHT);
     /* SOCD: opposing directions cancel to neutral. */
     if (up && down)  { up = down = 0; }
     if (lf && right) { lf = right = 0; }
-    g_pad1[RETRO_DEVICE_ID_JOYPAD_UP]     = up;
-    g_pad1[RETRO_DEVICE_ID_JOYPAD_DOWN]   = down;
-    g_pad1[RETRO_DEVICE_ID_JOYPAD_LEFT]   = lf;
-    g_pad1[RETRO_DEVICE_ID_JOYPAD_RIGHT]  = right;
-    g_pad1[RETRO_DEVICE_ID_JOYPAD_B]      = input_down(ME_IN_B);
-    g_pad1[RETRO_DEVICE_ID_JOYPAD_A]      = input_down(ME_IN_A);
-    g_pad1[RETRO_DEVICE_ID_JOYPAD_Y]      = g_suppress_xy ? 0 : input_down(ME_IN_Y);
-    g_pad1[RETRO_DEVICE_ID_JOYPAD_X]      = g_suppress_xy ? 0 : input_down(ME_IN_X);
-    g_pad1[RETRO_DEVICE_ID_JOYPAD_START]  = input_down(ME_IN_START);
-    g_pad1[RETRO_DEVICE_ID_JOYPAD_SELECT] = input_down(ME_IN_BACK);
-    g_pad1[RETRO_DEVICE_ID_JOYPAD_L]      = input_down(ME_IN_LB);
-    g_pad1[RETRO_DEVICE_ID_JOYPAD_R]      = input_down(ME_IN_RB);
-    g_pad1[RETRO_DEVICE_ID_JOYPAD_L2]     = input_down(ME_IN_LT);
-    g_pad1[RETRO_DEVICE_ID_JOYPAD_R2]     = input_down(ME_IN_RT);
-    g_pad1[RETRO_DEVICE_ID_JOYPAD_L3]     = input_down(ME_IN_LSTICK);
-    g_pad1[RETRO_DEVICE_ID_JOYPAD_R3]     = input_down(ME_IN_RSTICK);
+    pad[RETRO_DEVICE_ID_JOYPAD_UP]     = up;
+    pad[RETRO_DEVICE_ID_JOYPAD_DOWN]   = down;
+    pad[RETRO_DEVICE_ID_JOYPAD_LEFT]   = lf;
+    pad[RETRO_DEVICE_ID_JOYPAD_RIGHT]  = right;
+    pad[RETRO_DEVICE_ID_JOYPAD_B]      = input_down(p, ME_IN_B);
+    pad[RETRO_DEVICE_ID_JOYPAD_A]      = input_down(p, ME_IN_A);
+    pad[RETRO_DEVICE_ID_JOYPAD_Y]      = g_suppress_xy ? 0 : input_down(p, ME_IN_Y);
+    pad[RETRO_DEVICE_ID_JOYPAD_X]      = g_suppress_xy ? 0 : input_down(p, ME_IN_X);
+    pad[RETRO_DEVICE_ID_JOYPAD_START]  = input_down(p, ME_IN_START);
+    pad[RETRO_DEVICE_ID_JOYPAD_SELECT] = input_down(p, ME_IN_BACK);
+    pad[RETRO_DEVICE_ID_JOYPAD_L]      = input_down(p, ME_IN_LB);
+    pad[RETRO_DEVICE_ID_JOYPAD_R]      = input_down(p, ME_IN_RB);
+    pad[RETRO_DEVICE_ID_JOYPAD_L2]     = input_down(p, ME_IN_LT);
+    pad[RETRO_DEVICE_ID_JOYPAD_R2]     = input_down(p, ME_IN_RT);
+    pad[RETRO_DEVICE_ID_JOYPAD_L3]     = input_down(p, ME_IN_LSTICK);
+    pad[RETRO_DEVICE_ID_JOYPAD_R3]     = input_down(p, ME_IN_RSTICK);
 
     /* Stick directions are also surfaced through RETRO_DEVICE_ANALOG so cores
        like mupen64plus_next that read the analog stick see motion. Opposing
        directions cancel; non-opposing produce full deflection in that axis.
        Real XInput axis values take priority over keyboard digital mappings. */
-    int xi_p = g_settings.xi_player_index;
-    int16_t xi_lx = me_xinput_axis(xi_p, ME_XI_AXIS_LX);
-    int16_t xi_ly = me_xinput_axis(xi_p, ME_XI_AXIS_LY);
-    int16_t xi_rx = me_xinput_axis(xi_p, ME_XI_AXIS_RX);
-    int16_t xi_ry = me_xinput_axis(xi_p, ME_XI_AXIS_RY);
+    int16_t *an = g_analog[p];
+    int slot = g_settings.xi_index[p];
+    int use_pad = g_settings.input_source[p] != ME_SRC_KEYBOARD;
+    int16_t xi_lx = use_pad ? me_xinput_axis(slot, ME_XI_AXIS_LX) : 0;
+    int16_t xi_ly = use_pad ? me_xinput_axis(slot, ME_XI_AXIS_LY) : 0;
+    int16_t xi_rx = use_pad ? me_xinput_axis(slot, ME_XI_AXIS_RX) : 0;
+    int16_t xi_ry = use_pad ? me_xinput_axis(slot, ME_XI_AXIS_RY) : 0;
     if (xi_lx != 0 || xi_ly != 0 || xi_rx != 0 || xi_ry != 0) {
         /* Real analog input present: use controller axes directly. */
         /* XInput X: right=+32767, matches libretro. No inversion needed.
            XInput Y: up=+32767, but libretro expects down=+32767. Invert Y.
            Clamp -32768 → -32767 before negating to avoid int16_t overflow. */
         #define XI_CLAMP(v) ((v) < -32767 ? (int16_t)-32767 : (v))
-        g_analog_lx =  XI_CLAMP(xi_lx);
-        g_analog_ly = -XI_CLAMP(xi_ly);
-        g_analog_rx =  XI_CLAMP(xi_rx);
-        g_analog_ry = -XI_CLAMP(xi_ry);
+        an[AN_LX] =  XI_CLAMP(xi_lx);
+        an[AN_LY] = -XI_CLAMP(xi_ly);
+        an[AN_RX] =  XI_CLAMP(xi_rx);
+        an[AN_RY] = -XI_CLAMP(xi_ry);
         #undef XI_CLAMP
     } else {
-        int lu = input_down(ME_IN_LSTICK_UP),    ld = input_down(ME_IN_LSTICK_DOWN);
-        int ll = input_down(ME_IN_LSTICK_LEFT),  lr = input_down(ME_IN_LSTICK_RIGHT);
-        int ru = input_down(ME_IN_RSTICK_UP),    rd = input_down(ME_IN_RSTICK_DOWN);
-        int rl = input_down(ME_IN_RSTICK_LEFT),  rr = input_down(ME_IN_RSTICK_RIGHT);
+        int lu = input_down(p, ME_IN_LSTICK_UP),    ld = input_down(p, ME_IN_LSTICK_DOWN);
+        int ll = input_down(p, ME_IN_LSTICK_LEFT),  lr = input_down(p, ME_IN_LSTICK_RIGHT);
+        int ru = input_down(p, ME_IN_RSTICK_UP),    rd = input_down(p, ME_IN_RSTICK_DOWN);
+        int rl = input_down(p, ME_IN_RSTICK_LEFT),  rr = input_down(p, ME_IN_RSTICK_RIGHT);
         if (lu && ld) lu = ld = 0;
         if (ll && lr) ll = lr = 0;
         if (ru && rd) ru = rd = 0;
         if (rl && rr) rl = rr = 0;
-        g_analog_lx = (int16_t)((lr ? 32767 : 0) - (ll ? 32767 : 0));
-        g_analog_ly = (int16_t)((ld ? 32767 : 0) - (lu ? 32767 : 0));
-        g_analog_rx = (int16_t)((rr ? 32767 : 0) - (rl ? 32767 : 0));
-        g_analog_ry = (int16_t)((rd ? 32767 : 0) - (ru ? 32767 : 0));
+        an[AN_LX] = (int16_t)((lr ? 32767 : 0) - (ll ? 32767 : 0));
+        an[AN_LY] = (int16_t)((ld ? 32767 : 0) - (lu ? 32767 : 0));
+        an[AN_RX] = (int16_t)((rr ? 32767 : 0) - (rl ? 32767 : 0));
+        an[AN_RY] = (int16_t)((rd ? 32767 : 0) - (ru ? 32767 : 0));
     }
 }
 
+static void me_input_poll_cb(void) {
+    if (g_latency_log) QueryPerformanceCounter(&g_poll_qpc);
+    /* Don't read keys when our window isn't foreground. */
+    if (GetForegroundWindow() != g_hwnd) {
+        memset(g_pad, 0, sizeof(g_pad));
+        memset(g_analog, 0, sizeof(g_analog));
+        return;
+    }
+    me_settings_lock();
+    /* Each distinct pad slot once. */
+    for (int p = 0; p < ME_MAX_PLAYERS; p++) {
+        int slot = g_settings.xi_index[p], seen = 0;
+        for (int q = 0; q < p; q++) seen |= (g_settings.xi_index[q] == slot);
+        if (!seen && g_settings.input_source[p] != ME_SRC_KEYBOARD) me_xinput_poll(slot);
+    }
+    for (int p = 0; p < ME_MAX_PLAYERS; p++) poll_player(p);
+    me_settings_unlock();
+}
+
 static int16_t me_input_state_cb(unsigned port, unsigned device, unsigned index, unsigned id) {
-    if (port != 0) return 0;
+    if (port >= ME_MAX_PLAYERS) return 0;
     if (device == RETRO_DEVICE_JOYPAD) {
-        if (id >= sizeof(g_pad1) / sizeof(g_pad1[0])) return 0;
-        return g_pad1[id];
+        if (id >= sizeof(g_pad[0]) / sizeof(g_pad[0][0])) return 0;
+        return g_pad[port][id];
     }
     if (device == RETRO_DEVICE_ANALOG) {
         if (index == RETRO_DEVICE_INDEX_ANALOG_LEFT) {
-            if (id == RETRO_DEVICE_ID_ANALOG_X) return g_analog_lx;
-            if (id == RETRO_DEVICE_ID_ANALOG_Y) return g_analog_ly;
+            if (id == RETRO_DEVICE_ID_ANALOG_X) return g_analog[port][AN_LX];
+            if (id == RETRO_DEVICE_ID_ANALOG_Y) return g_analog[port][AN_LY];
         } else if (index == RETRO_DEVICE_INDEX_ANALOG_RIGHT) {
-            if (id == RETRO_DEVICE_ID_ANALOG_X) return g_analog_rx;
-            if (id == RETRO_DEVICE_ID_ANALOG_Y) return g_analog_ry;
+            if (id == RETRO_DEVICE_ID_ANALOG_X) return g_analog[port][AN_RX];
+            if (id == RETRO_DEVICE_ID_ANALOG_Y) return g_analog[port][AN_RY];
         }
         return 0;
     }
@@ -1132,6 +1152,7 @@ typedef struct me_session {
     int      core_inited;     /* retro_init called */
     int      game_loaded;     /* retro_load_game succeeded */
     int      hw_context_live; /* context_reset called on a HW core */
+    unsigned base_w, base_h;  /* AV base geometry (LSFG frame size) */
     char     core_path[MAX_PATH];
     char     rom_path[MAX_PATH];
     unsigned char *rom_data;
@@ -1206,9 +1227,9 @@ static void session_reset_globals(void) {
     g_resamp_primed = 0;
     g_resamp_ratio_bias = g_resamp_p_bias = 0.0;
     g_suppress_xy = 0;
-    g_active_map = NULL;
-    memset(g_pad1, 0, sizeof(g_pad1));
-    g_analog_lx = g_analog_ly = g_analog_rx = g_analog_ry = 0;
+    memset(g_active_map, 0, sizeof(g_active_map));
+    memset(g_pad, 0, sizeof(g_pad));
+    memset(g_analog, 0, sizeof(g_analog));
 }
 
 /* Tear down a session. Safe on a partially opened one (session_open's
@@ -1250,20 +1271,71 @@ static int create_main_window(int w, int h) {
 }
 
 /* Look up the core for a ROM in the extension table and resolve it to
-   cores\<dll> next to the exe. Returns 0 and fills core_path on success. */
-static int resolve_rom_core(const char *rom_path, char *core_path, size_t core_path_sz) {
+   cores\<dll> next to the exe. Returns 0 and fills core_path on success;
+   otherwise fills `err` with a user-facing reason. */
+static int resolve_rom_core(const char *rom_path, char *core_path, size_t core_path_sz,
+                            char *err, size_t err_sz) {
+    if (GetFileAttributesA(rom_path) == INVALID_FILE_ATTRIBUTES) {
+        snprintf(err, err_sz, "ROM not found:\n%s", rom_path);
+        return -1;
+    }
     const char *dll = me_rom_core_for(rom_path);
     if (!dll) {
-        fprintf(stderr, "[rom] no core is assigned to this file type: %s\n", rom_path);
+        snprintf(err, err_sz, "No core is assigned to this file type:\n%s", rom_path);
         return -1;
     }
     snprintf(core_path, core_path_sz, "%scores\\%s", g_exedir, dll);
     if (GetFileAttributesA(core_path) == INVALID_FILE_ATTRIBUTES) {
-        fprintf(stderr, "[rom] core %s not found; place it in %scores\\\n",
-                dll, g_exedir);
+        snprintf(err, err_sz, "Core %s not found.\nPlace it in %scores\\", dll, g_exedir);
         return -1;
     }
     return 0;
+}
+
+/* Vulkan presenter (+ LSFG frame gen when enabled) for the current session.
+   Also used to rebuild it when Frame Gen is toggled mid-game. Returns 1 if
+   Vulkan is up. */
+static int init_vulkan(me_session *s) {
+#ifdef ME_HAVE_VULKAN
+    /* CLI flag → env var consumed by me_vk_init. */
+    if (g_no_vsync) _putenv("LAGGUELESS_VK_NO_VSYNC=1");
+    if (g_settings.vk_exclusive_fullscreen && !getenv("LAGGUELESS_VK_EXCLUSIVE"))
+        _putenv("LAGGUELESS_VK_EXCLUSIVE=1");
+    if (g_pace_log) _putenv("LAGGUELESS_VK_PACE_LOG=1");
+    if (me_vk_init(g_hwnd, g_back_max_w, g_back_max_h) != 0) {
+        fprintf(stderr, "[render] Vulkan init failed; falling back to D3D11/GDI\n");
+        return 0;
+    }
+    if (g_hw_render_accepted) {
+        fprintf(stderr,
+            "[render] WARNING: --vulkan with a GL hardware core. The GL framebuffer\n"
+            "[render]          is not yet bridged to Vulkan; expect a black screen.\n"
+            "[render]          Software cores (mesen, snes9x, etc.) display correctly.\n");
+    }
+#ifdef ME_HAVE_LSFG
+    /* B3: Wire up the LSFG backend now that Vulkan is ready.
+     * We use the core's base frame size from av_info. At context-open time
+     * this is max_w x max_h (the backend accepts any size <= that). */
+    if (g_lsfg_enabled && g_lsfg_shaders) {
+        unsigned lsfg_w = s->base_w > 0 ? s->base_w : g_back_max_w;
+        unsigned lsfg_h = s->base_h > 0 ? s->base_h : g_back_max_h;
+        if (me_vk_lsfg_init(me_lsfg_dll_path(g_lsfg_shaders),
+                            lsfg_w, lsfg_h,
+                            g_settings.lsfg_multiplier,
+                            g_settings.lsfg_flow_scale,
+                            g_settings.lsfg_perf_mode) != 0) {
+            fprintf(stderr, "[lsfg] B3 init failed - LSFG disabled, continuing with normal Vulkan\n");
+        }
+    }
+#else
+    (void)s;
+#endif
+    return 1;
+#else
+    (void)s;
+    printf("[render] --vulkan requested but build has no Vulkan support (set VULKAN_SDK and rebuild)\n");
+    return 0;
+#endif
 }
 
 /* Load core + ROM, build the presenter/audio around its AV info, and create
@@ -1271,24 +1343,30 @@ static int resolve_rom_core(const char *rom_path, char *core_path, size_t core_p
    session is closed again and -1 is returned. */
 static int session_open(me_session *s, const char *core_path_in, const char *rom_path_in) {
     memset(s, 0, sizeof(*s));
-    /* Own the paths: cores may keep game.path, and callers pass scratch buffers. */
-    snprintf(s->core_path, sizeof(s->core_path), "%s", core_path_in);
-    snprintf(s->rom_path,  sizeof(s->rom_path),  "%s", rom_path_in);
+    /* Own the paths: cores may keep game.path, and callers pass scratch
+       buffers. Absolute, because the working directory can change under us
+       (the Open ROM dialog) before a hard reset or power-on reuses them. */
+    if (!GetFullPathNameA(core_path_in, sizeof(s->core_path), s->core_path, NULL))
+        snprintf(s->core_path, sizeof(s->core_path), "%s", core_path_in);
+    if (!GetFullPathNameA(rom_path_in, sizeof(s->rom_path), s->rom_path, NULL))
+        snprintf(s->rom_path, sizeof(s->rom_path), "%s", rom_path_in);
     const char *core_path = s->core_path;
     const char *rom_path  = s->rom_path;
 
-    /* Pick the active per-player-1 control map: per-core entry if it exists
-       and has use_universal=false, otherwise the universal map. */
+    /* Pick the active control maps: the per-core entry if it exists and has
+       use_universal=false, otherwise the universal maps. */
     {
-        const struct me_core_entry *ce = me_settings_find_core(&g_settings, core_path);
-        if (ce && !ce->use_universal) {
-            g_active_map = &ce->controls;
+        struct me_core_entry *ce = NULL;
+        int ci = me_settings_find_core_index(&g_settings, core_path);
+        if (ci >= 0) ce = &g_settings.cores[ci];
+        int own = ce && !ce->use_universal;
+        for (int p = 0; p < ME_MAX_PLAYERS; p++)
+            g_active_map[p] = own ? &ce->controls[p] : &g_settings.universal[p];
+        if (own)
             printf("[settings] using per-core controls for %s\n", ce->name);
-        } else {
-            g_active_map = &g_settings.universal;
+        else
             printf("[settings] using universal controls%s%s\n",
                    ce ? " for " : "", ce ? ce->name : "");
-        }
     }
 
     me_core *core = me_core_load(core_path);
@@ -1402,6 +1480,8 @@ static int session_open(me_session *s, const char *core_path_in, const char *rom
     }
     g_frame_w = av.geometry.base_width;
     g_frame_h = av.geometry.base_height;
+    s->base_w = av.geometry.base_width;
+    s->base_h = av.geometry.base_height;
 
     /* First game of the run: create the window sized to a reasonable 2× of
        base geometry. Later games reuse the window as the user left it. */
@@ -1416,45 +1496,7 @@ static int session_open(me_session *s, const char *core_path_in, const char *rom
 
     /* Vulkan path takes priority when --vulkan succeeds. If Vulkan init
        fails, fall through to the normal D3D11/GDI selection below. */
-    int vk_initialized = 0;
-    if (g_force_vulkan) {
-#ifdef ME_HAVE_VULKAN
-        /* CLI flag → env var consumed by me_vk_init. */
-        if (g_no_vsync) _putenv("LAGGUELESS_VK_NO_VSYNC=1");
-        if (g_settings.vk_exclusive_fullscreen && !getenv("LAGGUELESS_VK_EXCLUSIVE"))
-            _putenv("LAGGUELESS_VK_EXCLUSIVE=1");
-        if (g_pace_log) _putenv("LAGGUELESS_VK_PACE_LOG=1");
-        if (me_vk_init(g_hwnd, g_back_max_w, g_back_max_h) == 0) {
-            vk_initialized = 1;
-            if (g_hw_render_accepted) {
-                fprintf(stderr,
-                    "[render] WARNING: --vulkan with a GL hardware core. The GL framebuffer\n"
-                    "[render]          is not yet bridged to Vulkan; expect a black screen.\n"
-                    "[render]          Software cores (mesen, snes9x, etc.) display correctly.\n");
-            }
-#ifdef ME_HAVE_LSFG
-            /* B3: Wire up the LSFG backend now that Vulkan is ready.
-             * We use the core's base frame size from av_info. At context-open time
-             * this is max_w x max_h (the backend accepts any size <= that). */
-            if (g_lsfg_enabled && g_lsfg_shaders) {
-                unsigned lsfg_w = (unsigned)(av.geometry.base_width  > 0 ? av.geometry.base_width  : g_back_max_w);
-                unsigned lsfg_h = (unsigned)(av.geometry.base_height > 0 ? av.geometry.base_height : g_back_max_h);
-                if (me_vk_lsfg_init(me_lsfg_dll_path(g_lsfg_shaders),
-                                    lsfg_w, lsfg_h,
-                                    g_settings.lsfg_multiplier,
-                                    g_settings.lsfg_flow_scale,
-                                    g_settings.lsfg_perf_mode) != 0) {
-                    fprintf(stderr, "[lsfg] B3 init failed - LSFG disabled, continuing with normal Vulkan\n");
-                }
-            }
-#endif
-        } else {
-            fprintf(stderr, "[render] Vulkan init failed; falling back to D3D11/GDI\n");
-        }
-#else
-        printf("[render] --vulkan requested but build has no Vulkan support (set VULKAN_SDK and rebuild)\n");
-#endif
-    }
+    int vk_initialized = g_force_vulkan ? init_vulkan(s) : 0;
 
     /* D3D11 flip-model is used for HW (GL) cores by default and for software
        cores when --d3d11 is set. Otherwise software cores stay on GDI: lower
@@ -1673,39 +1715,35 @@ fail:
     return -1;
 }
 
-/* Hotkeys are live with or without a game loaded. Returns 1 if the reset
-   hotkey fired and reset the running core. */
-static int handle_hotkeys(me_session *s) {
-    int xi_p = g_settings.xi_player_index;
-    static int xi_prev_fullscreen = 0, xi_prev_exit_fs = 0, xi_prev_aspect = 0;
-    static int xi_prev_quit = 0, xi_prev_reset = 0;
-    if (hk_pressed(&g_settings.hk_toggle_fullscreen) ||
-        hk_xi_pressed(&g_settings.hk_xi_toggle_fullscreen, xi_p, &xi_prev_fullscreen)) {
-        me_platform_toggle_fullscreen(g_hwnd);
+/* Hotkeys are live with or without a game loaded. Anything that restarts the
+   game is posted as a command so it runs between frames. */
+static void handle_hotkeys(void) {
+    static int xi_prev[ME_HK_COUNT];
+    int fire[ME_HK_COUNT] = {0};
+    int foreground = GetForegroundWindow() == g_hwnd;
+
+    me_settings_lock();
+    int use_kb = g_settings.hk_source != ME_SRC_CONTROLLER;
+    int use_xi = g_settings.hk_source != ME_SRC_KEYBOARD && foreground;
+    int slot = g_settings.hk_xi_index;
+    if (use_xi) me_xinput_poll(slot);
+    for (int i = 0; i < ME_HK_COUNT; i++) {
+        /* Always consume the key edge so a stale press can't fire later. */
+        int kb = hk_pressed(&g_settings.hk[i]) && use_kb;
+        int xi = use_xi ? hk_xi_pressed(&g_settings.hk_xi[i], slot, &xi_prev[i])
+                        : (xi_prev[i] = 0);
+        fire[i] = kb || xi;
     }
-    if (hk_pressed(&g_settings.hk_exit_fullscreen) ||
-        hk_xi_pressed(&g_settings.hk_xi_exit_fullscreen, xi_p, &xi_prev_exit_fs)) {
-        me_platform_exit_fullscreen(g_hwnd);
-    }
-    if (hk_pressed(&g_settings.hk_cycle_aspect) ||
-        hk_xi_pressed(&g_settings.hk_xi_cycle_aspect, xi_p, &xi_prev_aspect)) {
+    me_settings_unlock();
+
+    if (fire[ME_HK_TOGGLE_FULLSCREEN]) me_platform_toggle_fullscreen(g_hwnd);
+    if (fire[ME_HK_EXIT_FULLSCREEN])   me_platform_exit_fullscreen(g_hwnd);
+    if (fire[ME_HK_CYCLE_ASPECT]) {
         g_aspect_mode = (g_aspect_mode + 1) % 3;
         printf("[aspect] %s\n", g_aspect_names[g_aspect_mode]);
     }
-    if (hk_pressed(&g_settings.hk_quit) ||
-        hk_xi_pressed(&g_settings.hk_xi_quit, xi_p, &xi_prev_quit)) {
-        me_platform_request_quit();
-    }
-    int did_reset = 0;
-    if (hk_pressed(&g_settings.hk_reset) ||
-        hk_xi_pressed(&g_settings.hk_xi_reset, xi_p, &xi_prev_reset)) {
-        if (s->active && s->core->retro_reset) {
-            s->core->retro_reset();
-            did_reset = 1;
-            printf("[hotkey] reset\n");
-        }
-    }
-    return did_reset;
+    if (fire[ME_HK_QUIT])       me_platform_request_quit();
+    if (fire[ME_HK_HARD_RESET]) me_cmd_post(ME_CMD_HARD_RESET, 0, NULL);
 }
 
 /* One main-loop iteration with a game running: backpressure wait, hotkeys,
@@ -1723,7 +1761,7 @@ static void session_run_frame(me_session *s) {
     if (g_use_d3d11) me_d3d11_wait_for_present(1000);
     else if (me_vk_is_active()) me_vk_wait_for_present(1000);
     LARGE_INTEGER ll_t_after_wait; if (g_latency_log) QueryPerformanceCounter(&ll_t_after_wait);
-    int did_reset = handle_hotkeys(s);
+    handle_hotkeys();
     size_t fill_before = 0, fill_after = 0;
     if (s->audio_ok && g_pace_log) fill_before = ME_RING_TOTAL - me_audio_writable_frames();
 
@@ -1761,9 +1799,7 @@ static void session_run_frame(me_session *s) {
             for (int i = 0; i < s->ra_frames; i++) core->retro_run();
             g_av_mute = 0;
             core->retro_run();  /* this one is shown */
-            if (did_reset) {
-                /* Don't restore the pre-reset snapshot — the reset just happened. */
-            } else if (!core->retro_unserialize(s->ra_state_buf, s->ra_state_size)) {
+            if (!core->retro_unserialize(s->ra_state_buf, s->ra_state_size)) {
                 fprintf(stderr, "[runahead] unserialize failed; disabling for rest of session\n");
                 free(s->ra_state_buf); s->ra_state_buf = NULL;
                 s->ra_frames = 0;
@@ -1953,22 +1989,140 @@ static void session_run_frame(me_session *s) {
     }
 }
 
-/* A ROM was dropped on the window: swap to it, whether or not a game is
-   running. If no core is assigned to it (or the core is missing) the current
-   game keeps running untouched. */
-static void load_dropped_rom(me_session *s, const char *rom_path) {
-    printf("[drop] %s\n", rom_path);
-    char core_path[MAX_PATH];
-    if (resolve_rom_core(rom_path, core_path, sizeof(core_path)) != 0) return;
+/* ---- commands from the UI thread -----------------------------------------
+   Everything here runs between frames on the emulation thread. */
+
+/* The game Console > Power On brings back after Power Off. */
+static char g_last_core[MAX_PATH];
+static char g_last_rom[MAX_PATH];
+static int  g_powered_off = 0;
+
+static void publish_status(const me_session *s) {
+    me_app_status st;
+    memset(&st, 0, sizeof(st));
+    st.game_running     = s->active;
+    st.can_power_on     = !s->active && g_powered_off && g_last_rom[0];
+    st.vulkan_active    = me_vk_is_active();
+    st.frame_gen_active = st.vulkan_active && g_lsfg_enabled && g_lsfg_shaders;
+#ifdef ME_HAVE_LSFG
+    st.frame_gen_supported = 1;
+#endif
+    if (s->active || st.can_power_on) {
+        snprintf(st.core_path, sizeof(st.core_path), "%s", g_last_core);
+        snprintf(st.rom_path,  sizeof(st.rom_path),  "%s", g_last_rom);
+    }
+    me_status_set(&st);
+}
+
+static const char *path_basename(const char *path) {
+    const char *base = path;
+    for (const char *p = path; *p; p++) if (*p == '\\' || *p == '/') base = p + 1;
+    return base;
+}
+
+/* session_open plus the bookkeeping every way of starting a game shares. */
+static int open_game(me_session *s, const char *core_path, const char *rom_path) {
+    int rc = session_open(s, core_path, rom_path);
+    if (rc == 0) {
+        snprintf(g_last_core, sizeof(g_last_core), "%s", s->core_path);
+        snprintf(g_last_rom,  sizeof(g_last_rom),  "%s", s->rom_path);
+        g_powered_off = 0;
+        me_ui_notify_loaded(s->rom_path);
+    } else {
+        me_ui_notify_error("Could not load %s.\nSee the console window for details.",
+                           path_basename(rom_path));
+    }
+    publish_status(s);
+    return rc;
+}
+
+/* Close and reopen the running game (hard reset) or the powered-off one. */
+static void restart_game(me_session *s, const char *core_path_in, const char *rom_path_in) {
+    char core_path[MAX_PATH], rom_path[MAX_PATH];
+    snprintf(core_path, sizeof(core_path), "%s", core_path_in);
+    snprintf(rom_path,  sizeof(rom_path),  "%s", rom_path_in);
     if (s->active) session_close(s);
-    if (session_open(s, core_path, rom_path) != 0) {
-        fprintf(stderr, "[drop] could not load %s; no game running\n", rom_path);
+    open_game(s, core_path, rom_path);
+}
+
+static void set_frame_gen(me_session *s, int on) {
+#ifdef ME_HAVE_LSFG
+    if (on && !g_lsfg_shaders) {
+        g_lsfg_shaders = me_lsfg_load(g_lsfg_dll_path[0] ? g_lsfg_dll_path : NULL);
+        if (!g_lsfg_shaders) {
+            me_ui_notify_error("Frame Gen needs Lossless.dll from Lossless Scaling (Steam).\n"
+                               "Copy it into %slsfg\\", g_exedir);
+            me_ui_notify_frame_gen(0);
+            return;
+        }
+    }
+    g_lsfg_enabled = on;
+    if (s->active && me_vk_is_active()) {
+        /* Rebuild the Vulkan presenter: LSFG switches the present mode on
+           the way in, and only a fresh swapchain switches it back. The core
+           and audio are untouched; this costs a few frames' worth of time
+           (frames are delayed, never dropped). If Vulkan fails to come back,
+           present() falls back to GDI. */
+        me_vk_lsfg_shutdown();
+        me_vk_shutdown();
+        init_vulkan(s);
+    }
+    printf("[lsfg] frame gen %s\n", on ? "on" : "off");
+    me_ui_notify_frame_gen(on);
+    publish_status(s);
+#else
+    (void)s; (void)on;
+    me_ui_notify_frame_gen(0);
+#endif
+}
+
+static void run_command(me_session *s, const me_cmd *c) {
+    switch (c->type) {
+        case ME_CMD_LOAD_ROM: {
+            char core_path[MAX_PATH], err[MAX_PATH * 2];
+            printf("[load] %s\n", c->path);
+            if (resolve_rom_core(c->path, core_path, sizeof(core_path), err, sizeof(err)) != 0) {
+                /* The current game (if any) keeps running untouched. */
+                fprintf(stderr, "[load] %s\n", err);
+                me_ui_notify_error("%s", err);
+                return;
+            }
+            if (s->active) session_close(s);
+            open_game(s, core_path, c->path);
+            return;
+        }
+        case ME_CMD_HARD_RESET:
+            if (!s->active) return;
+            printf("[console] hard reset\n");
+            restart_game(s, s->core_path, s->rom_path);
+            return;
+        case ME_CMD_SOFT_RESET:
+            if (s->active && s->core->retro_reset) {
+                s->core->retro_reset();
+                printf("[console] soft reset\n");
+            }
+            return;
+        case ME_CMD_POWER:
+            if (s->active) {
+                printf("[console] power off\n");
+                session_close(s);
+                g_powered_off = 1;
+                publish_status(s);
+            } else if (g_powered_off && g_last_rom[0]) {
+                printf("[console] power on\n");
+                restart_game(s, g_last_core, g_last_rom);
+            }
+            return;
+        case ME_CMD_FRAME_GEN:
+            set_frame_gen(s, c->arg);
+            return;
     }
 }
 
 int main(int argc, char **argv) {
     SetUnhandledExceptionFilter(me_unhandled_exception);
     init_exedir();
+    GetFullPathNameA("logs", sizeof(g_log_dir), g_log_dir, NULL);
 
     /* Create essential directories on first run (relative to exe). */
     char _tmp[MAX_PATH];
@@ -1989,8 +2143,9 @@ int main(int argc, char **argv) {
         /* Reload to pick up the defaults we just wrote. */
         me_settings_load(_settings_path, &g_settings);
     }
+    me_app_init(&g_settings, _settings_path);
     if (me_xinput_init())
-        printf("[xinput] controller support active (player index %d)\n", g_settings.xi_player_index);
+        printf("[xinput] controller support active (player 1 in slot %d)\n", g_settings.xi_index[0]);
     else
         printf("[xinput] XInput not available; controller input disabled\n");
 
@@ -2026,7 +2181,8 @@ int main(int argc, char **argv) {
         else if (strcmp(argv[i], "--no-vk-exclusive") == 0) g_settings.vk_exclusive_fullscreen = 0;
         else if (strcmp(argv[i], "--lsfg")     == 0) g_lsfg_enabled = 1;
         else if (strncmp(argv[i], "--lsfg-dll=", 11) == 0) {
-            snprintf(g_lsfg_dll_path, sizeof(g_lsfg_dll_path), "%s", argv[i] + 11);
+            if (!GetFullPathNameA(argv[i] + 11, sizeof(g_lsfg_dll_path), g_lsfg_dll_path, NULL))
+                snprintf(g_lsfg_dll_path, sizeof(g_lsfg_dll_path), "%s", argv[i] + 11);
             g_lsfg_enabled = 1; /* --lsfg-dll= implies --lsfg */
         }
         else if (strncmp(argv[i], "--lsfg-multiplier=", 18) == 0) {
@@ -2095,12 +2251,14 @@ int main(int argc, char **argv) {
                 "  <core.dll> <rom>\n"
                 "               play a ROM with a specific libretro core DLL\n"
                 "\n"
-                "Dropping a ROM file onto the window loads it at any time, replacing the\n"
-                "current game.\n"
+                "Use the window's menu bar (File, Console, Controls, View) to open ROMs,\n"
+                "reset, remap controls and hotkeys, and pick the renderer. Dropping a ROM\n"
+                "file onto the window also loads it, replacing the current game.\n"
                 "\n"
-                "hotkeys (while running):\n"
-                "  F1   cycle aspect ratio (1:1 / 4:3 / 16:9)\n"
-                "  F11  toggle fullscreen\n"
+                "default hotkeys (change them in Controls > Hotkeys):\n"
+                "  F1      cycle aspect ratio (1:1 / 4:3 / 16:9)\n"
+                "  F11     toggle fullscreen\n"
+                "  Ctrl+R  hard reset\n"
                 "\n"
                 "example:\n"
                 "  %s \"roms\\Super Mario Bros. (World).nes\"\n",
@@ -2125,23 +2283,40 @@ int main(int argc, char **argv) {
         core_path = positional[0];
         rom_path  = positional[1];
     } else if (npos == 1) {
+        char err[MAX_PATH * 2];
         rom_path = positional[0];
-        if (resolve_rom_core(rom_path, table_core_path, sizeof(table_core_path)) != 0) return 1;
+        if (resolve_rom_core(rom_path, table_core_path, sizeof(table_core_path), err, sizeof(err)) != 0) {
+            fprintf(stderr, "[rom] %s\n", err);
+            return 1;
+        }
         core_path = table_core_path;
     }
 
     /* ---- Step B1: Load Lossless.dll + extract shaders --------------------- */
+    /* --lsfg forces Vulkan and fails hard; frame gen switched on from the
+       View menu (settings.yaml) only applies when Vulkan is the backend, and
+       a missing Lossless.dll just leaves it off. */
+    int lsfg_from_cli = g_lsfg_enabled;
+    if (!g_lsfg_enabled && g_settings.lsfg_enabled) g_lsfg_enabled = 1;
     if (g_lsfg_enabled) {
-        if (!g_force_vulkan) {
+        if (lsfg_from_cli && !g_force_vulkan) {
             fprintf(stderr,
                 "[lsfg] WARNING: --lsfg requires --vulkan. Enabling Vulkan automatically.\n");
             g_force_vulkan = 1;
         }
         g_lsfg_shaders = me_lsfg_load(g_lsfg_dll_path[0] ? g_lsfg_dll_path : NULL);
-        if (!g_lsfg_shaders) {
+        if (!g_lsfg_shaders && lsfg_from_cli) {
             /* Error already printed by me_lsfg_load(). Exit cleanly. */
             return 1;
         }
+    }
+    if (g_lsfg_enabled && !g_lsfg_shaders) {
+        fprintf(stderr, "[lsfg] frame gen is on in settings.yaml but Lossless.dll wasn't found; leaving it off\n");
+        g_lsfg_enabled = 0;
+    }
+    /* The View menu's checkmark shows what's actually in effect. */
+    g_settings.lsfg_enabled = g_lsfg_enabled;
+    if (g_lsfg_shaders) {
         fprintf(stderr, "[lsfg] DLL: %s\n", me_lsfg_dll_path(g_lsfg_shaders));
         fprintf(stderr, "[lsfg] shaders extracted: %d\n",
                 me_lsfg_shader_count(g_lsfg_shaders));
@@ -2163,31 +2338,30 @@ int main(int argc, char **argv) {
     memset(&session, 0, sizeof(session));
     int exit_code = 0;
     if (rom_path) {
-        if (session_open(&session, core_path, rom_path) != 0) exit_code = 1;
+        if (open_game(&session, core_path, rom_path) != 0) exit_code = 1;
     } else if (create_main_window(640, 480) == 0) {
         me_platform_set_idle(g_hwnd, 1);
-        printf("[main] no game loaded; drop a ROM onto the window to play\n");
+        publish_status(&session);
+        printf("[main] no game loaded; use File > Open ROM or drop a ROM onto the window\n");
     } else {
         exit_code = 1;
     }
 
     while (exit_code == 0 && me_platform_pump()) {
-        char dropped[MAX_PATH];
-        if (me_platform_take_dropped_file(dropped, sizeof(dropped))) {
-            load_dropped_rom(&session, dropped);
-        }
+        me_cmd cmd;
+        while (me_cmd_take(&cmd)) run_command(&session, &cmd);
         if (session.active) {
             session_run_frame(&session);
         } else {
             /* Nothing to emulate: keep hotkeys (fullscreen, quit) working and
-               sleep until the next window message or ~one frame passes. */
-            if (GetForegroundWindow() == g_hwnd) me_xinput_poll(g_settings.xi_player_index);
-            handle_hotkeys(&session);
-            MsgWaitForMultipleObjects(0, NULL, FALSE, 16, QS_ALLINPUT);
+               sleep until a command arrives or ~one frame passes. */
+            handle_hotkeys();
+            WaitForSingleObject(me_app_wake_event(), 16);
         }
     }
 
     if (session.active) session_close(&session);
+    me_platform_destroy_window();
     timeEndPeriod(1);
     me_lsfg_free(g_lsfg_shaders); g_lsfg_shaders = NULL;
     me_settings_free(&g_settings);

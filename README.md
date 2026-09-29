@@ -44,6 +44,18 @@ Every file type opens in one core of our choosing. The core must be in the `core
 | --- | --- |
 | `.nes` `.fds` `.unf` `.unif` | Mesen (`mesen_libretro.dll`) |
 
+#### Menu bar
+The game never pauses for the menus or their windows (speedrun rules): it keeps running while menus and dialogs are open and while the window is moved or resized. The menu bar hides in fullscreen.
+
+| Menu | Items |
+| --- | --- |
+| File | Open ROM, Open Recent (last 20 games played), Exit |
+| Console | Hard Reset (reload the game), Soft Reset (the console's reset button), Power On / Off |
+| Controls | Player 1, Player 2, Hotkeys. Each opens a window listing every control: click a binding to change it, right-click to clear it. Pick keyboard, controller or both, and which controller slot. Default restores the shipped bindings. Player 1/2 edit the running core's own map if it has one in `settings.yaml`, otherwise the map every core shares. |
+| View | Toggle Full Screen, Frame Gen (Vulkan only; toggling it briefly stalls while the renderer rebuilds), Rendering Backend (takes effect on restart) |
+
+Changes made from the menus are saved to `settings.yaml`, which laggueless rewrites (without comments) when it saves.
+
 #### Optional Arguments:
 
 | Flag | Description |

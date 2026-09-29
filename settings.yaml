@@ -62,13 +62,15 @@ audio:
                          # period while keeping other apps audible. Requires Win10 1607+.
                          # Falls back to regular shared mode if unavailable.
 
-# LSFG 3.1 frame generation (only used when --lsfg is on the command line).
+# LSFG 3.1 frame generation. Turn it on with `enabled: true`, View > Frame Gen,
+# or --lsfg on the command line. Only works with the Vulkan backend.
 # Steam's Lossless Scaling UI exposes a lot of options, but only these are
 # actually parameters of the LSFG SPIR-V shaders. Everything else in the Steam
 # UI (sync mode, max frame latency, capture API, etc.) is app-level behavior
 # that this renderer already controls separately.
 lsfg:
-  multiplier: 0          # 2 / 3 / 4 — number of presented frames per real frame.
+  enabled: false         # View > Frame Gen toggles this
+  multiplier: 2          # 2 / 3 / 4 — number of presented frames per real frame.
                          # Higher = smoother motion but more input latency (extra
                          # FIFO queueing per real frame).
                          # CLI equivalent: --lsfg-multiplier=N
@@ -111,7 +113,11 @@ log:
 
 hotkeys:
   # Each hotkey can have both a keyboard binding and a controller binding.
-  # Both are active simultaneously — pressing either triggers the action.
+  # `input` picks which are active: both | keyboard | controller.
+  # Controller hotkeys come from the pad in slot `controller_index` (0..3).
+  # A controller chord like Back+Start means "hold all of these".
+  input: both
+  controller_index: 0
   cycle_aspect_ratio:
     keyboard:   F1
     controller: None
@@ -123,19 +129,21 @@ hotkeys:
   quit:
     keyboard:   Alt+F4
     controller: None
-  reset:
+  hard_reset:
     keyboard:   Ctrl+R
     controller: None
 
 # Controls
 # ---------
+# Controls > Player 1 / Player 2 edit these from the menu.
 # `universal` is the default mapping applied to every core.
 # Each core listed under `cores:` has its own `use_universal` toggle.
 #   use_universal: true  -> ignore the per-core `controls:` block, use universal
 #   use_universal: false -> use the per-core `controls:` block
 #
-# Every input has separate `keyboard:` and `controller:` bindings. Both are
-# mapped at the same time — either input source will trigger the button.
+# Every input has separate `keyboard:` and `controller:` bindings.
+# `playerN_input` picks which are active: both | keyboard | controller.
+# `playerN_controller` is the XInput slot (0..3) that player's pad is in.
 #
 # Naming uses Xbox / XInput vocabulary throughout:
 #   Face buttons:  a, b, x, y           (Xbox layout)
@@ -154,12 +162,10 @@ hotkeys:
 #   LStickUp, LStickDown, LStickLeft, LStickRight,
 #   RStickUp, RStickDown, RStickLeft, RStickRight.
 controls:
-  # XInput tuning (applies to all controller bindings)
-  controller:
-    enabled: true
-    player1_index: 0       # XInput user index 0..3
-    stick_deadzone: 8000   # 0..32767 (XInput default ~7849)
-    trigger_threshold: 30  # 0..255 (XInput default 30)
+  player1_input: both
+  player1_controller: 0
+  player2_input: both
+  player2_controller: 1
 
   universal:
     player1:
@@ -198,6 +204,31 @@ controls:
         controller: Start
       back:
         keyboard:   RShift
+        controller: Back
+    player2:               # controller only by default; the keyboard is player 1's
+      dpad_up:
+        controller: DPadUp
+      dpad_down:
+        controller: DPadDown
+      dpad_left:
+        controller: DPadLeft
+      dpad_right:
+        controller: DPadRight
+      a:
+        controller: A
+      b:
+        controller: B
+      x:
+        controller: X
+      y:
+        controller: Y
+      lb:
+        controller: LB
+      rb:
+        controller: RB
+      start:
+        controller: Start
+      back:
         controller: Back
 
 # Per-core settings. `use_universal` controls whether the universal mapping
@@ -374,3 +405,6 @@ cores:
         start:
           keyboard:   Return
           controller: Start
+
+# File > Open Recent (most recent first). Filled in as you play.
+recent: []
