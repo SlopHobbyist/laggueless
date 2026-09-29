@@ -879,6 +879,20 @@ static void poll_player(int p) {
     int down  = live_down(p, ME_IN_DPAD_DOWN);
     int lf    = live_down(p, ME_IN_DPAD_LEFT);
     int right = live_down(p, ME_IN_DPAD_RIGHT);
+    /* Left stick as D-pad on consoles without a stick (settings.h). It adds
+       to the D-pad bindings before SOCD, so stick and D-pad pushed opposite
+       ways still cancel to neutral. */
+    const unsigned lstick_bits = (1u << ME_IN_LSTICK_UP) | (1u << ME_IN_LSTICK_DOWN) |
+                                 (1u << ME_IN_LSTICK_LEFT) | (1u << ME_IN_LSTICK_RIGHT);
+    if (g_settings.lstick_as_dpad[p] && g_settings.input_source[p] != ME_SRC_KEYBOARD &&
+        !(g_in_layout.live & lstick_bits)) {
+        int slot = g_settings.xi_index[p];
+        unsigned live = live_inputs();
+        if (live & (1u << ME_IN_DPAD_UP))    up    |= me_xinput_button(slot, ME_XI_LSTICK_UP);
+        if (live & (1u << ME_IN_DPAD_DOWN))  down  |= me_xinput_button(slot, ME_XI_LSTICK_DOWN);
+        if (live & (1u << ME_IN_DPAD_LEFT))  lf    |= me_xinput_button(slot, ME_XI_LSTICK_LEFT);
+        if (live & (1u << ME_IN_DPAD_RIGHT)) right |= me_xinput_button(slot, ME_XI_LSTICK_RIGHT);
+    }
     /* SOCD: opposing directions cancel to neutral. */
     if (up && down)  { up = down = 0; }
     if (lf && right) { lf = right = 0; }

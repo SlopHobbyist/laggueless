@@ -32,6 +32,7 @@ enum {
     IDC_DEFAULT,
     IDC_SAVE,
     IDC_ADVANCED,
+    IDC_LSTICK_DPAD,
 };
 
 #define CAPTURE_TIMER     1
@@ -55,6 +56,7 @@ typedef struct {
     me_input_source source;
     int slot;
     int show_advanced;
+    int lstick_as_dpad;
 
     /* Capture state. cap_col == 0 means not capturing. */
     int cap_row, cap_col, cap_ticks;
@@ -130,6 +132,7 @@ static void refresh_all(HWND dlg, bind_dlg *d) {
         refresh_row(d, r);
     }
     if (d->adv_check) CheckDlgButton(dlg, IDC_ADVANCED, d->show_advanced ? BST_CHECKED : BST_UNCHECKED);
+    if (!d->is_hotkeys) CheckDlgButton(dlg, IDC_LSTICK_DPAD, d->lstick_as_dpad ? BST_CHECKED : BST_UNCHECKED);
     CheckRadioButton(dlg, IDC_SRC_BOTH, IDC_SRC_CONTROLLER,
                      d->source == ME_SRC_KEYBOARD   ? IDC_SRC_KEYBOARD
                    : d->source == ME_SRC_CONTROLLER ? IDC_SRC_CONTROLLER : IDC_SRC_BOTH);
@@ -309,6 +312,7 @@ static void load_from(bind_dlg *d, const me_settings *s, int core_index) {
     d->source = s->input_source[d->player];
     d->slot   = s->xi_index[d->player];
     d->show_advanced = s->show_advanced_inputs;
+    d->lstick_as_dpad = s->lstick_as_dpad[d->player];
 }
 
 static void store_into(const bind_dlg *d, me_settings *s, int core_index) {
@@ -334,6 +338,7 @@ static void store_into(const bind_dlg *d, me_settings *s, int core_index) {
     s->input_source[d->player] = d->source;
     s->xi_index[d->player]     = d->slot;
     s->show_advanced_inputs    = d->show_advanced;
+    s->lstick_as_dpad[d->player] = d->lstick_as_dpad;
 }
 
 /* The per-core entry in `s` matching the one being edited (by name), or -1. */
@@ -400,12 +405,16 @@ static void create_controls(HWND dlg, bind_dlg *d) {
         d->adv_check = me_ui_add_control(dlg, "BUTTON", "Show advanced inputs",
                                    BS_AUTOCHECKBOX | WS_TABSTOP | WS_GROUP, 193, 39, 120, 11, IDC_ADVANCED);
         EnableWindow(d->adv_check, d->layout.advanced != 0);
+        me_ui_add_control(dlg, "BUTTON", "Left stick works the D-pad (consoles with no analog stick)",
+                          BS_AUTOCHECKBOX | WS_TABSTOP | WS_GROUP, 50, 53, 263, 11, IDC_LSTICK_DPAD);
     }
 
+    /* Player dialogs have one more row above the list. */
+    int list_y = d->is_hotkeys ? 56 : 70;
     d->list = me_ui_add_control(dlg, WC_LISTVIEWA, "",
                           LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_NOSORTHEADER |
                           WS_BORDER | WS_TABSTOP,
-                          7, 56, 306, 160, IDC_LIST);
+                          7, list_y, 306, 216 - list_y, IDC_LIST);
     SendMessageA(d->list, LVM_SETEXTENDEDLISTVIEWSTYLE, 0,
                  LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
     RECT lr;
@@ -490,6 +499,9 @@ static INT_PTR CALLBACK bind_dlg_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) 
                     d->show_advanced = IsDlgButtonChecked(dlg, IDC_ADVANCED) == BST_CHECKED;
                     refresh_all(dlg, d);
                     idle_hint(d);
+                    return TRUE;
+                case IDC_LSTICK_DPAD:
+                    d->lstick_as_dpad = IsDlgButtonChecked(dlg, IDC_LSTICK_DPAD) == BST_CHECKED;
                     return TRUE;
                 case IDC_DEFAULT:
                     if (d->cap_col) end_capture(dlg, d);

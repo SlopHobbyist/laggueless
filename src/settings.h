@@ -159,6 +159,10 @@ typedef struct {
     /* Per player: devices in use and XInput slot (0..3). */
     me_input_source input_source[ME_MAX_PLAYERS];
     int             xi_index[ME_MAX_PLAYERS];
+    /* On consoles whose controller has no analog stick, the player's left
+       stick pushed past half travel also presses the D-pad (Controls >
+       Player N). On by default; a plain remap, so run-legal. */
+    int             lstick_as_dpad[ME_MAX_PLAYERS];
 
     /* Universal control maps, one per player. */
     me_control_map universal[ME_MAX_PLAYERS];
