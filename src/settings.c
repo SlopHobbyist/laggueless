@@ -634,6 +634,10 @@ static void load_document(yaml_document_t *doc, yaml_node_t *root, me_settings *
         }
         yaml_node_t *uni = map_get(doc, controls, "universal");
         if (uni) parse_players(doc, uni, out->universal, NULL);
+        out->show_advanced_inputs = scalar_bool(map_get(doc, controls, "show_advanced"),
+                                                out->show_advanced_inputs);
+        yaml_node_t *adv = map_get(doc, controls, "advanced");
+        if (adv) parse_players(doc, adv, out->advanced, NULL);
     }
     for (int pl = 0; pl < ME_MAX_PLAYERS; pl++) out->xi_index[pl] = clamp_slot(out->xi_index[pl]);
 
@@ -852,6 +856,14 @@ int me_settings_save(const char *path, const me_settings *s) {
     fprintf(f, "  universal:\n");
     for (int pl = 0; pl < ME_MAX_PLAYERS; pl++)
         write_player(f, "    ", g_player_keys[pl], &s->universal[pl], NULL);
+    fprintf(f, "  show_advanced: %s\n", yn(s->show_advanced_inputs));
+    fprintf(f, "  advanced:\n");
+    for (int pl = 0; pl < ME_MAX_PLAYERS; pl++) {
+        unsigned bound = 0;   /* just the bound ones; the rest stay unbound */
+        for (int id = 0; id < ME_IN_COUNT; id++)
+            if (s->advanced[pl].keys[id].count || s->advanced[pl].xi[id].count) bound |= 1u << id;
+        write_player(f, "    ", g_player_keys[pl], &s->advanced[pl], &bound);
+    }
 
     fprintf(f, "\ncores:\n");
     for (size_t i = 0; i < s->cores_n; i++) {

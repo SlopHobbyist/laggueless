@@ -231,6 +231,17 @@ controls:
       back:
         controller: Back
 
+  # Advanced inputs: extras a core offers beyond its console's controller,
+  # e.g. FDS disk swap and VS coins (NES), lid/mic (DS), buttons III-VI
+  # (PC Engine). Hidden and never sent to the core unless show_advanced is
+  # true (Controls > Player N > Show advanced inputs). They have their own
+  # bindings, same format as universal, and start unbound. Turbo buttons
+  # and multi-button macros are never offered.
+  show_advanced: false
+  advanced:
+    player1: {}
+    player2: {}
+
 # Per-core settings. `use_universal` controls whether the universal mapping
 # above is used, or the `controls:` block below it.
 cores:

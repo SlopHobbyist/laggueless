@@ -150,6 +150,14 @@ typedef struct {
     /* Universal control maps, one per player. */
     me_control_map universal[ME_MAX_PLAYERS];
 
+    /* Advanced inputs: what a core offers beyond its console's controller
+       (FDS disk swap, VS coins, DS lid/mic, PC Engine III-VI, ...; see
+       consoles.h). Off by default. They sit on RetroPad buttons the console
+       doesn't have, so they get their own maps, unbound by default, instead
+       of inheriting another console's button there. Not per-core. */
+    int            show_advanced_inputs;
+    me_control_map advanced[ME_MAX_PLAYERS];
+
     /* Per-core entry. */
     struct me_core_entry {
         char  name[64];          /* short name from yaml (e.g. "snes9x") */

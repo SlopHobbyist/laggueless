@@ -10,13 +10,18 @@
    dialog hides can't reach the game through a leftover binding.
 
    Consoles we know get a curated layout: just the buttons on the real
-   controller, named the way the console names them. Cores many consoles
-   share also put turbo buttons, macros and disk/coin/screen-rotate actions
-   on the spare RetroPad buttons; those never appear here.
+   controller, named the way the console names them. Cores also put extras
+   on the RetroPad buttons their console doesn't have: FDS disk swap, VS
+   coins, DS lid/mic, PC Engine III-VI, screen rotation... Those become
+   `advanced` rows, listed after the controller and hidden, unbound and
+   never passed to the core unless the player turns advanced inputs on.
 
-   Any other core gets its layout from its own input descriptors, minus
-   anything it labels as turbo. A core that describes nothing (and the
-   dialogs when no game is loaded) gets every input under its Xbox name. */
+   Any other core gets its layout from its own input descriptors. A core
+   that describes nothing (and the dialogs when no game is loaded) gets
+   every input under its Xbox name.
+
+   Turbo buttons and multi-button macros ("A+B") are never listed or
+   passed, advanced or not. */
 typedef struct {
     int      curated;                  /* 1 = from the console table */
     char     name[64];                 /* console ("NES"), else the core, else "" */
@@ -24,6 +29,8 @@ typedef struct {
     unsigned char ids[ME_IN_COUNT];    /* me_input_id, display order */
     char     labels[ME_IN_COUNT][32];  /* indexed by me_input_id */
     unsigned live;                     /* bit per me_input_id passed to the core */
+    unsigned advanced;                 /* bit per advanced row; passed only when
+                                          show_advanced_inputs is on */
 } me_input_layout;
 
 #define ME_IN_ALL ((1u << ME_IN_COUNT) - 1u)
@@ -40,5 +47,9 @@ int  me_layout_for_game(const char *library_name, const char *rom_path, me_input
 void me_layout_from_descriptors(const char *core_name,
                                 const struct retro_input_descriptor *d,
                                 me_input_layout *out);
+
+/* Replace a curated layout's advanced rows with whatever else the core's
+   descriptors offer beyond the controller. */
+void me_layout_set_advanced(me_input_layout *l, const struct retro_input_descriptor *d);
 
 #endif

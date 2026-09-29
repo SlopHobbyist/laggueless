@@ -444,10 +444,13 @@ static bool me_environment_cb(unsigned cmd, void *data) {
             return true;
         }
         case RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS:    /* 11 */
-            /* Consoles in the table keep their curated controller. */
-            if (!g_in_layout.curated && data) {
-                me_input_layout l;
-                me_layout_from_descriptors(g_core_name, (const struct retro_input_descriptor *)data, &l);
+            /* Consoles in the table keep their curated controller; the
+               core's extras become its advanced inputs. */
+            if (data) {
+                const struct retro_input_descriptor *d = (const struct retro_input_descriptor *)data;
+                me_input_layout l = g_in_layout;
+                if (l.curated) me_layout_set_advanced(&l, d);
+                else           me_layout_from_descriptors(g_core_name, d, &l);
                 set_input_layout(&l);
             }
             return true;
@@ -701,6 +704,8 @@ static int vk_claimed_by_hotkey(unsigned vk) {
 static int input_down(int player, me_input_id id) {
     const me_control_map *map = g_active_map[player];
     if (!map) return 0;
+    /* Advanced inputs have their own bindings (settings.h). */
+    if (g_in_layout.advanced & (1u << id)) map = &g_settings.advanced[player];
     me_input_source src = g_settings.input_source[player];
     if (src != ME_SRC_CONTROLLER) {
         const me_kb_bindings *bs = &map->keys[id];
@@ -721,8 +726,12 @@ static int input_down(int player, me_input_id id) {
 }
 
 /* input_down for inputs the running console has; 0 for the rest. */
+static unsigned live_inputs(void) {
+    return g_in_layout.live | (g_settings.show_advanced_inputs ? g_in_layout.advanced : 0);
+}
+
 static int live_down(int player, me_input_id id) {
-    return (g_in_layout.live & (1u << id)) ? input_down(player, id) : 0;
+    return (live_inputs() & (1u << id)) ? input_down(player, id) : 0;
 }
 
 /* Caller holds the settings lock. */
@@ -756,7 +765,8 @@ static void poll_player(int p) {
        like mupen64plus_next that read the analog stick see motion. Opposing
        directions cancel; non-opposing produce full deflection in that axis.
        Real XInput axis values take priority over keyboard digital mappings.
-       A stick the console doesn't have stays centered. */
+       A stick the console doesn't have stays centered; an advanced stick
+       (PSP right stick, DS touch joystick) moves only through its bindings. */
     int16_t *an = g_analog[p];
     int slot = g_settings.xi_index[p];
     int use_pad = g_settings.input_source[p] != ME_SRC_KEYBOARD;

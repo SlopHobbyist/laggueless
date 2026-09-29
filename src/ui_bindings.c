@@ -3,7 +3,9 @@
    Each dialog lists the controls with their keyboard and controller bindings.
    The player dialogs list only the buttons the running game's controller has,
    under the console's own names (consoles.h); with no game loaded they list
-   every input. Hidden inputs keep their bindings for other cores.
+   every input. Hidden inputs keep their bindings for other cores. "Show
+   advanced inputs" adds the core's extras (FDS disk swap, coins, lid/mic...),
+   which have their own bindings (settings.h).
    Clicking a binding captures the next key / button; right-clicking clears it.
    Capture polls GetAsyncKeyState and XInput on a timer instead of reading
    WM_KEYDOWN, because the dialog manager eats Tab/Enter/Esc/arrows.
@@ -29,6 +31,7 @@ enum {
     IDC_HINT,
     IDC_DEFAULT,
     IDC_SAVE,
+    IDC_ADVANCED,
 };
 
 #define CAPTURE_TIMER     1
@@ -51,6 +54,7 @@ typedef struct {
     me_xi_bindings xi[ME_IN_COUNT];
     me_input_source source;
     int slot;
+    int show_advanced;
 
     /* Capture state. cap_col == 0 means not capturing. */
     int cap_row, cap_col, cap_ticks;
@@ -60,7 +64,7 @@ typedef struct {
     unsigned cap_xi_chord;        /* hotkeys: buttons pressed so far */
     unsigned last_vk;             /* last key captured (to ignore its Esc) */
 
-    HWND list, hint, slot_combo;
+    HWND list, hint, slot_combo, adv_check;
 } bind_dlg;
 
 /* ---- dialog template ------------------------------------------------------ */
@@ -141,8 +145,25 @@ static void refresh_row(bind_dlg *d, int row) {
     set_cell(d->list, row, COL_CONTROLLER, buf);
 }
 
+/* Player dialogs: the layout's rows, advanced ones only when shown. */
+static void build_rows(bind_dlg *d) {
+    d->rows = 0;
+    for (int i = 0; i < d->layout.n; i++) {
+        int id = d->layout.ids[i];
+        if (!d->show_advanced && (d->layout.advanced & (1u << id))) continue;
+        d->ids[d->rows++] = id;
+    }
+}
+
 static void refresh_all(HWND dlg, bind_dlg *d) {
-    for (int r = 0; r < d->rows; r++) refresh_row(d, r);
+    if (!d->is_hotkeys) build_rows(d);
+    SendMessageA(d->list, LVM_DELETEALLITEMS, 0, 0);
+    for (int r = 0; r < d->rows; r++) {
+        LVITEMA it = { .mask = LVIF_TEXT, .iItem = r, .pszText = (char *)row_label(d, r) };
+        SendMessageA(d->list, LVM_INSERTITEMA, 0, (LPARAM)&it);
+        refresh_row(d, r);
+    }
+    if (d->adv_check) CheckDlgButton(dlg, IDC_ADVANCED, d->show_advanced ? BST_CHECKED : BST_UNCHECKED);
     CheckRadioButton(dlg, IDC_SRC_BOTH, IDC_SRC_CONTROLLER,
                      d->source == ME_SRC_KEYBOARD   ? IDC_SRC_KEYBOARD
                    : d->source == ME_SRC_CONTROLLER ? IDC_SRC_CONTROLLER : IDC_SRC_BOTH);
@@ -156,6 +177,9 @@ static void set_hint(bind_dlg *d, const char *text) {
 static void idle_hint(bind_dlg *d) {
     set_hint(d, d->is_hotkeys
         ? "Click a binding to change it; right-click to clear it. Chords like Ctrl+R or Back+Start work."
+        : d->show_advanced && d->layout.advanced
+        ? "Click a binding to change it; right-click to clear it. Advanced inputs are listed last "
+          "and have their own bindings."
         : "Click a binding to change it; right-click to clear it.");
 }
 
@@ -310,10 +334,15 @@ static void load_from(bind_dlg *d, const me_settings *s, int core_index) {
     }
     const me_control_map *m = core_index >= 0 ? &s->cores[core_index].controls[d->player]
                                               : &s->universal[d->player];
-    memcpy(d->kb, m->keys, sizeof(m->keys));
-    memcpy(d->xi, m->xi,   sizeof(m->xi));
+    const me_control_map *adv = &s->advanced[d->player];
+    for (int id = 0; id < ME_IN_COUNT; id++) {
+        int a = (d->layout.advanced >> id) & 1;
+        d->kb[id] = a ? adv->keys[id] : m->keys[id];
+        d->xi[id] = a ? adv->xi[id]   : m->xi[id];
+    }
     d->source = s->input_source[d->player];
     d->slot   = s->xi_index[d->player];
+    d->show_advanced = s->show_advanced_inputs;
 }
 
 static void store_into(const bind_dlg *d, me_settings *s, int core_index) {
@@ -324,13 +353,21 @@ static void store_into(const bind_dlg *d, me_settings *s, int core_index) {
         s->hk_xi_index = d->slot;
         return;
     }
-    me_control_map m;
-    memcpy(m.keys, d->kb, sizeof(m.keys));
-    memcpy(m.xi,   d->xi, sizeof(m.xi));
+    /* Advanced rows go to the advanced map; the map's own binding for that
+       input (another console's button there) is left alone. */
+    me_control_map m = core_index >= 0 ? s->cores[core_index].controls[d->player]
+                                       : s->universal[d->player];
+    me_control_map *adv = &s->advanced[d->player];
+    for (int id = 0; id < ME_IN_COUNT; id++) {
+        int a = (d->layout.advanced >> id) & 1;
+        (a ? adv : &m)->keys[id] = d->kb[id];
+        (a ? adv : &m)->xi[id]   = d->xi[id];
+    }
     if (core_index >= 0) me_settings_set_core_map(s, core_index, d->player, &m);
     else                 me_settings_set_universal(s, d->player, &m);
     s->input_source[d->player] = d->source;
     s->xi_index[d->player]     = d->slot;
+    s->show_advanced_inputs    = d->show_advanced;
 }
 
 /* The per-core entry in `s` matching the one being edited (by name), or -1. */
@@ -392,6 +429,13 @@ static void create_controls(HWND dlg, bind_dlg *d) {
                                 50, 38, 130, 80, IDC_SLOT);
     fill_slot_combo(d);
 
+    if (!d->is_hotkeys) {
+        /* Greyed out when the running core offers nothing extra. */
+        d->adv_check = add_control(dlg, "BUTTON", "Show advanced inputs",
+                                   BS_AUTOCHECKBOX | WS_TABSTOP | WS_GROUP, 193, 39, 120, 11, IDC_ADVANCED);
+        EnableWindow(d->adv_check, d->layout.advanced != 0);
+    }
+
     d->list = add_control(dlg, WC_LISTVIEWA, "",
                           LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_NOSORTHEADER |
                           WS_BORDER | WS_TABSTOP,
@@ -408,18 +452,14 @@ static void create_controls(HWND dlg, bind_dlg *d) {
                           .cx = widths[c], .pszText = (char *)heads[c], .iSubItem = c };
         SendMessageA(d->list, LVM_INSERTCOLUMNA, (WPARAM)c, (LPARAM)&col);
     }
-    for (int r = 0; r < d->rows; r++) {
-        LVITEMA it = { .mask = LVIF_TEXT, .iItem = r, .pszText = (char *)row_label(d, r) };
-        SendMessageA(d->list, LVM_INSERTITEMA, 0, (LPARAM)&it);
-    }
 
     d->hint = add_control(dlg, "STATIC", "", SS_LEFT, 7, 220, 306, 18, IDC_HINT);
-    idle_hint(d);
 
     add_control(dlg, "BUTTON", "Default", BS_PUSHBUTTON | WS_TABSTOP | WS_GROUP, 7, 243, 55, 14, IDC_DEFAULT);
     add_control(dlg, "BUTTON", "Cancel",  BS_PUSHBUTTON | WS_TABSTOP, 199, 243, 55, 14, IDCANCEL);
     add_control(dlg, "BUTTON", "Save",    BS_PUSHBUTTON | WS_TABSTOP, 258, 243, 55, 14, IDC_SAVE);
     refresh_all(dlg, d);
+    idle_hint(d);
 }
 
 /* Which list cell a click landed on; returns 0 for none. */
@@ -479,9 +519,16 @@ static INT_PTR CALLBACK bind_dlg_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) 
                         if (sel >= 0 && sel < ME_XI_SLOTS) d->slot = (int)sel;
                     }
                     return TRUE;
+                case IDC_ADVANCED:
+                    if (d->cap_col) end_capture(dlg, d);
+                    d->show_advanced = IsDlgButtonChecked(dlg, IDC_ADVANCED) == BST_CHECKED;
+                    refresh_all(dlg, d);
+                    idle_hint(d);
+                    return TRUE;
                 case IDC_DEFAULT:
                     if (d->cap_col) end_capture(dlg, d);
                     apply_defaults(dlg, d);
+                    idle_hint(d);
                     return TRUE;
                 case IDC_SAVE:
                     if (d->cap_col) end_capture(dlg, d);
@@ -530,8 +577,6 @@ void me_ui_player_dialog(HWND owner, int player) {
     /* Rows: the loaded (or powered-off) game's controller, else every input. */
     if (st.core_path[0]) me_layout_get(&d.layout);
     else                 me_layout_unknown(&d.layout);
-    d.rows = d.layout.n;
-    for (int r = 0; r < d.rows; r++) d.ids[r] = d.layout.ids[r];
     d.core_index = -1;
     if (st.core_path[0]) {
         int ci = me_settings_find_core_index(live, st.core_path);

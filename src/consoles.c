@@ -213,11 +213,18 @@ static const char *extension_of(const char *path) {
     return ext;
 }
 
-static void add_row(me_input_layout *l, me_input_id id, const char *label) {
-    if (l->live & (1u << id)) return;   /* first description wins */
+static int has_row(const me_input_layout *l, me_input_id id) {
+    for (int i = 0; i < l->n; i++) if (l->ids[i] == id) return 1;
+    return 0;
+}
+
+/* Append a row; an input already listed keeps its first name. */
+static void add_row(me_input_layout *l, me_input_id id, const char *label, int advanced) {
+    if (has_row(l, id)) return;
     l->ids[l->n++] = (unsigned char)id;
     snprintf(l->labels[id], sizeof(l->labels[id]), "%s", label);
-    l->live |= 1u << id;
+    if (advanced) l->advanced |= 1u << id;
+    else          l->live     |= 1u << id;
 }
 
 /* Rows for the unknown layout: d-pad, face buttons, system,
@@ -235,7 +242,7 @@ static const me_input_id k_default_order[ME_IN_COUNT] = {
 void me_layout_unknown(me_input_layout *out) {
     memset(out, 0, sizeof(*out));
     for (int i = 0; i < ME_IN_COUNT; i++)
-        add_row(out, k_default_order[i], me_input_label(k_default_order[i]));
+        add_row(out, k_default_order[i], me_input_label(k_default_order[i]), 0);
 }
 
 int me_layout_for_game(const char *library_name, const char *rom_path, me_input_layout *out) {
@@ -249,7 +256,7 @@ int me_layout_for_game(const char *library_name, const char *rom_path, me_input_
         memset(out, 0, sizeof(*out));
         out->curated = 1;
         snprintf(out->name, sizeof(out->name), "%s", c->name);
-        for (const row *r = c->rows; r->label; r++) add_row(out, r->id, r->label);
+        for (const row *r = c->rows; r->label; r++) add_row(out, r->id, r->label, 0);
         return 1;
     }
     return 0;
@@ -275,49 +282,75 @@ static const me_input_id k_from_retropad[16] = {
     [RETRO_DEVICE_ID_JOYPAD_R3]     = ME_IN_RSTICK,
 };
 
-static int is_turbo(const char *desc) {
+/* Never passed to a core, not even as an advanced input: turbo/autofire,
+   and macros that press several buttons at once ("A+B"). Every input the
+   game sees must be one real button press. */
+static int is_banned(const char *desc) {
     for (const char *p = desc; *p; p++) {
         if (_strnicmp(p, "turbo", 5) == 0) return 1;
+        if (*p == '+' && p > desc && p[-1] != ' ' && p[1] && p[1] != ' ') return 1;
     }
     return 0;
 }
 
-void me_layout_from_descriptors(const char *core_name,
-                                const struct retro_input_descriptor *d,
-                                me_input_layout *out) {
-    /* Turbo first, so a button described twice can't sneak back in. */
-    unsigned turbo = 0;
-    for (const struct retro_input_descriptor *t = d; t && t->description; t++) {
-        if (t->port == 0 && (t->device & RETRO_DEVICE_MASK) == RETRO_DEVICE_JOYPAD &&
-            t->id < 16 && is_turbo(t->description))
-            turbo |= 1u << k_from_retropad[t->id];
-    }
+static int is_pad_button(const struct retro_input_descriptor *d) {
+    return d->port == 0 && (d->device & RETRO_DEVICE_MASK) == RETRO_DEVICE_JOYPAD && d->id < 16;
+}
 
-    /* D-pad on top in the usual order, then the rest as the core lists them. */
-    memset(out, 0, sizeof(*out));
+/* Inputs `d` describes as banned. First, so a button described twice
+   can't sneak back in under its other description. */
+static unsigned banned_ids(const struct retro_input_descriptor *d) {
+    unsigned banned = 0;
+    for (; d && d->description; d++)
+        if (is_pad_button(d) && is_banned(d->description)) banned |= 1u << k_from_retropad[d->id];
+    return banned;
+}
+
+/* Rows for what `d` describes on port 0, skipping banned inputs and ones
+   already listed: d-pad first in the usual order, then the rest as the
+   core lists them. */
+static void add_described(me_input_layout *l, const struct retro_input_descriptor *d,
+                          unsigned banned, int advanced) {
     for (me_input_id dir = ME_IN_DPAD_UP; dir <= ME_IN_DPAD_RIGHT; dir++) {
         for (const struct retro_input_descriptor *t = d; t && t->description; t++) {
-            if (t->port == 0 && (t->device & RETRO_DEVICE_MASK) == RETRO_DEVICE_JOYPAD &&
-                t->id < 16 && k_from_retropad[t->id] == dir && !(turbo & (1u << dir)))
-                add_row(out, dir, t->description);
+            if (is_pad_button(t) && k_from_retropad[t->id] == dir && !(banned & (1u << dir)))
+                add_row(l, dir, t->description, advanced);
         }
     }
     for (; d && d->description; d++) {
         if (d->port != 0) continue;
         unsigned device = d->device & RETRO_DEVICE_MASK;
-        if (device == RETRO_DEVICE_JOYPAD && d->id < 16) {
+        if (is_pad_button(d)) {
             me_input_id id = k_from_retropad[d->id];
-            if (!(turbo & (1u << id))) add_row(out, id, d->description);
+            if (!(banned & (1u << id))) add_row(l, id, d->description, advanced);
         } else if (device == RETRO_DEVICE_ANALOG && d->index <= RETRO_DEVICE_INDEX_ANALOG_RIGHT) {
             me_input_id first = d->index == RETRO_DEVICE_INDEX_ANALOG_LEFT ? ME_IN_LSTICK_UP
                                                                           : ME_IN_RSTICK_UP;
             for (int k = 0; k < 4; k++)
-                add_row(out, (me_input_id)(first + k), me_input_label((me_input_id)(first + k)));
+                add_row(l, (me_input_id)(first + k), me_input_label((me_input_id)(first + k)), advanced);
         }
     }
+}
+
+void me_layout_from_descriptors(const char *core_name,
+                                const struct retro_input_descriptor *d,
+                                me_input_layout *out) {
+    unsigned banned = banned_ids(d);
+    memset(out, 0, sizeof(*out));
+    add_described(out, d, banned, 0);
     if (out->n == 0) me_layout_unknown(out);
     else snprintf(out->name, sizeof(out->name), "%s", core_name ? core_name : "");
-    /* Only turbo is held back: a core may read inputs it never described
-       (analog sticks especially), and those must keep working. */
-    out->live = ME_IN_ALL & ~turbo;
+    /* Only banned inputs are held back: a core may read inputs it never
+       described (analog sticks especially), and those must keep working. */
+    out->live = ME_IN_ALL & ~banned;
+}
+
+void me_layout_set_advanced(me_input_layout *l, const struct retro_input_descriptor *d) {
+    /* Drop the previous advanced rows; cores may re-describe their inputs. */
+    int n = 0;
+    for (int i = 0; i < l->n; i++)
+        if (!(l->advanced & (1u << l->ids[i]))) l->ids[n++] = l->ids[i];
+    l->n = n;
+    l->advanced = 0;
+    add_described(l, d, banned_ids(d), 1);
 }
