@@ -324,6 +324,20 @@ static const char *me_var_default_for(const char *key) {
     return NULL;
 }
 
+/* The running game's controller (consoles.h). Inputs outside `live` never
+   reach the core: many cores put turbo buttons, macros and disk/coin
+   actions on RetroPad buttons their console doesn't have, and a leftover
+   binding must not trigger them. Chosen from the core's library_name and
+   the ROM in session_open; cores without a curated layout refine it through
+   SET_INPUT_DESCRIPTORS. */
+static me_input_layout g_in_layout;
+static char            g_core_name[64];   /* library_name, for the dialogs */
+
+static void set_input_layout(const me_input_layout *l) {
+    g_in_layout = *l;
+    me_layout_publish(l);
+}
+
 static bool me_environment_cb(unsigned cmd, void *data) {
     /* The "experimental" bit is set on some env IDs; mask it for matching. */
     unsigned base = cmd & ~RETRO_ENVIRONMENT_EXPERIMENTAL;
@@ -429,6 +443,14 @@ static bool me_environment_cb(unsigned cmd, void *data) {
             if (g_env_trace) me_log(ME_LOG_ENV, "[env] GET_PREFERRED_HW_RENDER -> OPENGL\n");
             return true;
         }
+        case RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS:    /* 11 */
+            /* Consoles in the table keep their curated controller. */
+            if (!g_in_layout.curated && data) {
+                me_input_layout l;
+                me_layout_from_descriptors(g_core_name, (const struct retro_input_descriptor *)data, &l);
+                set_input_layout(&l);
+            }
+            return true;
         case RETRO_ENVIRONMENT_SET_CONTROLLER_INFO:
             if (g_env_trace) me_log(ME_LOG_ENV, "[env] SET_CONTROLLER_INFO -> true\n");
             return true;  /* 35 */
@@ -643,26 +665,6 @@ enum { AN_LX = 0, AN_LY, AN_RX, AN_RY };
 static const me_control_map *g_active_map[ME_MAX_PLAYERS];
 static me_settings g_settings;
 
-/* Some cores (NES, GB/GBC, PCE, SMS, ...) only have 2 face buttons. Several of
-   them repurpose RetroPad X/Y as turbo-A/turbo-B, which we never want. Set
-   based on the core's library_name after retro_get_system_info. */
-static int g_suppress_xy = 0;
-
-static int core_lacks_xy(const char *library_name) {
-    if (!library_name) return 0;
-    static const char *const names[] = {
-        "Mesen", "Nestopia", "FCEUmm", "QuickNES",          /* NES */
-        "Gambatte", "SameBoy", "TGB Dual", "VBA-M",         /* GB/GBC */
-        "Mednafen PCE", "Mednafen SuperGrafx", "Beetle PCE",/* PC Engine */
-        /* Genesis Plus GX / PicoDrive intentionally omitted: they also run
-           Mega Drive, which has 6-button pads using X/Y. */
-    };
-    for (size_t i = 0; i < sizeof(names)/sizeof(names[0]); i++) {
-        if (strstr(library_name, names[i])) return 1;
-    }
-    return 0;
-}
-
 static int key_down_kb(const me_kb_binding *b) {
     if (b->vk == 0) return 0;
     if (b->ctrl  && !(GetAsyncKeyState(VK_CONTROL) & 0x8000)) return 0;
@@ -718,13 +720,18 @@ static int input_down(int player, me_input_id id) {
     return 0;
 }
 
+/* input_down for inputs the running console has; 0 for the rest. */
+static int live_down(int player, me_input_id id) {
+    return (g_in_layout.live & (1u << id)) ? input_down(player, id) : 0;
+}
+
 /* Caller holds the settings lock. */
 static void poll_player(int p) {
     int16_t *pad = g_pad[p];
-    int up    = input_down(p, ME_IN_DPAD_UP);
-    int down  = input_down(p, ME_IN_DPAD_DOWN);
-    int lf    = input_down(p, ME_IN_DPAD_LEFT);
-    int right = input_down(p, ME_IN_DPAD_RIGHT);
+    int up    = live_down(p, ME_IN_DPAD_UP);
+    int down  = live_down(p, ME_IN_DPAD_DOWN);
+    int lf    = live_down(p, ME_IN_DPAD_LEFT);
+    int right = live_down(p, ME_IN_DPAD_RIGHT);
     /* SOCD: opposing directions cancel to neutral. */
     if (up && down)  { up = down = 0; }
     if (lf && right) { lf = right = 0; }
@@ -732,30 +739,37 @@ static void poll_player(int p) {
     pad[RETRO_DEVICE_ID_JOYPAD_DOWN]   = down;
     pad[RETRO_DEVICE_ID_JOYPAD_LEFT]   = lf;
     pad[RETRO_DEVICE_ID_JOYPAD_RIGHT]  = right;
-    pad[RETRO_DEVICE_ID_JOYPAD_B]      = input_down(p, ME_IN_B);
-    pad[RETRO_DEVICE_ID_JOYPAD_A]      = input_down(p, ME_IN_A);
-    pad[RETRO_DEVICE_ID_JOYPAD_Y]      = g_suppress_xy ? 0 : input_down(p, ME_IN_Y);
-    pad[RETRO_DEVICE_ID_JOYPAD_X]      = g_suppress_xy ? 0 : input_down(p, ME_IN_X);
-    pad[RETRO_DEVICE_ID_JOYPAD_START]  = input_down(p, ME_IN_START);
-    pad[RETRO_DEVICE_ID_JOYPAD_SELECT] = input_down(p, ME_IN_BACK);
-    pad[RETRO_DEVICE_ID_JOYPAD_L]      = input_down(p, ME_IN_LB);
-    pad[RETRO_DEVICE_ID_JOYPAD_R]      = input_down(p, ME_IN_RB);
-    pad[RETRO_DEVICE_ID_JOYPAD_L2]     = input_down(p, ME_IN_LT);
-    pad[RETRO_DEVICE_ID_JOYPAD_R2]     = input_down(p, ME_IN_RT);
-    pad[RETRO_DEVICE_ID_JOYPAD_L3]     = input_down(p, ME_IN_LSTICK);
-    pad[RETRO_DEVICE_ID_JOYPAD_R3]     = input_down(p, ME_IN_RSTICK);
+    pad[RETRO_DEVICE_ID_JOYPAD_B]      = live_down(p, ME_IN_B);
+    pad[RETRO_DEVICE_ID_JOYPAD_A]      = live_down(p, ME_IN_A);
+    pad[RETRO_DEVICE_ID_JOYPAD_Y]      = live_down(p, ME_IN_Y);
+    pad[RETRO_DEVICE_ID_JOYPAD_X]      = live_down(p, ME_IN_X);
+    pad[RETRO_DEVICE_ID_JOYPAD_START]  = live_down(p, ME_IN_START);
+    pad[RETRO_DEVICE_ID_JOYPAD_SELECT] = live_down(p, ME_IN_BACK);
+    pad[RETRO_DEVICE_ID_JOYPAD_L]      = live_down(p, ME_IN_LB);
+    pad[RETRO_DEVICE_ID_JOYPAD_R]      = live_down(p, ME_IN_RB);
+    pad[RETRO_DEVICE_ID_JOYPAD_L2]     = live_down(p, ME_IN_LT);
+    pad[RETRO_DEVICE_ID_JOYPAD_R2]     = live_down(p, ME_IN_RT);
+    pad[RETRO_DEVICE_ID_JOYPAD_L3]     = live_down(p, ME_IN_LSTICK);
+    pad[RETRO_DEVICE_ID_JOYPAD_R3]     = live_down(p, ME_IN_RSTICK);
 
     /* Stick directions are also surfaced through RETRO_DEVICE_ANALOG so cores
        like mupen64plus_next that read the analog stick see motion. Opposing
        directions cancel; non-opposing produce full deflection in that axis.
-       Real XInput axis values take priority over keyboard digital mappings. */
+       Real XInput axis values take priority over keyboard digital mappings.
+       A stick the console doesn't have stays centered. */
     int16_t *an = g_analog[p];
     int slot = g_settings.xi_index[p];
     int use_pad = g_settings.input_source[p] != ME_SRC_KEYBOARD;
-    int16_t xi_lx = use_pad ? me_xinput_axis(slot, ME_XI_AXIS_LX) : 0;
-    int16_t xi_ly = use_pad ? me_xinput_axis(slot, ME_XI_AXIS_LY) : 0;
-    int16_t xi_rx = use_pad ? me_xinput_axis(slot, ME_XI_AXIS_RX) : 0;
-    int16_t xi_ry = use_pad ? me_xinput_axis(slot, ME_XI_AXIS_RY) : 0;
+    const unsigned lstick = (1u << ME_IN_LSTICK_UP) | (1u << ME_IN_LSTICK_DOWN) |
+                            (1u << ME_IN_LSTICK_LEFT) | (1u << ME_IN_LSTICK_RIGHT);
+    const unsigned rstick = (1u << ME_IN_RSTICK_UP) | (1u << ME_IN_RSTICK_DOWN) |
+                            (1u << ME_IN_RSTICK_LEFT) | (1u << ME_IN_RSTICK_RIGHT);
+    int use_l = use_pad && (g_in_layout.live & lstick);
+    int use_r = use_pad && (g_in_layout.live & rstick);
+    int16_t xi_lx = use_l ? me_xinput_axis(slot, ME_XI_AXIS_LX) : 0;
+    int16_t xi_ly = use_l ? me_xinput_axis(slot, ME_XI_AXIS_LY) : 0;
+    int16_t xi_rx = use_r ? me_xinput_axis(slot, ME_XI_AXIS_RX) : 0;
+    int16_t xi_ry = use_r ? me_xinput_axis(slot, ME_XI_AXIS_RY) : 0;
     if (xi_lx != 0 || xi_ly != 0 || xi_rx != 0 || xi_ry != 0) {
         /* Real analog input present: use controller axes directly. */
         /* XInput X: right=+32767, matches libretro. No inversion needed.
@@ -768,10 +782,10 @@ static void poll_player(int p) {
         an[AN_RY] = -XI_CLAMP(xi_ry);
         #undef XI_CLAMP
     } else {
-        int lu = input_down(p, ME_IN_LSTICK_UP),    ld = input_down(p, ME_IN_LSTICK_DOWN);
-        int ll = input_down(p, ME_IN_LSTICK_LEFT),  lr = input_down(p, ME_IN_LSTICK_RIGHT);
-        int ru = input_down(p, ME_IN_RSTICK_UP),    rd = input_down(p, ME_IN_RSTICK_DOWN);
-        int rl = input_down(p, ME_IN_RSTICK_LEFT),  rr = input_down(p, ME_IN_RSTICK_RIGHT);
+        int lu = live_down(p, ME_IN_LSTICK_UP),    ld = live_down(p, ME_IN_LSTICK_DOWN);
+        int ll = live_down(p, ME_IN_LSTICK_LEFT),  lr = live_down(p, ME_IN_LSTICK_RIGHT);
+        int ru = live_down(p, ME_IN_RSTICK_UP),    rd = live_down(p, ME_IN_RSTICK_DOWN);
+        int rl = live_down(p, ME_IN_RSTICK_LEFT),  rr = live_down(p, ME_IN_RSTICK_RIGHT);
         if (lu && ld) lu = ld = 0;
         if (ll && lr) ll = lr = 0;
         if (ru && rd) ru = rd = 0;
@@ -1226,7 +1240,8 @@ static void session_reset_globals(void) {
     g_resamp_n_l  = g_resamp_n_r  = 0;
     g_resamp_primed = 0;
     g_resamp_ratio_bias = g_resamp_p_bias = 0.0;
-    g_suppress_xy = 0;
+    me_layout_unknown(&g_in_layout);
+    g_core_name[0] = '\0';
     memset(g_active_map, 0, sizeof(g_active_map));
     memset(g_pad, 0, sizeof(g_pad));
     memset(g_analog, 0, sizeof(g_analog));
@@ -1384,9 +1399,14 @@ static int session_open(me_session *s, const char *core_path_in, const char *rom
            info.valid_extensions ? info.valid_extensions : "?",
            (int)info.need_fullpath);
 
-    g_suppress_xy = core_lacks_xy(info.library_name);
-    if (g_suppress_xy) {
-        printf("[input] suppressing RetroPad X/Y for this core (no turbo)\n");
+    snprintf(g_core_name, sizeof(g_core_name), "%s", info.library_name ? info.library_name : "");
+    {
+        me_input_layout l;
+        if (me_layout_for_game(g_core_name, rom_path, &l))
+            printf("[input] %s controller (%d inputs)\n", l.name, l.n);
+        else
+            me_layout_unknown(&l);   /* the core's input descriptors may narrow it */
+        set_input_layout(&l);
     }
 
     fprintf(stderr, "[load] set_environment\n"); fflush(stderr);

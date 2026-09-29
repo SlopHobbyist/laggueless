@@ -17,6 +17,7 @@ static volatile LONG    g_quit;
 
 static CRITICAL_SECTION g_status_cs;
 static me_app_status    g_status;
+static me_input_layout  g_layout;
 
 void me_app_init(me_settings *live, const char *settings_path) {
     g_live = live;
@@ -24,6 +25,7 @@ void me_app_init(me_settings *live, const char *settings_path) {
     InitializeCriticalSection(&g_settings_cs);
     InitializeCriticalSection(&g_cmd_cs);
     InitializeCriticalSection(&g_status_cs);
+    me_layout_unknown(&g_layout);
     g_wake = CreateEventA(NULL, FALSE, FALSE, NULL);
 }
 
@@ -76,5 +78,17 @@ void me_status_set(const me_app_status *s) {
 void me_status_get(me_app_status *out) {
     EnterCriticalSection(&g_status_cs);
     *out = g_status;
+    LeaveCriticalSection(&g_status_cs);
+}
+
+void me_layout_publish(const me_input_layout *l) {
+    EnterCriticalSection(&g_status_cs);
+    g_layout = *l;
+    LeaveCriticalSection(&g_status_cs);
+}
+
+void me_layout_get(me_input_layout *out) {
+    EnterCriticalSection(&g_status_cs);
+    *out = g_layout;
     LeaveCriticalSection(&g_status_cs);
 }

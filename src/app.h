@@ -11,6 +11,7 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include "consoles.h"
 #include "settings.h"
 
 typedef enum {
@@ -64,5 +65,11 @@ typedef struct {
 
 void me_status_set(const me_app_status *s);
 void me_status_get(me_app_status *out);
+
+/* The running game's controller (consoles.h), for the binding dialogs.
+   Written by the emulation thread when a game loads and whenever the core
+   re-describes its inputs; read by the UI thread. */
+void me_layout_publish(const me_input_layout *l);
+void me_layout_get(me_input_layout *out);
 
 #endif

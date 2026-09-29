@@ -1,6 +1,9 @@
 /* Controls > Player 1 / Player 2 / Hotkeys dialogs.
 
-   Each dialog lists every control with its keyboard and controller bindings.
+   Each dialog lists the controls with their keyboard and controller bindings.
+   The player dialogs list only the buttons the running game's controller has,
+   under the console's own names (consoles.h); with no game loaded they list
+   every input. Hidden inputs keep their bindings for other cores.
    Clicking a binding captures the next key / button; right-clicking clears it.
    Capture polls GetAsyncKeyState and XInput on a timer instead of reading
    WM_KEYDOWN, because the dialog manager eats Tab/Enter/Esc/arrows.
@@ -34,18 +37,6 @@ enum {
 
 enum { COL_NAME = 0, COL_KEYBOARD = 1, COL_CONTROLLER = 2 };
 
-/* Display order for the player dialogs: d-pad, face buttons, system,
-   shoulders/triggers, stick clicks, stick directions. */
-static const me_input_id k_player_rows[ME_IN_COUNT] = {
-    ME_IN_DPAD_UP, ME_IN_DPAD_DOWN, ME_IN_DPAD_LEFT, ME_IN_DPAD_RIGHT,
-    ME_IN_A, ME_IN_B, ME_IN_X, ME_IN_Y,
-    ME_IN_START, ME_IN_BACK,
-    ME_IN_LB, ME_IN_RB, ME_IN_LT, ME_IN_RT,
-    ME_IN_LSTICK, ME_IN_RSTICK,
-    ME_IN_LSTICK_UP, ME_IN_LSTICK_DOWN, ME_IN_LSTICK_LEFT, ME_IN_LSTICK_RIGHT,
-    ME_IN_RSTICK_UP, ME_IN_RSTICK_DOWN, ME_IN_RSTICK_LEFT, ME_IN_RSTICK_RIGHT,
-};
-
 typedef struct {
     int is_hotkeys;
     int player;              /* player dialogs: 0 or 1 */
@@ -53,6 +44,7 @@ typedef struct {
     char core_name[64];
     int rows;
     int ids[ME_IN_COUNT];    /* row → me_input_id / me_hotkey_id */
+    me_input_layout layout;  /* player dialogs: which inputs, and their names */
 
     /* Working copy, indexed by me_input_id / me_hotkey_id. */
     me_kb_bindings kb[ME_IN_COUNT];
@@ -128,6 +120,11 @@ static void xi_cell_text(const me_xi_bindings *b, char *out, size_t sz) {
         if (n < 0 || (size_t)n >= sz - len) break;
         len += (size_t)n;
     }
+}
+
+static const char *row_label(const bind_dlg *d, int row) {
+    return d->is_hotkeys ? me_hotkey_label((me_hotkey_id)d->ids[row])
+                         : d->layout.labels[d->ids[row]];
 }
 
 static void set_cell(HWND list, int row, int col, const char *text) {
@@ -213,8 +210,7 @@ static void begin_capture(HWND dlg, bind_dlg *d, int row, int col) {
     d->cap_xi_held = me_xinput_read(d->slot, NULL);
 
     char label[160];
-    const char *name = d->is_hotkeys ? me_hotkey_label((me_hotkey_id)d->ids[row])
-                                     : me_input_label((me_input_id)d->ids[row]);
+    const char *name = row_label(d, row);
     if (col == COL_KEYBOARD) {
         set_cell(d->list, row, col, "Press a key...");
         snprintf(label, sizeof(label), "Press a key for %s. Click the cell again to cancel.", name);
@@ -371,15 +367,19 @@ static void save(bind_dlg *d) {
 
 /* ---- dialog procedure ----------------------------------------------------- */
 static void create_controls(HWND dlg, bind_dlg *d) {
-    char scope[200];
+    char scope[240], shown[120] = "";
+    if (!d->is_hotkeys && d->layout.curated)
+        snprintf(shown, sizeof(shown), " Showing the %s controller.", d->layout.name);
+    else if (!d->is_hotkeys && d->layout.name[0])
+        snprintf(shown, sizeof(shown), " Showing the buttons %s uses.", d->layout.name);
     if (d->is_hotkeys)
         snprintf(scope, sizeof(scope), "Hotkeys work in every core.");
     else if (d->core_index >= 0)
-        snprintf(scope, sizeof(scope), "Editing Player %d controls for %s only (this core has its own map).",
-                 d->player + 1, d->core_name);
+        snprintf(scope, sizeof(scope), "Editing Player %d controls for %s only (this core has its own map).%s",
+                 d->player + 1, d->core_name, shown);
     else
-        snprintf(scope, sizeof(scope), "Editing Player %d controls for all cores.", d->player + 1);
-    add_control(dlg, "STATIC", scope, SS_LEFT, 7, 7, 306, 10, IDC_SCOPE);
+        snprintf(scope, sizeof(scope), "Editing Player %d controls for all cores.%s", d->player + 1, shown);
+    add_control(dlg, "STATIC", scope, SS_LEFT, 7, 3, 306, 17, IDC_SCOPE);
 
     add_control(dlg, "STATIC", "Input:", SS_LEFT, 7, 23, 40, 10, 0);
     add_control(dlg, "BUTTON", "Keyboard and controller",
@@ -409,9 +409,7 @@ static void create_controls(HWND dlg, bind_dlg *d) {
         SendMessageA(d->list, LVM_INSERTCOLUMNA, (WPARAM)c, (LPARAM)&col);
     }
     for (int r = 0; r < d->rows; r++) {
-        const char *name = d->is_hotkeys ? me_hotkey_label((me_hotkey_id)d->ids[r])
-                                         : me_input_label((me_input_id)d->ids[r]);
-        LVITEMA it = { .mask = LVIF_TEXT, .iItem = r, .pszText = (char *)name };
+        LVITEMA it = { .mask = LVIF_TEXT, .iItem = r, .pszText = (char *)row_label(d, r) };
         SendMessageA(d->list, LVM_INSERTITEMA, 0, (LPARAM)&it);
     }
 
@@ -523,13 +521,17 @@ void me_ui_player_dialog(HWND owner, int player) {
     static bind_dlg d;  /* large; one dialog at a time on the UI thread */
     memset(&d, 0, sizeof(d));
     d.player = player;
-    d.rows = ME_IN_COUNT;
-    for (int r = 0; r < ME_IN_COUNT; r++) d.ids[r] = (int)k_player_rows[r];
 
     /* Edit the running core's own map if it has one, else the universal map. */
     me_settings *live = me_app_settings();
     me_app_status st;
     me_status_get(&st);
+
+    /* Rows: the loaded (or powered-off) game's controller, else every input. */
+    if (st.core_path[0]) me_layout_get(&d.layout);
+    else                 me_layout_unknown(&d.layout);
+    d.rows = d.layout.n;
+    for (int r = 0; r < d.rows; r++) d.ids[r] = d.layout.ids[r];
     d.core_index = -1;
     if (st.core_path[0]) {
         int ci = me_settings_find_core_index(live, st.core_path);
