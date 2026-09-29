@@ -368,6 +368,12 @@ static bool me_environment_cb(unsigned cmd, void *data) {
             fprintf(stderr, "[env] SET_PIXEL_FORMAT %d rejected\n", (int)pf);
             return false;
         }
+        case RETRO_ENVIRONMENT_GET_CAN_DUPE:
+            /* video_refresh treats data==NULL as "keep the previous frame"
+               (g_back is left untouched), so duping is free. Gambatte
+               refuses to load without this. */
+            if (data) *(bool *)data = true;
+            return true;
         case RETRO_ENVIRONMENT_GET_LOG_INTERFACE: {
             if (data) ((struct retro_log_callback *)data)->log = me_log_cb;
             return true;
