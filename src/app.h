@@ -20,6 +20,8 @@ typedef enum {
     ME_CMD_SOFT_RESET,  /* retro_reset */
     ME_CMD_POWER,       /* power off the running game, or back on */
     ME_CMD_FRAME_GEN,   /* arg: 1 = on, 0 = off */
+    ME_CMD_ADAPTER,     /* the running console's adapter changed in the live
+                           settings; plug it into the core */
 } me_cmd_type;
 
 typedef struct {
@@ -62,6 +64,14 @@ typedef struct {
     int  frame_gen_supported;  /* build includes LSFG */
     char core_path[MAX_PATH];  /* current (or powered-off) game */
     char rom_path[MAX_PATH];
+    /* Players the running game gets (ME_MAX_PLAYERS with no game), its
+       console (rom_cores.h index, -1 if unknown) and, per entry in that
+       console's adapter list, whether the core can use it (bit) and which
+       one is plugged in (-1 = none). */
+    int      players;
+    int      console;
+    unsigned adapters_usable;
+    int      adapter;
 } me_app_status;
 
 void me_status_set(const me_app_status *s);

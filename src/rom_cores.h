@@ -11,12 +11,29 @@
    File > Open, Open Recent, or dropped on the window). Core DLLs live in the
    cores/ folder next to the exe. */
 
+/* A multiplayer adapter (Four Score, Multitap...): with it plugged in, a
+   game gets ME_MAX_PLAYERS players instead of the console's own ports.
+   Libretro cores number every player as its own port either way. */
+typedef struct {
+    const char *id;       /* settings.yaml value ("four_score"); NULL ends a list */
+    const char *name;     /* Controls menu ("Four Score") */
+    unsigned    ports;    /* bit per libretro port the adapter's device goes on */
+    const char *devices;  /* '|'-separated names cores give that device in
+                             SET_CONTROLLER_INFO, matched as case-insensitive
+                             substrings. The first of the core's devices that
+                             matches is used; a core with none can't use the
+                             adapter. NULL: the cores need no device (the
+                             adapter is always there, or set up in core options). */
+} me_adapter;
+
 typedef struct {
     const char *id;     /* settings.yaml key ("nes") */
     const char *name;   /* shown in Cores > Set Cores ("NES / Famicom") */
     const char *exts;   /* '|'-separated, no dots */
     const char *cores;  /* '|'-separated core names, our pick first; the DLL is
                            <name>_libretro.dll */
+    int players;        /* controller ports on the console */
+    const me_adapter *adapters;  /* NULL, or a list ended by a NULL id */
 } me_console;
 
 int               me_console_count(void);
@@ -24,6 +41,9 @@ const me_console *me_console_at(int i);
 
 /* Index of the console that claims this ROM's extension, or -1. */
 int me_console_for_rom(const char *rom_path);
+
+/* The console's adapter with this id, or NULL. */
+const me_adapter *me_console_adapter(const me_console *c, const char *id);
 
 /* The console's `i`th candidate core as a DLL filename. Returns 0 past the
    last one. */

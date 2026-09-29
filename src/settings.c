@@ -382,7 +382,7 @@ void me_settings_defaults(me_settings *out) {
 #define XI1(slot, mask)  do { (slot).b[0].buttons = (mask); (slot).count = 1; } while(0)
 
     /* Universal defaults match what main.c used to hard-code in step 5.
-       Player 2 gets the controller layout only; the keyboard is player 1's. */
+       Players 2-4 get the controller layout only; the keyboard is player 1's. */
     SET1(out->universal[0].keys[ME_IN_DPAD_UP],    "Up");
     SET1(out->universal[0].keys[ME_IN_DPAD_DOWN],  "Down");
     SET1(out->universal[0].keys[ME_IN_DPAD_LEFT],  "Left");
@@ -521,7 +521,7 @@ static void parse_player(yaml_document_t *d, yaml_node_t *pn, me_control_map *ou
     }
 }
 
-static const char *const g_player_keys[ME_MAX_PLAYERS] = { "player1", "player2" };
+static const char *const g_player_keys[ME_MAX_PLAYERS] = { "player1", "player2", "player3", "player4" };
 
 static void parse_players(yaml_document_t *d, yaml_node_t *parent, me_control_map *maps,
                           unsigned *overrides) {
@@ -680,6 +680,18 @@ static void load_document(yaml_document_t *doc, yaml_node_t *root, me_settings *
             const char *console = scalar_str(doc_get(doc, p->key));
             const char *dll = scalar_str(doc_get(doc, p->value));
             if (console && *console) me_settings_set_console_core(out, console, dll);
+        }
+    }
+
+    /* console -> multiplayer adapter */
+    yaml_node_t *ca = map_get(doc, root, "console_adapters");
+    if (ca && ca->type == YAML_MAPPING_NODE) {
+        out->console_adapters_n = 0;
+        for (yaml_node_pair_t *p = ca->data.mapping.pairs.start;
+             p < ca->data.mapping.pairs.top; p++) {
+            const char *console = scalar_str(doc_get(doc, p->key));
+            const char *adapter = scalar_str(doc_get(doc, p->value));
+            if (console && *console) me_settings_set_console_adapter(out, console, adapter);
         }
     }
 
@@ -900,6 +912,17 @@ int me_settings_save(const char *path, const me_settings *s) {
         fputc('\n', f);
     }
 
+    fprintf(f, "\nconsole_adapters:");
+    if (s->console_adapters_n == 0) fprintf(f, " {}");
+    fputc('\n', f);
+    for (int i = 0; i < s->console_adapters_n; i++) {
+        fprintf(f, "  ");
+        write_quoted(f, s->console_adapters[i].console);
+        fprintf(f, ": ");
+        write_quoted(f, s->console_adapters[i].adapter);
+        fputc('\n', f);
+    }
+
     fprintf(f, "\nrecent:");
     if (s->recent_n == 0) fprintf(f, " []");
     fputc('\n', f);
@@ -1017,4 +1040,32 @@ void me_settings_set_console_core(me_settings *s, const char *console, const cha
         snprintf(s->console_cores[i].console, sizeof(s->console_cores[i].console), "%s", console);
     }
     snprintf(s->console_cores[i].dll, sizeof(s->console_cores[i].dll), "%s", dll);
+}
+
+static int console_adapter_index(const me_settings *s, const char *console) {
+    for (int i = 0; i < s->console_adapters_n; i++)
+        if (iequals(s->console_adapters[i].console, console)) return i;
+    return -1;
+}
+
+const char *me_settings_console_adapter(const me_settings *s, const char *console) {
+    int i = console_adapter_index(s, console);
+    return i >= 0 ? s->console_adapters[i].adapter : NULL;
+}
+
+void me_settings_set_console_adapter(me_settings *s, const char *console, const char *adapter) {
+    int i = console_adapter_index(s, console);
+    if (!adapter || !*adapter) {
+        if (i < 0) return;
+        memmove(&s->console_adapters[i], &s->console_adapters[i + 1],
+                (size_t)(s->console_adapters_n - i - 1) * sizeof(s->console_adapters[0]));
+        s->console_adapters_n--;
+        return;
+    }
+    if (i < 0) {
+        if (s->console_adapters_n >= ME_CONSOLE_CORES_MAX) return;
+        i = s->console_adapters_n++;
+        snprintf(s->console_adapters[i].console, sizeof(s->console_adapters[i].console), "%s", console);
+    }
+    snprintf(s->console_adapters[i].adapter, sizeof(s->console_adapters[i].adapter), "%s", adapter);
 }

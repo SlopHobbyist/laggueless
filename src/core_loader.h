@@ -28,6 +28,8 @@ typedef struct me_core {
     bool (*retro_unserialize)(const void *data, size_t size);
     void *(*retro_get_memory_data)(unsigned id);
     size_t (*retro_get_memory_size)(unsigned id);
+    /* Optional: NULL when the core doesn't export it. */
+    void (*retro_set_controller_port_device)(unsigned port, unsigned device);
 } me_core;
 
 me_core *me_core_load(const char *dll_path);

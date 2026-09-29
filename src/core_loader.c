@@ -48,6 +48,9 @@ me_core *me_core_load(const char *dll_path) {
     ME_RESOLVE(c, retro_get_memory_data);
     ME_RESOLVE(c, retro_get_memory_size);
 
+    void *p = (void *)(uintptr_t)GetProcAddress(dll, "retro_set_controller_port_device");
+    memcpy(&c->retro_set_controller_port_device, &p, sizeof(p));
+
     return c;
 }
 

@@ -68,8 +68,10 @@ typedef struct {
     me_xi_bindings xi[ME_IN_COUNT];
 } me_control_map;
 
-/* libretro ports we feed input to (players 3/4 aren't supported). */
-#define ME_MAX_PLAYERS 2
+/* libretro ports we feed input to. How many a game gets depends on its
+   console (rom_cores.h); players 3-4 on 2-player consoles need the
+   console's multiplayer adapter switched on. */
+#define ME_MAX_PLAYERS 4
 
 /* Which devices drive a player (or the hotkeys). */
 typedef enum {
@@ -181,6 +183,15 @@ typedef struct {
     } console_cores[ME_CONSOLE_CORES_MAX];
     int console_cores_n;
 
+    /* Controls > multiplayer adapter (Four Score, Multitap, ...): the one
+       plugged in for a console, by adapter id (rom_cores.h). Consoles not
+       listed have none, so games see the console's own ports only. */
+    struct me_console_adapter {
+        char console[32];
+        char adapter[32];
+    } console_adapters[ME_CONSOLE_CORES_MAX];
+    int console_adapters_n;
+
     /* Recently played ROMs, most recent first, no duplicates. */
     char recent[ME_RECENT_MAX][260];
     int  recent_n;
@@ -235,6 +246,12 @@ const char *me_settings_console_core(const me_settings *s, const char *console);
 
 /* Set the player's core for a console; NULL or "" goes back to our pick. */
 void me_settings_set_console_core(me_settings *s, const char *console, const char *dll);
+
+/* The adapter id plugged in for a console id, or NULL for none. */
+const char *me_settings_console_adapter(const me_settings *s, const char *console);
+
+/* Plug an adapter in for a console; NULL or "" unplugs it. */
+void me_settings_set_console_adapter(me_settings *s, const char *console, const char *adapter);
 
 /* Display names for the binding dialogs. */
 const char *me_input_label(me_input_id id);

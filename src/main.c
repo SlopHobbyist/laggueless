@@ -333,9 +333,104 @@ static const char *me_var_default_for(const char *key) {
 static me_input_layout g_in_layout;
 static char            g_core_name[64];   /* library_name, for the dialogs */
 
+static me_settings g_settings;
+
 static void set_input_layout(const me_input_layout *l) {
     g_in_layout = *l;
     me_layout_publish(l);
+}
+
+/* The controller types the core offers per port (SET_CONTROLLER_INFO),
+   where multiplayer adapters are found. */
+#define ME_CI_PORTS 8
+#define ME_CI_TYPES 32
+static struct { char desc[64]; unsigned id; } g_ci[ME_CI_PORTS][ME_CI_TYPES];
+static int g_ci_n[ME_CI_PORTS];
+
+static void store_controller_info(const struct retro_controller_info *ci) {
+    memset(g_ci_n, 0, sizeof(g_ci_n));
+    for (int p = 0; p < ME_CI_PORTS && ci[p].types; p++) {
+        for (unsigned t = 0; t < ci[p].num_types && g_ci_n[p] < ME_CI_TYPES; t++) {
+            const struct retro_controller_description *d = &ci[p].types[t];
+            if (!d->desc) continue;
+            int n = g_ci_n[p]++;
+            snprintf(g_ci[p][n].desc, sizeof(g_ci[p][n].desc), "%s", d->desc);
+            g_ci[p][n].id = d->id;
+            if (g_env_trace) me_log(ME_LOG_ENV, "[env]   port %d: %s (0x%x)\n", p, d->desc, d->id);
+        }
+    }
+}
+
+/* The running game's console (rom_cores.h index, -1 if unknown), how many
+   players it gets, and the multiplayer adapter plugged in. Emulation
+   thread only. */
+static int               g_console = -1;
+static int               g_players = ME_MAX_PLAYERS;
+static const me_adapter *g_adapter;
+static unsigned          g_adapter_ports;   /* ports holding the adapter's device */
+
+/* Does `desc` contain any of the '|'-separated `names` (any case)? */
+static int desc_matches(const char *desc, const char *names) {
+    while (*names) {
+        const char *end = strchr(names, '|');
+        size_t len = end ? (size_t)(end - names) : strlen(names);
+        for (const char *p = desc; len && strlen(p) >= len; p++)
+            if (_strnicmp(p, names, len) == 0) return 1;
+        if (!end) break;
+        names = end + 1;
+    }
+    return 0;
+}
+
+/* The core's device for adapter `a` on `port`, or 0 (RETRO_DEVICE_NONE)
+   if it has none. */
+static unsigned adapter_device(const me_adapter *a, int port) {
+    if (port >= ME_CI_PORTS) return 0;
+    for (int t = 0; t < g_ci_n[port]; t++)
+        if (desc_matches(g_ci[port][t].desc, a->devices)) return g_ci[port][t].id;
+    return 0;
+}
+
+static int adapter_usable(const me_core *core, const me_adapter *a) {
+    if (!a->devices) return 1;
+    if (!core || !core->retro_set_controller_port_device) return 0;
+    for (int p = 0; p < 32; p++)
+        if ((a->ports >> p & 1u) && !adapter_device(a, p)) return 0;
+    return 1;
+}
+
+/* Plug in (or unplug) the console's adapter as the settings say, and give
+   the game its players. Called once the game is loaded, and again when the
+   checkbox changes; most games look for an adapter only when they boot. */
+static void apply_adapter(me_core *core) {
+    const me_console *c = me_console_at(g_console);
+    const me_adapter *a = NULL;
+    if (c) {
+        me_settings_lock();
+        a = me_console_adapter(c, me_settings_console_adapter(&g_settings, c->id));
+        me_settings_unlock();
+        if (a && !adapter_usable(core, a)) {
+            printf("[input] this core can't use the %s; players 3-4 stay off\n", a->name);
+            a = NULL;
+        }
+    }
+    unsigned want = a && a->devices ? a->ports : 0;
+    if (a != g_adapter) {
+        for (int p = 0; p < 32; p++) {
+            unsigned bit = 1u << p;
+            /* Ports the adapter leaves go back to the core's default device. */
+            if (want & bit)
+                core->retro_set_controller_port_device((unsigned)p, adapter_device(a, p));
+            else if (g_adapter_ports & bit)
+                core->retro_set_controller_port_device((unsigned)p, RETRO_DEVICE_JOYPAD);
+        }
+        g_adapter_ports = want;
+        g_adapter = a;
+    }
+    g_players = !c || a ? ME_MAX_PLAYERS : c->players;
+    if (g_players > ME_MAX_PLAYERS) g_players = ME_MAX_PLAYERS;
+    printf("[input] %d player%s%s%s\n", g_players, g_players == 1 ? "" : "s",
+           a ? " with the " : "", a ? a->name : "");
 }
 
 static bool me_environment_cb(unsigned cmd, void *data) {
@@ -460,9 +555,10 @@ static bool me_environment_cb(unsigned cmd, void *data) {
                 set_input_layout(&l);
             }
             return true;
-        case RETRO_ENVIRONMENT_SET_CONTROLLER_INFO:
+        case RETRO_ENVIRONMENT_SET_CONTROLLER_INFO:   /* 35 */
             if (g_env_trace) me_log(ME_LOG_ENV, "[env] SET_CONTROLLER_INFO -> true\n");
-            return true;  /* 35 */
+            if (data) store_controller_info((const struct retro_controller_info *)data);
+            return true;
         case RETRO_ENVIRONMENT_SET_CONTENT_INFO_OVERRIDE:
             /* We don't actually apply the override (we use the original
                need_fullpath from get_system_info), so report false. Saying
@@ -672,7 +768,6 @@ static int16_t g_analog[ME_MAX_PLAYERS][4];
 enum { AN_LX = 0, AN_LY, AN_RX, AN_RY };
 
 static const me_control_map *g_active_map[ME_MAX_PLAYERS];
-static me_settings g_settings;
 
 static int key_down_kb(const me_kb_binding *b) {
     if (b->vk == 0) return 0;
@@ -822,18 +917,19 @@ static void me_input_poll_cb(void) {
         return;
     }
     me_settings_lock();
-    /* Each distinct pad slot once. */
-    for (int p = 0; p < ME_MAX_PLAYERS; p++) {
+    /* Each distinct pad slot once, for the players the game has. */
+    for (int p = 0; p < g_players; p++) {
         int slot = g_settings.xi_index[p], seen = 0;
         for (int q = 0; q < p; q++) seen |= (g_settings.xi_index[q] == slot);
         if (!seen && g_settings.input_source[p] != ME_SRC_KEYBOARD) me_xinput_poll(slot);
     }
-    for (int p = 0; p < ME_MAX_PLAYERS; p++) poll_player(p);
+    for (int p = 0; p < g_players; p++) poll_player(p);
     me_settings_unlock();
 }
 
 static int16_t me_input_state_cb(unsigned port, unsigned device, unsigned index, unsigned id) {
-    if (port >= ME_MAX_PLAYERS) return 0;
+    /* Ports the console doesn't have (without its adapter) stay empty. */
+    if (port >= (unsigned)g_players) return 0;
     if (device == RETRO_DEVICE_JOYPAD) {
         if (id >= sizeof(g_pad[0]) / sizeof(g_pad[0][0])) return 0;
         return g_pad[port][id];
@@ -1258,6 +1354,11 @@ static void session_reset_globals(void) {
     g_resamp_ratio_bias = g_resamp_p_bias = 0.0;
     me_layout_unknown(&g_in_layout);
     g_core_name[0] = '\0';
+    memset(g_ci_n, 0, sizeof(g_ci_n));
+    g_console = -1;
+    g_players = ME_MAX_PLAYERS;
+    g_adapter = NULL;
+    g_adapter_ports = 0;
     memset(g_active_map, 0, sizeof(g_active_map));
     memset(g_pad, 0, sizeof(g_pad));
     memset(g_analog, 0, sizeof(g_analog));
@@ -1428,6 +1529,7 @@ static int session_open(me_session *s, const char *core_path_in, const char *rom
             me_layout_unknown(&l);   /* the core's input descriptors may narrow it */
         set_input_layout(&l);
     }
+    g_console = me_console_for_rom(rom_path);
 
     fprintf(stderr, "[load] set_environment\n"); fflush(stderr);
     core->retro_set_environment(me_environment_cb);
@@ -1471,6 +1573,7 @@ static int session_open(me_session *s, const char *core_path_in, const char *rom
         goto fail;
     }
     s->game_loaded = 1;
+    apply_adapter(core);
 
     if (me_build_save_path(core_path, rom_path, s->save_path, sizeof(s->save_path)) == 0) {
         me_sram_load(core, s->save_path);
@@ -2051,6 +2154,18 @@ static void publish_status(const me_session *s) {
         snprintf(st.core_path, sizeof(st.core_path), "%s", g_last_core);
         snprintf(st.rom_path,  sizeof(st.rom_path),  "%s", g_last_rom);
     }
+    st.players = ME_MAX_PLAYERS;
+    st.console = -1;
+    st.adapter = -1;
+    const me_console *c = s->active ? me_console_at(g_console) : NULL;
+    if (c) {
+        st.players = g_players;
+        st.console = g_console;
+        for (int i = 0; c->adapters && c->adapters[i].id; i++) {
+            if (adapter_usable(s->core, &c->adapters[i])) st.adapters_usable |= 1u << i;
+            if (g_adapter == &c->adapters[i]) st.adapter = i;
+        }
+    }
     me_status_set(&st);
 }
 
@@ -2156,6 +2271,11 @@ static void run_command(me_session *s, const me_cmd *c) {
             return;
         case ME_CMD_FRAME_GEN:
             set_frame_gen(s, c->arg);
+            return;
+        case ME_CMD_ADAPTER:
+            if (!s->active) return;
+            apply_adapter(s->core);
+            publish_status(s);
             return;
     }
 }

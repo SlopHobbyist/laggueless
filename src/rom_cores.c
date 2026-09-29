@@ -2,6 +2,34 @@
 #include <stdio.h>
 #include <string.h>
 
+/* Multiplayer adapters. Each core wants its adapter plugged into a port:
+   the SNES Multitap into port 2 (bsnes, Snes9x, Mesen-S), Genesis Plus GX
+   its Team Player into port 1 and the EA 4 Way Play (which takes both
+   ports) into either, so both are listed to reset both on unplugging.
+   The Team Player and 4 Way Play are the 3-button versions: every game
+   for them works with those. Mesen and FCEUmm turn the
+   Four Score on when ports 3-4 have a gamepad; Nestopia connects the pads
+   but its Four Score follows its game database. The PC Engine cores keep
+   their TurboTap in core options (on by default in Beetle PCE), so there
+   the checkbox only opens players 2-4. */
+static const me_adapter k_nes_adapters[] = {
+    { "four_score", "Four Score", 0xCu, "standard controller|gamepad" },
+    { NULL }
+};
+static const me_adapter k_snes_adapters[] = {
+    { "multitap", "Super Multitap", 0x2u, "multitap" },
+    { NULL }
+};
+static const me_adapter k_md_adapters[] = {
+    { "team_player",   "Team Player",    0x1u, "teamplayer|team player" },
+    { "ea_4_way_play", "EA 4 Way Play",  0x3u, "4-wayplay|4 way play|4-way play" },
+    { NULL }
+};
+static const me_adapter k_pce_adapters[] = {
+    { "turbotap", "TurboTap", 0, NULL },
+    { NULL }
+};
+
 /* Every extension belongs to exactly one console; ones several consoles
    share are given to the console most games in that format are for (.bin to
    the Mega Drive, disc images to the PlayStation, .iso to the PSP). Our pick
@@ -11,84 +39,84 @@
 static const me_console k_consoles[] = {
     /* Nintendo */
     { "nes",       "NES / Famicom",            "nes|fds|unf|unif",
-      "mesen|nestopia|fceumm|quicknes|mesen2" },
+      "mesen|nestopia|fceumm|quicknes|mesen2", 2, k_nes_adapters },
     { "snes",      "SNES / Super Famicom",     "sfc|smc|swc|fig|bs|st",
       "bsnes|mesen-s|mednafen_supafaust|bsnes_mercury_accuracy|bsnes_mercury_balanced|"
-      "bsnes_mercury_performance|bsnes2014_accuracy|snes9x|bsnes_hd_beta|mesen2" },
+      "bsnes_mercury_performance|bsnes2014_accuracy|snes9x|bsnes_hd_beta|mesen2", 2, k_snes_adapters },
     { "gb",        "Game Boy",                 "gb|dmg|sgb",
-      "gambatte|sameboy|gearboy|mgba|tgbdual|vbam|mesen-s|mesen2" },
+      "gambatte|sameboy|gearboy|mgba|tgbdual|vbam|mesen-s|mesen2", 1, NULL },
     { "gbc",       "Game Boy Color",           "gbc|cgb",
-      "gambatte|sameboy|gearboy|mgba|tgbdual|vbam|mesen-s|mesen2" },
+      "gambatte|sameboy|gearboy|mgba|tgbdual|vbam|mesen-s|mesen2", 1, NULL },
     { "gba",       "Game Boy Advance",         "gba|agb",
-      "mgba|mednafen_gba|vbam|vba_next|gpsp|mesen2" },
+      "mgba|mednafen_gba|vbam|vba_next|gpsp|mesen2", 1, NULL },
     { "nds",       "Nintendo DS",              "nds|dsi|ids",
-      "melondsds|melonds|desmume|noods" },
+      "melondsds|melonds|desmume|noods", 1, NULL },
     { "3ds",       "Nintendo 3DS",             "3ds|3dsx|cci|cxi",
-      "azahar|citra" },
+      "azahar|citra", 1, NULL },
     { "n64",       "Nintendo 64",              "n64|z64|v64|ndd",
-      "parallel_n64|mupen64plus_next" },
+      "parallel_n64|mupen64plus_next", 4, NULL },
     { "gamecube",  "GameCube / Wii",           "gcm|gcz|rvz|wbfs|ciso|wia",
-      "dolphin" },
+      "dolphin", 4, NULL },
     { "vb",        "Virtual Boy",              "vb|vboy",
-      "mednafen_vb" },
+      "mednafen_vb", 1, NULL },
     { "pokemini",  "Pokemon Mini",             "min",
-      "pokemini" },
+      "pokemini", 1, NULL },
 
     /* Sega */
     { "md",        "Mega Drive / Genesis",     "md|gen|smd|mdx|bin",
-      "genesis_plus_gx|picodrive|blastem|clownmdemu|genesis_plus_gx_wide" },
+      "genesis_plus_gx|picodrive|blastem|clownmdemu|genesis_plus_gx_wide", 2, k_md_adapters },
     { "32x",       "Sega 32X",                 "32x",
-      "picodrive" },
+      "picodrive", 2, NULL },
     { "sms",       "Master System",            "sms",
-      "genesis_plus_gx|gearsystem|picodrive|smsplus|mesen2" },
+      "genesis_plus_gx|gearsystem|picodrive|smsplus|mesen2", 2, NULL },
     { "gg",        "Game Gear",                "gg",
-      "genesis_plus_gx|gearsystem|picodrive|smsplus|mesen2" },
+      "genesis_plus_gx|gearsystem|picodrive|smsplus|mesen2", 1, NULL },
     { "sg1000",    "SG-1000",                  "sg|sc|mv",
-      "genesis_plus_gx|gearsystem|picodrive|smsplus|bluemsx" },
+      "genesis_plus_gx|gearsystem|picodrive|smsplus|bluemsx", 2, NULL },
     { "dreamcast", "Dreamcast",                "gdi|cdi",
-      "flycast" },
+      "flycast", 4, NULL },
 
     /* NEC */
     { "pce",       "PC Engine / TurboGrafx-16", "pce",
-      "mednafen_pce|mednafen_pce_fast|geargrafx|mednafen_supergrafx|mesen2" },
+      "mednafen_pce|mednafen_pce_fast|geargrafx|mednafen_supergrafx|mesen2", 1, k_pce_adapters },
     { "sgx",       "SuperGrafx",               "sgx",
-      "mednafen_pce|mednafen_supergrafx|geargrafx" },
+      "mednafen_pce|mednafen_supergrafx|geargrafx", 1, k_pce_adapters },
 
     /* Sony */
     { "psx",       "PlayStation",              "cue|chd|ccd|toc|m3u|pbp",
-      "mednafen_psx|mednafen_psx_hw|swanstation|pcsx_rearmed" },
+      "mednafen_psx|mednafen_psx_hw|swanstation|pcsx_rearmed", 2, NULL },
     { "psp",       "PlayStation Portable",     "iso|cso",
-      "ppsspp" },
+      "ppsspp", 1, NULL },
 
     /* Atari */
     { "a2600",     "Atari 2600",               "a26",
-      "stella|stella2023|stella2014" },
+      "stella|stella2023|stella2014", 2, NULL },
     { "a5200",     "Atari 5200",               "a52",
-      "a5200|atari800" },
+      "a5200|atari800", 4, NULL },
     { "a7800",     "Atari 7800",               "a78",
-      "prosystem" },
+      "prosystem", 2, NULL },
     { "lynx",      "Atari Lynx",               "lnx|lyx",
-      "handy|mednafen_lynx|holani|gearlynx" },
+      "handy|mednafen_lynx|holani|gearlynx", 1, NULL },
     { "jaguar",    "Atari Jaguar",             "j64|jag",
-      "virtualjaguar" },
+      "virtualjaguar", 2, NULL },
 
     /* SNK, Bandai, others */
     { "ngp",       "Neo Geo Pocket",           "ngp",
-      "mednafen_ngp|race" },
+      "mednafen_ngp|race", 1, NULL },
     { "ngpc",      "Neo Geo Pocket Color",     "ngc|ngpc|npc",
-      "mednafen_ngp|race" },
+      "mednafen_ngp|race", 1, NULL },
     { "ws",        "WonderSwan",               "ws|pc2",
-      "mednafen_wswan|mesen2" },
+      "mednafen_wswan|mesen2", 1, NULL },
     { "wsc",       "WonderSwan Color",         "wsc|pcv2",
-      "mednafen_wswan|mesen2" },
+      "mednafen_wswan|mesen2", 1, NULL },
     { "coleco",    "ColecoVision",             "col|cv",
-      "gearcoleco|bluemsx" },
+      "gearcoleco|bluemsx", 2, NULL },
     { "intv",      "Intellivision",            "int",
-      "freeintv" },
+      "freeintv", 2, NULL },
     { "vectrex",   "Vectrex",                  "vec",
-      "vecx" },
+      "vecx", 2, NULL },
     { "msx",       "MSX",                      "mx1|mx2",
-      "bluemsx|fmsx" },
+      "bluemsx|fmsx", 2, NULL },
 };
 
 /* Core name (DLL minus "_libretro.dll") -> what the dialog shows. */
@@ -168,6 +196,13 @@ int me_console_for_rom(const char *rom_path) {
     for (size_t i = 0; i < COUNT(k_consoles); i++)
         if (in_list(k_consoles[i].exts, ext)) return (int)i;
     return -1;
+}
+
+const me_adapter *me_console_adapter(const me_console *c, const char *id) {
+    if (!c || !c->adapters || !id) return NULL;
+    for (const me_adapter *a = c->adapters; a->id; a++)
+        if (_stricmp(a->id, id) == 0) return a;
+    return NULL;
 }
 
 int me_console_candidate(const me_console *c, int i, char *dll, size_t dll_sz) {

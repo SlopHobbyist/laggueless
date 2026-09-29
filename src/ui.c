@@ -33,10 +33,14 @@ enum {
     IDM_BACKEND_D3D11,
     IDM_DOWNLOAD_CORES = 150,
     IDM_SET_CORES,
+    IDM_ADAPTER_FIRST = 160,  /* .. + ME_ADAPTERS_MAX - 1 */
     IDM_RECENT_FIRST = 200,   /* .. IDM_RECENT_FIRST + ME_RECENT_MAX - 1 */
 };
 
-static HMENU g_recent_menu, g_console_menu, g_view_menu, g_backend_menu;
+/* Most adapters a console has (the Mega Drive's two). */
+#define ME_ADAPTERS_MAX 4
+
+static HMENU g_recent_menu, g_console_menu, g_controls_menu, g_view_menu, g_backend_menu;
 
 HMENU me_ui_create_menu(void) {
     HMENU bar = CreateMenu();
@@ -55,14 +59,9 @@ HMENU me_ui_create_menu(void) {
     AppendMenuA(g_console_menu, MF_STRING, IDM_POWER,      "&Power Off");
     AppendMenuA(bar, MF_POPUP, (UINT_PTR)g_console_menu, "&Console");
 
-    HMENU controls = CreatePopupMenu();
-    AppendMenuA(controls, MF_STRING, IDM_PLAYER1, "Player &1...");
-    AppendMenuA(controls, MF_STRING, IDM_PLAYER2, "Player &2...");
-    AppendMenuA(controls, MF_STRING | MF_GRAYED, IDM_PLAYER3, "Player 3 (n/a)");
-    AppendMenuA(controls, MF_STRING | MF_GRAYED, IDM_PLAYER4, "Player 4 (n/a)");
-    AppendMenuA(controls, MF_SEPARATOR, 0, NULL);
-    AppendMenuA(controls, MF_STRING, IDM_HOTKEYS, "&Hotkeys...");
-    AppendMenuA(bar, MF_POPUP, (UINT_PTR)controls, "C&ontrols");
+    /* Players and the adapter checkboxes are filled in when it opens. */
+    g_controls_menu = CreatePopupMenu();
+    AppendMenuA(bar, MF_POPUP, (UINT_PTR)g_controls_menu, "C&ontrols");
 
     HMENU cores = CreatePopupMenu();
     AppendMenuA(cores, MF_STRING, IDM_DOWNLOAD_CORES, "&Download Cores...");
@@ -268,6 +267,74 @@ static void rebuild_recent_menu(void) {
     }
 }
 
+/* Players 1-4, greyed past what the running game has; then its console's
+   multiplayer adapters as checkboxes (only for a console that has them);
+   then Hotkeys. Rebuilt each time it opens. */
+static void rebuild_controls_menu(const me_app_status *st) {
+    HMENU m = g_controls_menu;
+    while (GetMenuItemCount(m) > 0) DeleteMenu(m, 0, MF_BYPOSITION);
+
+    const me_console *c = me_console_at(st->console);
+    const me_adapter *adapters = c ? c->adapters : NULL;
+    const char *unlock = NULL;   /* the adapter that would add players */
+    for (int i = 0; adapters && adapters[i].id && !unlock; i++)
+        if (st->adapters_usable & (1u << i)) unlock = adapters[i].name;
+
+    for (int p = 0; p < ME_MAX_PLAYERS; p++) {
+        char label[96];
+        int on = p < st->players;
+        if (on || !c)
+            snprintf(label, sizeof(label), "Player &%d...", p + 1);
+        else if (unlock)
+            snprintf(label, sizeof(label), "Player %d\tneeds %s", p + 1, unlock);
+        else
+            snprintf(label, sizeof(label), "Player %d\t%s: %d player%s", p + 1, c->name,
+                     c->players, c->players == 1 ? "" : "s");
+        AppendMenuA(m, MF_STRING | (on ? MF_ENABLED : MF_GRAYED), IDM_PLAYER1 + p, label);
+    }
+
+    if (adapters && adapters[0].id) {
+        AppendMenuA(m, MF_SEPARATOR, 0, NULL);
+        for (int i = 0; adapters[i].id && i < ME_ADAPTERS_MAX; i++) {
+            char label[96];
+            int usable = (st->adapters_usable >> i) & 1u;
+            snprintf(label, sizeof(label), "%s (Players %d-%d)%s", adapters[i].name,
+                     c->players + 1, ME_MAX_PLAYERS, usable ? "" : "\tnot in this core");
+            UINT flags = MF_STRING | (usable ? MF_ENABLED : MF_GRAYED) |
+                         (st->adapter == i ? MF_CHECKED : MF_UNCHECKED);
+            AppendMenuA(m, flags, IDM_ADAPTER_FIRST + i, label);
+        }
+    }
+
+    AppendMenuA(m, MF_SEPARATOR, 0, NULL);
+    AppendMenuA(m, MF_STRING, IDM_HOTKEYS, "&Hotkeys...");
+}
+
+typedef struct { char console[32]; char adapter[32]; } adapter_choice;
+
+static void patch_adapter(me_settings *s, const void *ctx) {
+    const adapter_choice *a = (const adapter_choice *)ctx;
+    me_settings_set_console_adapter(s, a->console, a->adapter);
+}
+
+/* The checkbox: plug adapter `i` of the running console in, or unplug it
+   if it's the one plugged in. The core gets it between frames. */
+static void toggle_adapter(int i) {
+    me_app_status st;
+    me_status_get(&st);
+    const me_console *c = me_console_at(st.console);
+    if (!c || !c->adapters) return;
+    for (int k = 0; k <= i; k++) if (!c->adapters[k].id) return;
+    adapter_choice a;
+    snprintf(a.console, sizeof(a.console), "%s", c->id);
+    snprintf(a.adapter, sizeof(a.adapter), "%s", st.adapter == i ? "" : c->adapters[i].id);
+    me_settings_lock();
+    patch_adapter(me_app_settings(), &a);
+    me_settings_unlock();
+    me_ui_persist(patch_adapter, &a);
+    me_cmd_post(ME_CMD_ADAPTER, 0, NULL);
+}
+
 static void refresh_menu(HMENU m) {
     me_app_status st;
     me_status_get(&st);
@@ -275,6 +342,8 @@ static void refresh_menu(HMENU m) {
 
     if (m == g_recent_menu) {
         rebuild_recent_menu();
+    } else if (m == g_controls_menu) {
+        rebuild_controls_menu(&st);
     } else if (m == g_console_menu) {
         UINT running = st.game_running ? MF_ENABLED : MF_GRAYED;
         EnableMenuItem(m, IDM_HARD_RESET, MF_BYCOMMAND | running);
@@ -336,6 +405,10 @@ static void open_rom_dialog(HWND owner) {
 
 static void on_command(HWND h, UINT id) {
     me_settings *s = me_app_settings();
+    if (id >= IDM_ADAPTER_FIRST && id < IDM_ADAPTER_FIRST + ME_ADAPTERS_MAX) {
+        toggle_adapter((int)(id - IDM_ADAPTER_FIRST));
+        return;
+    }
     if (id >= IDM_RECENT_FIRST && id < IDM_RECENT_FIRST + ME_RECENT_MAX) {
         int i = (int)(id - IDM_RECENT_FIRST);
         if (i < s->recent_n) me_cmd_post(ME_CMD_LOAD_ROM, 0, s->recent[i]);
@@ -347,8 +420,10 @@ static void on_command(HWND h, UINT id) {
         case IDM_HARD_RESET: me_cmd_post(ME_CMD_HARD_RESET, 0, NULL); break;
         case IDM_SOFT_RESET: me_cmd_post(ME_CMD_SOFT_RESET, 0, NULL); break;
         case IDM_POWER:      me_cmd_post(ME_CMD_POWER, 0, NULL); break;
-        case IDM_PLAYER1:    me_ui_player_dialog(h, 0); break;
-        case IDM_PLAYER2:    me_ui_player_dialog(h, 1); break;
+        case IDM_PLAYER1:
+        case IDM_PLAYER2:
+        case IDM_PLAYER3:
+        case IDM_PLAYER4:    me_ui_player_dialog(h, (int)(id - IDM_PLAYER1)); break;
         case IDM_HOTKEYS:    me_ui_hotkeys_dialog(h); break;
         case IDM_DOWNLOAD_CORES: me_ui_download_cores(h); break;
         case IDM_SET_CORES:  me_ui_set_cores_dialog(h); break;

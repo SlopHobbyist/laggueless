@@ -166,6 +166,10 @@ controls:
   player1_controller: 0
   player2_input: both
   player2_controller: 1
+  player3_input: both
+  player3_controller: 2
+  player4_input: both
+  player4_controller: 3
 
   universal:
     player1:
@@ -230,6 +234,56 @@ controls:
         controller: Start
       back:
         controller: Back
+    player3:               # controller only by default
+      dpad_up:
+        controller: DPadUp
+      dpad_down:
+        controller: DPadDown
+      dpad_left:
+        controller: DPadLeft
+      dpad_right:
+        controller: DPadRight
+      a:
+        controller: A
+      b:
+        controller: B
+      x:
+        controller: X
+      y:
+        controller: Y
+      lb:
+        controller: LB
+      rb:
+        controller: RB
+      start:
+        controller: Start
+      back:
+        controller: Back
+    player4:               # controller only by default
+      dpad_up:
+        controller: DPadUp
+      dpad_down:
+        controller: DPadDown
+      dpad_left:
+        controller: DPadLeft
+      dpad_right:
+        controller: DPadRight
+      a:
+        controller: A
+      b:
+        controller: B
+      x:
+        controller: X
+      y:
+        controller: Y
+      lb:
+        controller: LB
+      rb:
+        controller: RB
+      start:
+        controller: Start
+      back:
+        controller: Back
 
   # Advanced inputs: extras a core offers beyond its console's controller,
   # e.g. FDS disk swap and VS coins (NES), lid/mic (DS), buttons III-VI
@@ -241,6 +295,8 @@ controls:
   advanced:
     player1: {}
     player2: {}
+    player3: {}
+    player4: {}
 
 # Per-core settings. `use_universal` controls whether the universal mapping
 # above is used, or the `controls:` block below it.
@@ -421,6 +477,13 @@ cores:
 # Consoles not listed use laggueless' pick. Values are DLL filenames in the
 # cores folder, e.g.  snes: snes9x_libretro.dll
 console_cores: {}
+
+# Multiplayer adapters, for players 3-4 on consoles with one or two
+# controller ports. None is plugged in unless listed here; the checkbox in
+# the Controls menu (while one of the console's games is running) edits it.
+#   nes: four_score    snes: multitap    md: team_player or ea_4_way_play
+#   pce: turbotap      sgx: turbotap
+console_adapters: {}
 
 # File > Open Recent (most recent first). Filled in as you play.
 recent: []

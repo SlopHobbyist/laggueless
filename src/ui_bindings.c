@@ -1,4 +1,4 @@
-/* Controls > Player 1 / Player 2 / Hotkeys dialogs.
+/* Controls > Player 1-4 / Hotkeys dialogs.
 
    Each dialog lists the controls with their keyboard and controller bindings.
    The player dialogs list only the buttons the running game's controller has,
@@ -42,7 +42,7 @@ enum { COL_NAME = 0, COL_KEYBOARD = 1, COL_CONTROLLER = 2 };
 
 typedef struct {
     int is_hotkeys;
-    int player;              /* player dialogs: 0 or 1 */
+    int player;              /* player dialogs: 0 .. ME_MAX_PLAYERS - 1 */
     int core_index;          /* player dialogs: per-core map being edited, -1 = universal */
     char core_name[64];
     int rows;
@@ -547,8 +547,9 @@ void me_ui_player_dialog(HWND owner, int player) {
     load_from(&d, live, d.core_index);
     me_settings_unlock();
 
-    me_ui_dialog(owner, player == 0 ? L"Player 1 Controls" : L"Player 2 Controls",
-               320, 264, bind_dlg_proc, (LPARAM)&d);
+    wchar_t title[32];
+    swprintf(title, sizeof(title) / sizeof(title[0]), L"Player %d Controls", player + 1);
+    me_ui_dialog(owner, title, 320, 264, bind_dlg_proc, (LPARAM)&d);
 }
 
 void me_ui_hotkeys_dialog(HWND owner) {
