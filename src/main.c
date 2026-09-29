@@ -2084,8 +2084,9 @@ static void set_frame_gen(me_session *s, int on) {
     if (on && !g_lsfg_shaders) {
         g_lsfg_shaders = me_lsfg_load(g_lsfg_dll_path[0] ? g_lsfg_dll_path : NULL);
         if (!g_lsfg_shaders) {
-            me_ui_notify_error("Frame Gen needs Lossless.dll from Lossless Scaling (Steam).\n"
-                               "Copy it into %slsfg\\", g_exedir);
+            me_ui_notify_error("Frame Gen needs Lossless.dll from Lossless Scaling (Steam),\n"
+                               "which wasn't found in any Steam library.\n"
+                               "Install it, or copy Lossless.dll into %slsfg\\", g_exedir);
             me_ui_notify_frame_gen(0);
             return;
         }
@@ -2268,7 +2269,7 @@ int main(int argc, char **argv) {
                 "  --no-vk-exclusive            disable exclusive fullscreen (composited swapchain)\n"
                 "  --lsfg                       enable LSFG 3.1 frame generation (requires\n"
                 "                                 --vulkan and Lossless Scaling on Steam;\n"
-                "                                 place Lossless.dll in lsfg/ next to the exe)\n"
+                "                                 Lossless.dll is copied into lsfg/ from Steam)\n"
                 "  --lsfg-dll=<path>            path to Lossless.dll (overrides lsfg/ folder)\n"
                 "  --lsfg-multiplier=N          LSFG output multiplier: 2, 3, or 4 (default 2)\n"
                 "  --lsfg-flow=F                LSFG optical-flow scale 0.25..1.0 (default 1.0)\n"

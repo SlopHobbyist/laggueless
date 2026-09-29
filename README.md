@@ -16,7 +16,7 @@ The goal was to create a libretro core compatible emulator program. Users find R
 ## Using the Release
 1. Unzip the file with 7zip/winrar
 2. Open the folder
-3. Copy your Lossless.dll into the **lsfg** folder (optional)
+3. (optional) Install Lossless Scaling on Steam; Lossless.dll is copied into the **lsfg** folder automatically
 4. Open Command Prompt
 5. CD to the folder
 6. Run laggueless.exe --help
@@ -132,10 +132,10 @@ LSFG frame generation is optional and requires [Lossless Scaling](https://store.
 
 To enable LSFG:
 
-1. Find `Lossless.dll` in your Lossless Scaling Steam installation folder.
-2. Create a `lsfg/` folder next to `laggueless.exe` (i.e. `build\lsfg\`).
-3. Copy `Lossless.dll` into `build\lsfg\Lossless.dll`.
-4. Run with `--lsfg --vulkan` (Vulkan is required for frame gen).
+1. Install Lossless Scaling from Steam (any Steam library folder / drive works).
+2. Run with `--lsfg --vulkan` (Vulkan is required for frame gen), or turn on Frame Gen from the View menu.
+
+The first time frame gen is turned on, laggueless finds Lossless Scaling in your Steam libraries and copies `Lossless.dll` into `lsfg\` next to `laggueless.exe`. If Steam isn't installed or detection fails, copy the DLL there yourself.
 
 Alternatively, point directly at the DLL: `--lsfg-dll="C:\path\to\Lossless.dll"`.
 

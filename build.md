@@ -146,6 +146,8 @@ After step 6b you should see `[build] lsfg backend: ...` and `[build] lsfg_bridg
 
 Building the LSFG backend does **not** give you the actual frame-generation DLL. That DLL is proprietary and ships with the paid **Lossless Scaling** app on Steam. You must own a copy. We do not, and cannot, distribute it.
 
+If Lossless Scaling is installed through Steam you don't need to do anything: the first time frame gen is turned on, laggueless looks it up (Steam's `Steam App 993090` uninstall key, then every library in `steamapps\libraryfolders.vdf`) and copies `Lossless.dll` into `build\lsfg\`. The steps below are only needed if that lookup fails.
+
 1. Buy and install **Lossless Scaling** on Steam: <https://store.steampowered.com/app/993090/Lossless_Scaling/>.
 2. Find its install folder. The easiest way:
    - Open Steam.

@@ -2,8 +2,9 @@
 /* lsfg_loader.h — Step B1: Lossless.dll loader + PE shader extraction
  *
  * Locates Lossless.dll via:
- *   1. lsfg/Lossless.dll  (folder next to the exe)
- *   2. --lsfg-dll=<path>  (explicit override from CLI)
+ *   1. --lsfg-dll=<path>  (explicit override from CLI)
+ *   2. lsfg/Lossless.dll  (folder next to the exe)
+ *   3. the user's Steam install of Lossless Scaling, copied into lsfg/
  *
  * After locating the DLL, we parse its PE resource section to extract
  * embedded SPIR-V shaders (RT_RCDATA resources). This is the same data
@@ -40,6 +41,8 @@ typedef struct me_lsfg_shaders me_lsfg_shaders;
  * Search order:
  *   1. explicit_dll_path  (non-NULL → use exactly this path)
  *   2. <exe_dir>/lsfg/Lossless.dll
+ *   3. Lossless Scaling (Steam app 993090) in any Steam library; the DLL is
+ *      copied to <exe_dir>/lsfg/Lossless.dll, or used in place if that fails
  *
  * On success returns a heap-allocated me_lsfg_shaders that must be freed
  * with me_lsfg_free().  On failure returns NULL and prints a diagnostic to

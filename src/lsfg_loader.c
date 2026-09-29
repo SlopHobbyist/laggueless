@@ -292,6 +292,108 @@ static void get_exe_dir(char *out, size_t out_sz) {
     *last = '\0'; /* truncate at last separator */
 }
 
+/* ---- Steam lookup --------------------------------------------------------- */
+/*
+ * Lossless Scaling is Steam app 993090. Steam games can live in any library
+ * folder on any drive, so a hard-coded C:\Program Files (x86)\Steam path
+ * isn't enough. In order:
+ *   1. the "Steam App 993090" uninstall key Steam writes for installed games
+ *      (InstallLocation points straight at the game folder)
+ *   2. every library listed in <steam>\steamapps\libraryfolders.vdf, with
+ *      <steam> taken from the registry
+ *   3. the default install location
+ */
+#define LS_STEAM_APPID  "993090"
+#define LS_STEAM_SUBDIR "steamapps\\common\\Lossless Scaling\\Lossless.dll"
+
+static int file_exists(const char *path) {
+    DWORD attr = GetFileAttributesA(path);
+    return attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+/* Read a REG_SZ value. `view` is KEY_WOW64_64KEY / KEY_WOW64_32KEY. */
+static int reg_string(HKEY root, const char *subkey, const char *value,
+                      REGSAM view, char *out, DWORD out_sz) {
+    HKEY key;
+    if (RegOpenKeyExA(root, subkey, 0, KEY_QUERY_VALUE | view, &key) != ERROR_SUCCESS)
+        return 0;
+    DWORD type = 0, sz = out_sz - 1;
+    LONG rc = RegQueryValueExA(key, value, NULL, &type, (BYTE *)out, &sz);
+    RegCloseKey(key);
+    if (rc != ERROR_SUCCESS || (type != REG_SZ && type != REG_EXPAND_SZ)) return 0;
+    out[sz < out_sz ? sz : out_sz - 1] = '\0';
+    return out[0] != '\0';
+}
+
+/* <dir>\<rel>, forward slashes normalised (SteamPath uses them). Returns 1
+   and fills `out` if the file exists. */
+static int try_path(const char *dir, const char *rel, char *out, size_t out_sz) {
+    char buf[MAX_PATH];
+    size_t n = strlen(dir);
+    int sep = n > 0 && (dir[n - 1] == '\\' || dir[n - 1] == '/');
+    if (snprintf(buf, sizeof(buf), "%s%s%s", dir, sep ? "" : "\\", rel) >= (int)sizeof(buf))
+        return 0;
+    for (char *p = buf; *p; p++) if (*p == '/') *p = '\\';
+    if (!file_exists(buf)) return 0;
+    snprintf(out, out_sz, "%s", buf);
+    return 1;
+}
+
+/* Walk libraryfolders.vdf for every `"path" "<dir>"` pair and check each
+   library. VDF strings escape backslashes as `\\`. */
+static int search_library_folders(const char *steam_root, char *out, size_t out_sz) {
+    char vdf_path[MAX_PATH];
+    if (!try_path(steam_root, "steamapps\\libraryfolders.vdf", vdf_path, sizeof(vdf_path)))
+        return 0;
+    size_t size = 0;
+    uint8_t *data = read_file_all(vdf_path, &size);
+    if (!data) return 0;
+
+    int found = 0, prev_was_path = 0;
+    size_t i = 0;
+    while (i < size && !found) {
+        if (data[i] != '"') { i++; continue; }
+        char tok[MAX_PATH];
+        size_t len = 0;
+        for (i++; i < size && data[i] != '"'; i++) {
+            char c = (char)data[i];
+            if (c == '\\' && i + 1 < size) c = (char)data[++i];
+            if (len + 1 < sizeof(tok)) tok[len++] = c;
+        }
+        i++; /* closing quote */
+        tok[len] = '\0';
+        if (prev_was_path) found = try_path(tok, LS_STEAM_SUBDIR, out, out_sz);
+        prev_was_path = _stricmp(tok, "path") == 0;
+    }
+    free(data);
+    return found;
+}
+
+/* Returns 1 and fills `out` with the Lossless.dll inside a Steam install. */
+static int find_steam_dll(char *out, size_t out_sz) {
+    static const REGSAM views[] = { KEY_WOW64_64KEY, KEY_WOW64_32KEY };
+    char dir[MAX_PATH];
+
+    for (int v = 0; v < 2; v++) {
+        if (reg_string(HKEY_LOCAL_MACHINE,
+                       "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Steam App " LS_STEAM_APPID,
+                       "InstallLocation", views[v], dir, sizeof(dir))
+            && try_path(dir, "Lossless.dll", out, out_sz))
+            return 1;
+    }
+
+    if (reg_string(HKEY_CURRENT_USER, "Software\\Valve\\Steam", "SteamPath",
+                   KEY_WOW64_64KEY, dir, sizeof(dir))
+        || reg_string(HKEY_LOCAL_MACHINE, "SOFTWARE\\Valve\\Steam", "InstallPath",
+                      KEY_WOW64_32KEY, dir, sizeof(dir))) {
+        for (char *p = dir; *p; p++) if (*p == '/') *p = '\\';
+        if (search_library_folders(dir, out, out_sz)) return 1;
+        if (try_path(dir, LS_STEAM_SUBDIR, out, out_sz)) return 1;
+    }
+
+    return try_path("C:\\Program Files (x86)\\Steam", LS_STEAM_SUBDIR, out, out_sz);
+}
+
 /* ---- public API ----------------------------------------------------------- */
 
 me_lsfg_shaders *me_lsfg_load(const char *explicit_dll_path) {
@@ -305,6 +407,22 @@ me_lsfg_shaders *me_lsfg_load(const char *explicit_dll_path) {
         char exe_dir[MAX_PATH] = {0};
         get_exe_dir(exe_dir, sizeof(exe_dir));
         snprintf(dll_path, sizeof(dll_path), "%s\\lsfg\\Lossless.dll", exe_dir);
+
+        /* Not there yet: copy it over from the user's Steam install. If the
+           copy fails (read-only install dir), use the Steam copy in place. */
+        char steam_dll[MAX_PATH];
+        if (!file_exists(dll_path) && find_steam_dll(steam_dll, sizeof(steam_dll))) {
+            char lsfg_dir[MAX_PATH];
+            snprintf(lsfg_dir, sizeof(lsfg_dir), "%s\\lsfg", exe_dir);
+            CreateDirectoryA(lsfg_dir, NULL);
+            if (CopyFileA(steam_dll, dll_path, TRUE)) {
+                fprintf(stderr, "[lsfg] copied Lossless.dll from Steam: %s\n", steam_dll);
+            } else {
+                fprintf(stderr, "[lsfg] found %s but couldn't copy it (error %lu); using it in place\n",
+                        steam_dll, (unsigned long)GetLastError());
+                snprintf(dll_path, sizeof(dll_path), "%s", steam_dll);
+            }
+        }
     }
 
     /* Check the file actually exists before trying to parse it */
@@ -315,9 +433,10 @@ me_lsfg_shaders *me_lsfg_load(const char *explicit_dll_path) {
         fprintf(stderr,
             "[lsfg] ERROR: Lossless.dll not found.\n"
             "[lsfg]   Searched: %s\n"
+            "[lsfg]   and every Steam library folder.\n"
             "[lsfg]\n"
             "[lsfg]   To use LSFG frame generation you must own Lossless Scaling on Steam.\n"
-            "[lsfg]   Copy Lossless.dll from your Lossless Scaling installation to:\n"
+            "[lsfg]   Install it, or copy Lossless.dll from your Lossless Scaling installation to:\n"
             "[lsfg]     %s\\lsfg\\Lossless.dll\n"
             "[lsfg]   Or use --lsfg-dll=<path> to specify the DLL location explicitly.\n",
             dll_path, exe_dir);
