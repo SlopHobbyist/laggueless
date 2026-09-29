@@ -38,6 +38,18 @@ Obviously check with your organizers first before using.
 ## Roms
 This repo does not enable piracy. Users must provide their own ROM files.
 
+## CLI Args
+
+*If menus aren't your thing, you can use these arguments to control laggueless too.*
+*When no core specified, defaults to correct console.*
+
+`laggueless.exe [[<core.dll>] <rom>] [options]`
+
+`laggueless.exe ".\cores\mesen_libretro.dll" ".\roms\Super Mario Bros. (World).nes" --vulkan --lsfg`
+
+`--no-audio` `--gdi` `--d3d11` `--vulkan` `--no-vsync` `--lsfg` `--lsfg-dll=<path>`
+`--pace-log` `--timing-log` `--env-trace`
+
 ## LSFG Frame Generation
 
 Use *"fake frames"* to achieve higher framerates (300+fps?!). LSFG frame generation is optional and requires [Lossless Scaling](https://store.steampowered.com/app/993090/Lossless_Scaling/) on Steam. This is the only feature in the whole program that *adds lag*.
@@ -54,7 +66,7 @@ This project links against libretro cores, which are distributed under their own
 
 ## Disclosure
 
-> **Note**: Except for this readme and any image assets, this entire project was written by AI (Claude Code: Sonnet 4.5, Opus 5.5, and Antigravity: Gemini 3 Pro (High)). All code, architecture decisions, and implementation details were generated through AI assistance.
+> **Note**: Except for this readme and image assets, this entire project was written by AI (Claude Code: Sonnet 4.5, Opus 5.5, and Antigravity: Gemini 3 Pro (High)). All code, architecture decisions, and implementation details were generated through AI assistance.
 >
 > I am a strong advocate for never mixing generated code into real repos.
 > Projects like these should clearly disclose as such.
