@@ -26,6 +26,14 @@ The goal was to create a libretro core compatible emulator program. Users find R
 
 You can also download cores yourself from [https://buildbot.libretro.com/nightly/windows/x86_64/](https://buildbot.libretro.com/nightly/windows/x86_64/) and place them in the `cores` folder.
 
+**Cores > File Associations** makes laggueless the program Windows opens a console's games in when you double-click them. Tick the consoles you want and press Save. The list shows what each console's ROM types open in now.
+
+- It changes only your Windows account, so you don't need administrator rights. If you tick **For all users of this PC**, Windows asks for administrator permission when you press Save. You don't need to run laggueless as administrator.
+- Some ROM types are also used by other programs, so they're left alone unless you tick **Also take the types in brackets**. These are `.md` `.mdx` `.bin` `.iso` `.cue` `.m3u` `.toc` `.dmg` `.3ds` `.vb` `.fig` `.st` `.sc` `.lyx`.
+- Unticking a console gives its types back to whatever opened them before.
+- If Windows still keeps a type with another program, laggueless tells you which types and can open **Settings > Apps > Default apps** for you.
+- The associations point at this copy of `laggueless.exe`. If you move the folder, open File Associations again and press Save.
+
 ## Usage
 `laggueless.exe [options] [[<core.dll>] <rom>]`
 

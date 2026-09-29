@@ -34,6 +34,7 @@ enum {
     IDM_BACKEND_D3D11,
     IDM_DOWNLOAD_CORES = 150,
     IDM_SET_CORES,
+    IDM_FILE_TYPES,
     IDM_ADAPTER_FIRST = 160,  /* .. + ME_ADAPTERS_MAX - 1 */
     IDM_SCREEN_TOP = 170,     /* View > Screen, in me_screens order from here */
     IDM_SCREEN_BOTTOM,
@@ -72,6 +73,7 @@ HMENU me_ui_create_menu(void) {
     HMENU cores = CreatePopupMenu();
     AppendMenuA(cores, MF_STRING, IDM_DOWNLOAD_CORES, "&Download Cores...");
     AppendMenuA(cores, MF_STRING, IDM_SET_CORES,      "&Set Cores...");
+    AppendMenuA(cores, MF_STRING, IDM_FILE_TYPES,     "&File Associations...");
     AppendMenuA(bar, MF_POPUP, (UINT_PTR)cores, "Co&res");
 
     g_view_menu = CreatePopupMenu();
@@ -476,6 +478,7 @@ static void on_command(HWND h, UINT id) {
         }
         case IDM_DOWNLOAD_CORES: me_ui_download_cores(h); break;
         case IDM_SET_CORES:  me_ui_set_cores_dialog(h); break;
+        case IDM_FILE_TYPES: me_ui_file_types_dialog(h); break;
         case IDM_FULLSCREEN: me_platform_toggle_fullscreen(h); break;
         case IDM_FRAME_GEN:  me_cmd_post(ME_CMD_FRAME_GEN, !s->lsfg_enabled, NULL); break;
         case IDM_SCREEN_TOP:

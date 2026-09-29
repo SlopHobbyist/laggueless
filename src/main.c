@@ -2492,6 +2492,10 @@ static void run_command(me_session *s, const me_cmd *c) {
 
 int main(int argc, char **argv) {
     SetUnhandledExceptionFilter(me_unhandled_exception);
+    /* The elevated copy Cores > File Associations runs: registry only, no
+       window, no folders or settings.yaml of its own. */
+    if (argc >= 2 && strcmp(argv[1], ME_FILE_TYPES_ARG) == 0)
+        return me_file_types_all_users_main(argc - 2, argv + 2);
     init_exedir();
     GetFullPathNameA("logs", sizeof(g_log_dir), g_log_dir, NULL);
 

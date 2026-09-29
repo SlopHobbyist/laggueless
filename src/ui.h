@@ -47,4 +47,13 @@ void me_ui_hotkeys_dialog(HWND owner);
 void me_ui_download_cores(HWND owner);
 void me_ui_set_cores_dialog(HWND owner);
 
+/* Cores > File Associations (ui_assoc.c): which consoles' ROMs Windows opens
+   in laggueless. Modal to the UI thread only. Changing them for all users
+   runs this exe elevated with ME_FILE_TYPES_ARG first; main() hands that
+   straight to me_file_types_all_users_main (the arguments after it), whose
+   return value is the exit code: 0, or how many changes failed. */
+#define ME_FILE_TYPES_ARG "--file-types-all-users"
+void me_ui_file_types_dialog(HWND owner);
+int  me_file_types_all_users_main(int argc, char **argv);
+
 #endif
