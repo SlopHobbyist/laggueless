@@ -3,12 +3,15 @@
 
    Each console gets a ProgID, laggueless.<id> ("laggueless.nes"), whose open
    command is this exe with the ROM as its one argument, and each of the
-   console's extensions points at it. That goes in the current user's classes
-   (HKCU\Software\Classes), which needs no permission, or with "For all users"
-   ticked in the machine's (HKLM), which needs an administrator: Save then
-   runs a copy of this exe elevated (Windows shows the UAC prompt) with
-   --file-types-all-users, which does just that part and exits. laggueless
-   itself never has to run as administrator.
+   console's extensions points at it. That always goes in the current user's
+   classes (HKCU\Software\Classes), which need no permission and beat the
+   machine's, where other programs often register per user too. With "Also
+   for other users" ticked it goes in the machine's (HKLM) as well, which
+   needs an administrator: Save then runs a copy of this exe elevated
+   (Windows shows the UAC prompt) with --file-types-all-users, which does just
+   that part and exits. laggueless itself never has to run as administrator.
+   Another user's own per-user registrations still beat the machine's for
+   them.
 
    A type the player picked a program for with Explorer's "Open with" has a
    UserChoice, which beats both; Save deletes the current user's UserChoice
@@ -422,7 +425,7 @@ static void ft_create_controls(HWND dlg, ft_dlg *d) {
 
     me_ui_add_control(dlg, "BUTTON", "Also take the types in &brackets",
                       BS_AUTOCHECKBOX | WS_TABSTOP, 7, 223, 356, 10, IDC_FT_SHARED);
-    me_ui_add_control(dlg, "BUTTON", "For all &users of this PC (Windows asks for administrator permission)",
+    me_ui_add_control(dlg, "BUTTON", "Also for other &users of this PC (Windows asks for administrator permission)",
                       BS_AUTOCHECKBOX | WS_TABSTOP, 7, 236, 356, 10, IDC_FT_ALL_USERS);
     me_ui_add_control(dlg, "BUTTON", "&All",   BS_PUSHBUTTON | WS_TABSTOP | WS_GROUP, 7, 253, 45, 14, IDC_FT_ALL);
     me_ui_add_control(dlg, "BUTTON", "&None",  BS_PUSHBUTTON | WS_TABSTOP, 56, 253, 45, 14, IDC_FT_NONE);
@@ -492,7 +495,7 @@ static DWORD WINAPI elevate_thread(LPVOID arg) {
    UserChoices; then report what Windows still opens elsewhere. */
 static void ft_finish(HWND dlg, ft_dlg *d) {
     for (int i = 0; i < d->n; i++)
-        sync_console(HKEY_CURRENT_USER, me_console_at(i), !d->all_users && d->on[i], d->shared);
+        sync_console(HKEY_CURRENT_USER, me_console_at(i), d->on[i], d->shared);
     wchar_t ext[16], progid[48], app[160];
     for (int i = 0; i < d->n; i++) {
         const me_console *c = me_console_at(i);
@@ -576,7 +579,7 @@ static void ft_elevated_done(HWND dlg, ft_dlg *d, LONG r) {
     const char *text =
         r == ELEV_DECLINED
             ? "Windows didn't get administrator permission, so nothing was changed.\n\n"
-              "To change file associations just for you, untick \"For all users\" and save again."
+              "To change file associations just for you, untick \"Also for other users\" and save again."
             : r == ELEV_FAILED
                 ? "Could not ask Windows for administrator permission, so nothing was changed."
                 : "Some file types could not be changed for all users, so nothing was changed "

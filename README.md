@@ -28,7 +28,7 @@ You can also download cores yourself from [https://buildbot.libretro.com/nightly
 
 **Cores > File Associations** makes laggueless the program Windows opens a console's games in when you double-click them. Tick the consoles you want and press Save. The list shows what each console's ROM types open in now.
 
-- It changes only your Windows account, so you don't need administrator rights. If you tick **For all users of this PC**, Windows asks for administrator permission when you press Save. You don't need to run laggueless as administrator.
+- It changes your Windows account, which doesn't need administrator rights. It takes over types that another program (standalone Mesen, RetroArch...) has claimed, including ones you picked with "Open with". If you tick **Also for other users of this PC**, Windows asks for administrator permission when you press Save. You don't need to run laggueless as administrator. For another user, a program registered only for their account still wins.
 - Some ROM types are also used by other programs, so they're left alone unless you tick **Also take the types in brackets**. These are `.md` `.mdx` `.bin` `.iso` `.cue` `.m3u` `.toc` `.dmg` `.3ds` `.vb` `.fig` `.st` `.sc` `.lyx`.
 - Unticking a console gives its types back to whatever opened them before.
 - If Windows still keeps a type with another program, laggueless tells you which types and can open **Settings > Apps > Default apps** for you.
