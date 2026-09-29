@@ -22,4 +22,14 @@ int  me_platform_key_pressed(unsigned vk, unsigned ctrl, unsigned alt, unsigned 
 /* Request graceful shutdown (posts WM_QUIT). */
 void me_platform_request_quit(void);
 
+/* Files dropped onto the window (drag-and-drop from Explorer). If one or more
+   files were dropped since the last call, copies the first one's path into
+   `out` and returns 1; otherwise returns 0. Only the most recent drop is kept. */
+int  me_platform_take_dropped_file(char *out, size_t out_sz);
+
+/* Idle = no game loaded. While idle the window paints itself black on
+   WM_PAINT; while a game runs the presenter owns every pixel. Entering idle
+   invalidates the window so the last game frame is cleared. */
+void me_platform_set_idle(HWND hwnd, int idle);
+
 #endif

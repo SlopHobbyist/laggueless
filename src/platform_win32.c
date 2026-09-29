@@ -1,5 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <shellapi.h>
+#include <stdio.h>
 #include "platform_win32.h"
 
 /* Edge-detection state: bit set in g_pending the moment a WM_KEYDOWN arrives
@@ -18,6 +20,11 @@ static struct {
 } g_fs = {0};
 static int g_app_active = 1;
 static int g_cursor_hidden = 0;
+static int g_idle = 0;
+
+/* Latest WM_DROPFILES path, handed to main via me_platform_take_dropped_file. */
+static char g_drop_path[MAX_PATH];
+static int  g_drop_pending = 0;
 
 /* ShowCursor maintains an internal counter; only call it when the desired state
    actually differs from what we last set, so we never stack up hides/shows. */
@@ -48,7 +55,20 @@ static LRESULT CALLBACK me_wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                 return TRUE;
             }
             break;
-        case WM_ERASEBKGND: return 1; /* we paint every frame, no background erase */
+        case WM_ERASEBKGND:
+            if (g_idle) break;  /* default erase fills with the black class brush */
+            return 1;           /* we paint every frame, no background erase */
+        case WM_DROPFILES: {
+            HDROP drop = (HDROP)wp;
+            if (DragQueryFileA(drop, 0, g_drop_path, sizeof(g_drop_path)) > 0)
+                g_drop_pending = 1;
+            DragFinish(drop);
+            /* Take focus so the game gets input right away (input is ignored
+               while another window is foreground). May be refused by the OS
+               foreground lock, in which case the taskbar button flashes. */
+            SetForegroundWindow(h);
+            return 0;
+        }
         case WM_PAINT: {
             PAINTSTRUCT ps;
             BeginPaint(h, &ps);
@@ -89,6 +109,7 @@ HWND me_platform_create_window(const char *title, int w, int h) {
                             CW_USEDEFAULT, CW_USEDEFAULT,
                             r.right - r.left, r.bottom - r.top,
                             NULL, NULL, hi, NULL);
+    DragAcceptFiles(hw, TRUE);
     ShowWindow(hw, SW_SHOW);
     return hw;
 }
@@ -121,6 +142,18 @@ int me_platform_key_pressed(unsigned vk, unsigned ctrl, unsigned alt, unsigned s
 
 void me_platform_request_quit(void) {
     PostQuitMessage(0);
+}
+
+int me_platform_take_dropped_file(char *out, size_t out_sz) {
+    if (!g_drop_pending) return 0;
+    g_drop_pending = 0;
+    snprintf(out, out_sz, "%s", g_drop_path);
+    return 1;
+}
+
+void me_platform_set_idle(HWND hwnd, int idle) {
+    g_idle = idle;
+    if (idle && hwnd) InvalidateRect(hwnd, NULL, TRUE);
 }
 
 /* ---- fullscreen toggle ---------------------------------------------------- */

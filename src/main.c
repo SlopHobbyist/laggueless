@@ -15,6 +15,7 @@
 #include "settings.h"
 #include "xinput_pad.h"
 #include "lsfg_loader.h"
+#include "rom_cores.h"
 
 /* ---- exe-relative path helpers -------------------------------------------- */
 static char g_exedir[MAX_PATH];
@@ -1112,181 +1113,169 @@ static LONG WINAPI me_unhandled_exception(EXCEPTION_POINTERS *ep) {
     return EXCEPTION_EXECUTE_HANDLER;
 }
 
-int main(int argc, char **argv) {
-    SetUnhandledExceptionFilter(me_unhandled_exception);
-    init_exedir();
+/* Options resolved from settings.yaml + CLI flags; read each time a game is
+   loaded. */
+static int g_no_audio    = 0;
+static int g_force_gdi   = 0;
+static int g_force_d3d11 = 0;
+static int g_pace_log    = 0;
+static int g_timing_log  = 0;
 
-    /* Create essential directories on first run (relative to exe). */
-    char _tmp[MAX_PATH];
-    CreateDirectoryA(exepath(_tmp, sizeof(_tmp), "roms"),     NULL);
-    CreateDirectoryA(exepath(_tmp, sizeof(_tmp), "cores"),    NULL);
-    CreateDirectoryA(exepath(_tmp, sizeof(_tmp), "saves"),    NULL);
-    CreateDirectoryA(exepath(_tmp, sizeof(_tmp), "firmware"), NULL);
-    CreateDirectoryA(exepath(_tmp, sizeof(_tmp), "lsfg"),     NULL);
+/* ---- game session ----------------------------------------------------------
+   Everything tied to one loaded core + ROM. The window outlives sessions:
+   dropping a ROM onto it closes the current session (if any) and opens a
+   new one. Renderers and audio are sized to the core's AV info, so they are
+   torn down and rebuilt per session too. */
+typedef struct me_session {
+    int      active;          /* game loaded, frames running */
+    me_core *core;
+    int      core_inited;     /* retro_init called */
+    int      game_loaded;     /* retro_load_game succeeded */
+    int      hw_context_live; /* context_reset called on a HW core */
+    char     core_path[MAX_PATH];
+    char     rom_path[MAX_PATH];
+    unsigned char *rom_data;
+    char     save_path[MAX_PATH];
 
-    /* settings.yaml is the base layer: load defaults, then YAML overrides them,
-       then CLI flags override YAML. Generate default if missing. */
-    me_settings_defaults(&g_settings);
-    char _settings_path[MAX_PATH];
-    exepath(_settings_path, sizeof(_settings_path), "settings.yaml");
-    if (me_settings_load(_settings_path, &g_settings) == 1) {
-        /* File not found; generate default. */
-        me_settings_generate_default(_settings_path);
-        /* Reload to pick up the defaults we just wrote. */
-        me_settings_load(_settings_path, &g_settings);
+    /* SRAM dirty-poll state. We hash SRAM every ~1s and, once the hash
+       stabilizes for one additional poll, flush to disk. The stability check
+       avoids writing mid-update when the core is still mutating the buffer
+       (e.g. a multi-byte checksum being recomputed by the cart). */
+    uint64_t sram_disk_hash;  /* hash of last bytes we wrote to disk */
+    uint64_t sram_last_hash;  /* hash from previous poll tick */
+    int      sram_pending;    /* hash changed; waiting for it to settle */
+    DWORD    sram_last_poll_ms;
+
+    int    audio_ok;
+    size_t target_buffered;   /* DRC ring-fill target, in device frames */
+    size_t fill_hist[60];     /* 60-frame moving average of ring fill */
+    int    fill_hist_idx, fill_hist_filled;
+
+    double        frame_period_ms;
+    LARGE_INTEGER qpf, qstart;
+    unsigned long frame_count;
+
+    int    ra_frames;
+    size_t ra_state_size;
+    void  *ra_state_buf;
+
+    /* Per-second rollup for --pace-log. */
+    double   pl_gap_min, pl_gap_max, pl_gap_sum;
+    size_t   pl_fill_before_min, pl_fill_before_max, pl_fill_before_sum;
+    size_t   pl_fill_after_min,  pl_fill_after_max,  pl_fill_after_sum;
+    unsigned pl_iters;
+    LARGE_INTEGER pl_last_qpc, pl_window_start;
+
+    /* Per-second rollup for --latency-log. Each iteration is split into
+         backpressure_wait (DXGI waitable)
+         pre_poll          (top of retro_run until the core polls input)
+         post_poll         (rest of retro_run after the poll callback)
+         present           (frame upload + Present)
+         pace_wait         (Sleep + spin to absolute QPC deadline)
+       Sums and a frame-N marker are printed each second. Hot-path cost
+       when disabled: one branch in me_input_poll_cb and at each
+       checkpoint — negligible. */
+    double   ll_pre_sum, ll_post_sum, ll_present_sum, ll_pace_sum, ll_back_sum;
+    double   ll_iter_max;
+    unsigned ll_iters, ll_missed_polls;
+    LARGE_INTEGER ll_window_start;
+    unsigned long ll_window_first_frame;
+} me_session;
+
+/* Return callback-side globals to their pre-load state so the next core
+   starts clean. */
+static void session_reset_globals(void) {
+    g_pixel_format = RETRO_PIXEL_FORMAT_0RGB1555;
+    g_back = NULL;
+    g_back_max_w = g_back_max_h = 0;
+    g_frame_w = g_frame_h = 0;
+    g_video_calls = 0;
+    g_use_d3d11 = 0;
+    memset(&g_hw_render, 0, sizeof(g_hw_render));
+    g_hw_render_requested = g_hw_render_accepted = 0;
+    g_firmware_warned = 0;
+    me_vars_set(NULL);
+    memset(g_env_seen, 0, sizeof(g_env_seen));
+    g_av_mute = 0;
+    g_core_rate = g_dev_rate = 0;
+    g_audio_active = 0;
+    g_resamp_phase = 0.0;
+    g_resamp_pp_l = g_resamp_pp_r = 0;
+    g_resamp_p_l  = g_resamp_p_r  = 0;
+    g_resamp_n_l  = g_resamp_n_r  = 0;
+    g_resamp_primed = 0;
+    g_resamp_ratio_bias = g_resamp_p_bias = 0.0;
+    g_suppress_xy = 0;
+    g_active_map = NULL;
+    memset(g_pad1, 0, sizeof(g_pad1));
+    g_analog_lx = g_analog_ly = g_analog_rx = g_analog_ry = 0;
+}
+
+/* Tear down a session. Safe on a partially opened one (session_open's
+   failure path) and on an empty one. Leaves the window up and idle. */
+static void session_close(me_session *s) {
+    me_core *core = s->core;
+    if (s->audio_ok) me_audio_shutdown();
+    me_vk_lsfg_shutdown();   /* B3: must come before me_vk_shutdown */
+    me_vk_shutdown();
+
+    if (s->hw_context_live && g_hw_render.context_destroy) {
+        g_hw_render.context_destroy();
     }
-    if (me_xinput_init())
-        printf("[xinput] controller support active (player index %d)\n", g_settings.xi_player_index);
-    else
-        printf("[xinput] XInput not available; controller input disabled\n");
-
-    int no_audio       = g_settings.no_audio;
-    int force_gdi      = g_settings.force_gdi;
-    int force_d3d11 = g_settings.force_d3d11;
-    int pace_log    = g_settings.pace_log;
-    int timing_log  = g_settings.timing_log;
-    int latency_log = g_settings.latency_log;
-    g_force_vulkan  = g_settings.force_vulkan;
-    g_no_vsync      = g_settings.vk_no_vsync;
-    g_aspect_mode   = (int)g_settings.aspect;
-    g_env_trace     = g_settings.env_trace;
-
-    /* Vulkan options come from three sources, lowest → highest priority:
-       settings.yaml → CLI flag → user-set env var. Settings-derived values are
-       pushed into env vars only when the user hasn't already set them; the CLI
-       loop and explicit env vars always win because they overwrite. */
-    if (g_settings.vk_mailbox  && !getenv("LAGGUELESS_VK_MAILBOX"))  _putenv("LAGGUELESS_VK_MAILBOX=1");
-    if (g_settings.vk_validate && !getenv("LAGGUELESS_VK_VALIDATE")) _putenv("LAGGUELESS_VK_VALIDATE=1");
-
-    const char *positional[2] = { NULL, NULL };
-    int npos = 0;
-    const char *exe = argv[0] ? argv[0] : "laggueless.exe";
-    for (int i = 1; i < argc; i++) {
-        if      (strcmp(argv[i], "--no-audio") == 0) no_audio  = 1;
-        else if (strcmp(argv[i], "--thread-affinity") == 0) g_settings.thread_affinity = 1;
-        else if (strcmp(argv[i], "--gdi")      == 0) force_gdi = 1;
-        else if (strcmp(argv[i], "--d3d11")    == 0) force_d3d11 = 1;
-        else if (strcmp(argv[i], "--vulkan")   == 0) g_force_vulkan = 1;
-        else if (strcmp(argv[i], "--no-vsync") == 0) g_no_vsync = 1;
-        else if (strcmp(argv[i], "--vk-exclusive")    == 0) g_settings.vk_exclusive_fullscreen = 1;
-        else if (strcmp(argv[i], "--no-vk-exclusive") == 0) g_settings.vk_exclusive_fullscreen = 0;
-        else if (strcmp(argv[i], "--lsfg")     == 0) g_lsfg_enabled = 1;
-        else if (strncmp(argv[i], "--lsfg-dll=", 11) == 0) {
-            snprintf(g_lsfg_dll_path, sizeof(g_lsfg_dll_path), "%s", argv[i] + 11);
-            g_lsfg_enabled = 1; /* --lsfg-dll= implies --lsfg */
-        }
-        else if (strncmp(argv[i], "--lsfg-multiplier=", 18) == 0) {
-            g_settings.lsfg_multiplier = atoi(argv[i] + 18);
-        }
-        else if (strncmp(argv[i], "--lsfg-flow=", 12) == 0) {
-            g_settings.lsfg_flow_scale = (float)atof(argv[i] + 12);
-        }
-        else if (strcmp(argv[i], "--lsfg-perf") == 0) g_settings.lsfg_perf_mode = 1;
-        else if (strcmp(argv[i], "--pace-log") == 0) pace_log  = 1;
-        else if (strcmp(argv[i], "--timing-log") == 0) timing_log = 1;
-        else if (strcmp(argv[i], "--latency-log") == 0) latency_log = 1;
-        else if (strcmp(argv[i], "--env-trace") == 0) g_env_trace = 1;
-        else if (strcmp(argv[i], "-h")      == 0 || strcmp(argv[i], "--h")     == 0 ||
-                strcmp(argv[i], "-help")    == 0 || strcmp(argv[i], "--help")   == 0 ||
-                strcmp(argv[i], "---help")  == 0 || strcmp(argv[i], "-Help")    == 0 ||
-                strcmp(argv[i], "--Help")   == 0 || strcmp(argv[i], "-HELP")    == 0 ||
-                strcmp(argv[i], "--HELP")   == 0 || strcmp(argv[i], "/h")       == 0 ||
-                strcmp(argv[i], "/H")       == 0 || strcmp(argv[i], "/help")    == 0 ||
-                strcmp(argv[i], "/Help")    == 0 || strcmp(argv[i], "/HELP")    == 0 ||
-                strcmp(argv[i], "-?")       == 0 || strcmp(argv[i], "--?")      == 0 ||
-                strcmp(argv[i], "/?")       == 0 || strcmp(argv[i], "?")        == 0 ||
-                strcmp(argv[i], "help")     == 0 || strcmp(argv[i], "HELP")     == 0 ||
-                strcmp(argv[i], "Help")     == 0 || strcmp(argv[i], "-usage")   == 0 ||
-                strcmp(argv[i], "--usage")  == 0 || strcmp(argv[i], "/usage")   == 0) {
-            printf(
-                "laggueless - libretro core front-end\n"
-                "\n"
-                "usage: %s [options] <core.dll> <rom>\n"
-                "\n"
-                "options:\n"
-                "  -h, --help, -?, /?, /help    show this help and exit\n"
-                "  --no-audio                   disable audio output\n"
-                "  --thread-affinity            pin emu thread to P-cores, audio to a separate\n"
-                "                                 core; both get elevated OS priority\n"
-                "  --gdi                        force GDI for all cores (overrides --d3d11)\n"
-                "  --d3d11                      use D3D11 present path for 2D cores too\n"
-                "                                 (enables VRR / lower latency, but may tear\n"
-                "                                  on non-GSync/FreeSync displays)\n"
-                "  --vulkan                     use the Vulkan present path (work in progress;\n"
-                "                                 required for LSFG frame generation)\n"
-                "  --no-vsync                   (Vulkan only) use IMMEDIATE present mode\n"
-                "                                 (allows tearing, lowest latency)\n"
-                "  --vk-exclusive               (Vulkan only) acquire exclusive fullscreen\n"
-                "                                 (VK_EXT_full_screen_exclusive): bypasses the\n"
-                "                                 DWM compositor for the lowest input-to-pixel\n"
-                "                                 latency. Engages only while the window covers\n"
-                "                                 the whole monitor (fullscreen). (default on)\n"
-                "  --no-vk-exclusive            disable exclusive fullscreen (composited swapchain)\n"
-                "  --lsfg                       enable LSFG 3.1 frame generation (requires\n"
-                "                                 --vulkan and Lossless Scaling on Steam;\n"
-                "                                 place Lossless.dll in lsfg/ next to the exe)\n"
-                "  --lsfg-dll=<path>            path to Lossless.dll (overrides lsfg/ folder)\n"
-                "  --lsfg-multiplier=N          LSFG output multiplier: 2, 3, or 4 (default 2)\n"
-                "  --lsfg-flow=F                LSFG optical-flow scale 0.25..1.0 (default 1.0)\n"
-                "  --lsfg-perf                  LSFG performance mode (lower quality, lower GPU cost)\n"
-                "  --pace-log                   log audio pacing diagnostics\n"
-                "  --timing-log                 log frame timing diagnostics\n"
-                "  --latency-log                log per-stage latency (poll/core/present/wait)\n"
-                "  --env-trace                  log libretro environment calls\n"
-                "\n"
-                "arguments:\n"
-                "  <core.dll>   path to a libretro core DLL (see example-cores/)\n"
-                "  <rom>        path to a ROM file the core supports\n"
-                "\n"
-                "hotkeys (while running):\n"
-                "  F1   cycle aspect ratio (1:1 / 4:3 / 16:9)\n"
-                "  F11  toggle fullscreen\n"
-                "\n"
-                "example:\n"
-                "  %s example-cores\\mesen_libretro.dll \"example-roms\\Super Mario Bros. (World).nes\"\n",
-                exe, exe);
-            return 0;
-        }
-        else if (argv[i][0] == '-') {
-            fprintf(stderr, "unknown flag: %s (try --help)\n", argv[i]); return 1;
-        } else if (npos < 2) {
-            positional[npos++] = argv[i];
-        } else {
-            fprintf(stderr, "extra argument: %s (try --help)\n", argv[i]); return 1;
-        }
+    free(s->ra_state_buf);
+    if (s->game_loaded) {
+        if (s->save_path[0]) me_sram_save(core, s->save_path);
+        core->retro_unload_game();
     }
-    if (npos < 2) {
-        fprintf(stderr, "usage: %s [options] <core.dll> <rom>\n", exe);
-        fprintf(stderr, "try '%s --help' for more information\n", exe);
-        return 1;
-    }
-    const char *core_path = positional[0];
-    const char *rom_path  = positional[1];
+    if (s->core_inited) core->retro_deinit();
+    /* GL before D3D11: GL interop holds a registration on the D3D11 device. */
+    me_gl_shutdown();
+    me_d3d11_shutdown();
+    free(s->rom_data);
+    free(g_back);
+    me_core_unload(core);
 
-    /* ---- Step B1: Load Lossless.dll + extract shaders --------------------- */
-    if (g_lsfg_enabled) {
-        if (!g_force_vulkan) {
-            fprintf(stderr,
-                "[lsfg] WARNING: --lsfg requires --vulkan. Enabling Vulkan automatically.\n");
-            g_force_vulkan = 1;
-        }
-        g_lsfg_shaders = me_lsfg_load(g_lsfg_dll_path[0] ? g_lsfg_dll_path : NULL);
-        if (!g_lsfg_shaders) {
-            /* Error already printed by me_lsfg_load(). Exit cleanly. */
-            return 1;
-        }
-        fprintf(stderr, "[lsfg] DLL: %s\n", me_lsfg_dll_path(g_lsfg_shaders));
-        fprintf(stderr, "[lsfg] shaders extracted: %d\n",
-                me_lsfg_shader_count(g_lsfg_shaders));
-        /* Sanity check: Lossless.dll should have at least 30 shader resources */
-        if (me_lsfg_shader_count(g_lsfg_shaders) < 30) {
-            fprintf(stderr,
-                "[lsfg] WARNING: only %d shader resources found (expected 30+).\n"
-                "[lsfg]          This may not be a valid Lossless Scaling DLL.\n",
-                me_lsfg_shader_count(g_lsfg_shaders));
-        }
-        fprintf(stderr, "[lsfg] Step B1 OK — DLL loaded, shaders ready\n");
+    session_reset_globals();
+    memset(s, 0, sizeof(*s));
+    if (g_hwnd) me_platform_set_idle(g_hwnd, 1);
+}
+
+static int create_main_window(int w, int h) {
+    g_hwnd = me_platform_create_window("laggueless", w, h);
+    if (!g_hwnd) { fprintf(stderr, "window create failed\n"); return -1; }
+    if (g_settings.fullscreen_on_launch) {
+        me_platform_toggle_fullscreen(g_hwnd);
     }
+    return 0;
+}
+
+/* Look up the core for a ROM in the extension table and resolve it to
+   cores\<dll> next to the exe. Returns 0 and fills core_path on success. */
+static int resolve_rom_core(const char *rom_path, char *core_path, size_t core_path_sz) {
+    const char *dll = me_rom_core_for(rom_path);
+    if (!dll) {
+        fprintf(stderr, "[rom] no core is assigned to this file type: %s\n", rom_path);
+        return -1;
+    }
+    snprintf(core_path, core_path_sz, "%scores\\%s", g_exedir, dll);
+    if (GetFileAttributesA(core_path) == INVALID_FILE_ATTRIBUTES) {
+        fprintf(stderr, "[rom] core %s not found; place it in %scores\\\n",
+                dll, g_exedir);
+        return -1;
+    }
+    return 0;
+}
+
+/* Load core + ROM, build the presenter/audio around its AV info, and create
+   the window if this is the first game. Returns 0 on success; on failure the
+   session is closed again and -1 is returned. */
+static int session_open(me_session *s, const char *core_path_in, const char *rom_path_in) {
+    memset(s, 0, sizeof(*s));
+    /* Own the paths: cores may keep game.path, and callers pass scratch buffers. */
+    snprintf(s->core_path, sizeof(s->core_path), "%s", core_path_in);
+    snprintf(s->rom_path,  sizeof(s->rom_path),  "%s", rom_path_in);
+    const char *core_path = s->core_path;
+    const char *rom_path  = s->rom_path;
 
     /* Pick the active per-player-1 control map: per-core entry if it exists
        and has use_universal=false, otherwise the universal map. */
@@ -1303,7 +1292,8 @@ int main(int argc, char **argv) {
     }
 
     me_core *core = me_core_load(core_path);
-    if (!core) { fprintf(stderr, "failed to load core: %s\n", core_path); return 1; }
+    if (!core) { fprintf(stderr, "failed to load core: %s\n", core_path); goto fail; }
+    s->core = core;
 
     unsigned api = core->retro_api_version();
     printf("[core] retro_api_version = %u\n", api);
@@ -1328,6 +1318,7 @@ int main(int argc, char **argv) {
        Compliant cores treat the setters as pointer stores so order is safe. */
     fprintf(stderr, "[load] retro_init()\n"); fflush(stderr);
     core->retro_init();
+    s->core_inited = 1;
     fprintf(stderr, "[load] retro_init returned\n"); fflush(stderr);
     fprintf(stderr, "[load] set_video_refresh\n"); fflush(stderr);
     core->retro_set_video_refresh(me_video_refresh_cb);
@@ -1342,12 +1333,11 @@ int main(int argc, char **argv) {
 
     struct retro_game_info game = {0};
     game.path = rom_path;
-    unsigned char *rom_data = NULL;
-    size_t rom_size = 0;
     if (!info.need_fullpath) {
-        rom_data = slurp(rom_path, &rom_size);
-        if (!rom_data) { fprintf(stderr, "failed to read ROM: %s\n", rom_path); return 1; }
-        game.data = rom_data;
+        size_t rom_size = 0;
+        s->rom_data = slurp(rom_path, &rom_size);
+        if (!s->rom_data) { fprintf(stderr, "failed to read ROM: %s\n", rom_path); goto fail; }
+        game.data = s->rom_data;
         game.size = rom_size;
     }
     fprintf(stderr, "[load] retro_load_game(path=%s, data=%p, size=%zu)\n",
@@ -1360,29 +1350,23 @@ int main(int argc, char **argv) {
     if (!loaded) {
         fprintf(stderr, "retro_load_game failed\n");
         fflush(stderr);
-        return 1;
+        goto fail;
     }
+    s->game_loaded = 1;
 
-    char save_path[MAX_PATH] = {0};
-    if (me_build_save_path(core_path, rom_path, save_path, sizeof(save_path)) == 0) {
-        me_sram_load(core, save_path);
+    if (me_build_save_path(core_path, rom_path, s->save_path, sizeof(s->save_path)) == 0) {
+        me_sram_load(core, s->save_path);
     } else {
+        s->save_path[0] = '\0';
         fprintf(stderr, "[save] could not derive save path; saves disabled\n");
     }
 
-    /* SRAM dirty-poll state. We hash SRAM every ~1s and, once the hash
-       stabilizes for one additional poll, flush to disk. The stability check
-       avoids writing mid-update when the core is still mutating the buffer
-       (e.g. a multi-byte checksum being recomputed by the cart). */
-    uint64_t sram_disk_hash = 0;     /* hash of last bytes we wrote to disk */
-    uint64_t sram_last_hash = 0;     /* hash from previous poll tick */
-    int      sram_pending  = 0;      /* hash changed; waiting for it to settle */
-    DWORD    sram_last_poll_ms = GetTickCount();
-    if (save_path[0] && core->retro_get_memory_data && core->retro_get_memory_size) {
+    s->sram_last_poll_ms = GetTickCount();
+    if (s->save_path[0] && core->retro_get_memory_data && core->retro_get_memory_size) {
         void *mem = core->retro_get_memory_data(RETRO_MEMORY_SAVE_RAM);
         size_t sz = core->retro_get_memory_size(RETRO_MEMORY_SAVE_RAM);
         if (mem && sz) {
-            sram_disk_hash = sram_last_hash = me_fnv1a64(mem, sz);
+            s->sram_disk_hash = s->sram_last_hash = me_fnv1a64(mem, sz);
         }
     }
 
@@ -1397,7 +1381,7 @@ int main(int argc, char **argv) {
     g_back_max_w = av.geometry.max_width  ? av.geometry.max_width  : av.geometry.base_width;
     g_back_max_h = av.geometry.max_height ? av.geometry.max_height : av.geometry.base_height;
     g_back = (u32 *)calloc((size_t)g_back_max_w * g_back_max_h, sizeof(u32));
-    if (!g_back) { fprintf(stderr, "backbuffer alloc failed\n"); return 1; }
+    if (!g_back) { fprintf(stderr, "backbuffer alloc failed\n"); goto fail; }
 
     /* HW path: now that we know max geometry, build the FBO and fire the
        core's context_reset so it can upload its shaders/VBOs. retro_load_game
@@ -1408,26 +1392,27 @@ int main(int argc, char **argv) {
         if (me_gl_fbo_create(g_back_max_w, g_back_max_h,
                              g_hw_render.depth, g_hw_render.stencil) != 0) {
             fprintf(stderr, "[hw] FBO creation failed\n");
-            return 1;
+            goto fail;
         }
         if (g_hw_render.context_reset) {
             fprintf(stderr, "[hw] calling context_reset\n"); fflush(stderr);
             g_hw_render.context_reset();
         }
+        s->hw_context_live = 1;
     }
     g_frame_w = av.geometry.base_width;
     g_frame_h = av.geometry.base_height;
 
-    /* Create window sized to a reasonable 2× of base geometry. */
-    int win_w = (int)(av.geometry.base_width  * 2);
-    int win_h = (int)(av.geometry.base_height * 2);
-    if (win_w < 320) win_w = 640;
-    if (win_h < 240) win_h = 480;
-    g_hwnd = me_platform_create_window("laggueless", win_w, win_h);
-    if (!g_hwnd) { fprintf(stderr, "window create failed\n"); return 1; }
-    if (g_settings.fullscreen_on_launch) {
-        me_platform_toggle_fullscreen(g_hwnd);
+    /* First game of the run: create the window sized to a reasonable 2× of
+       base geometry. Later games reuse the window as the user left it. */
+    if (!g_hwnd) {
+        int win_w = (int)(av.geometry.base_width  * 2);
+        int win_h = (int)(av.geometry.base_height * 2);
+        if (win_w < 320) win_w = 640;
+        if (win_h < 240) win_h = 480;
+        if (create_main_window(win_w, win_h) != 0) goto fail;
     }
+    me_platform_set_idle(g_hwnd, 0);
 
     /* Vulkan path takes priority when --vulkan succeeds. If Vulkan init
        fails, fall through to the normal D3D11/GDI selection below. */
@@ -1438,7 +1423,7 @@ int main(int argc, char **argv) {
         if (g_no_vsync) _putenv("LAGGUELESS_VK_NO_VSYNC=1");
         if (g_settings.vk_exclusive_fullscreen && !getenv("LAGGUELESS_VK_EXCLUSIVE"))
             _putenv("LAGGUELESS_VK_EXCLUSIVE=1");
-        if (pace_log)   _putenv("LAGGUELESS_VK_PACE_LOG=1");
+        if (g_pace_log) _putenv("LAGGUELESS_VK_PACE_LOG=1");
         if (me_vk_init(g_hwnd, g_back_max_w, g_back_max_h) == 0) {
             vk_initialized = 1;
             if (g_hw_render_accepted) {
@@ -1474,13 +1459,13 @@ int main(int argc, char **argv) {
     /* D3D11 flip-model is used for HW (GL) cores by default and for software
        cores when --d3d11 is set. Otherwise software cores stay on GDI: lower
        visible tearing on non-VRR displays. --gdi overrides everything. */
-    if (!vk_initialized && !force_gdi && (g_hw_render_accepted || force_d3d11)) {
+    if (!vk_initialized && !g_force_gdi && (g_hw_render_accepted || g_force_d3d11)) {
         if (me_d3d11_init(g_hwnd, g_back_max_w, g_back_max_h) == 0) {
             g_use_d3d11 = 1;
         } else {
             fprintf(stderr, "[render] D3D11 init failed, falling back to GDI\n");
         }
-    } else if (force_gdi) {
+    } else if (g_force_gdi) {
         printf("[render] --gdi forced\n");
     }
 
@@ -1580,8 +1565,7 @@ int main(int argc, char **argv) {
             printf("[pace] match_display_hz: could not query display refresh; keeping core rate\n");
         }
     }
-    int audio_ok = 0;
-    if (no_audio) {
+    if (g_no_audio) {
         printf("[audio] disabled via --no-audio; using Sleep-based pacing\n");
         g_dev_rate = g_core_rate;
     } else {
@@ -1590,15 +1574,15 @@ int main(int argc, char **argv) {
             audio_mode = ME_AUDIO_MODE_EXCLUSIVE;
         else if (g_settings.low_latency)
             audio_mode = ME_AUDIO_MODE_LOW_LATENCY;
-        audio_ok = (me_audio_init(&g_dev_rate, audio_mode) == 0);
-        if (!audio_ok) {
+        s->audio_ok = (me_audio_init(&g_dev_rate, audio_mode) == 0);
+        if (!s->audio_ok) {
             fprintf(stderr, "[audio] init failed; falling back to Sleep pacing\n");
+            me_audio_shutdown(); /* release whatever the failed init acquired */
             g_dev_rate = g_core_rate;
         } else {
             g_audio_active = 1;
         }
     }
-    size_t frame_audio = (size_t)(g_dev_rate / fps + 0.5);
     /* Pacing target: keep about 30 ms buffered in the ring. Cores deliver
        audio in per-frame bursts (~16.6 ms at 60 fps), and the WASAPI buffer
        drains in ~20 ms cycles. 30 ms gives ~13 ms of headroom over the
@@ -1606,58 +1590,41 @@ int main(int argc, char **argv) {
        across jittery delivery without bloating latency. Lower than this
        (e.g. 20 ms) causes underruns in cores like Mesen that produce one
        big batch per frame at exactly the device rate. */
-    size_t target_buffered = (size_t)(g_dev_rate * 0.030);
+    s->target_buffered = (size_t)(g_dev_rate * 0.030);
 
     /* Video pacing is QPC absolute-deadline + spin-wait, regardless of audio.
        Audio is kept in sync via a small bias on the resampler ratio (dynamic
-       rate control), NOT by skipping or duplicating frames. Windows' default
-       Sleep granularity is ~15.6 ms, so we request 1 ms resolution. */
-    double frame_period_ms = 1000.0 / fps;
-    LARGE_INTEGER qpf, qstart;
-    QueryPerformanceFrequency(&qpf);
-    timeBeginPeriod(1);
-    /* Anchor qstart AFTER any one-time setup so the very first frame's
-       deadline doesn't start out late. */
-    QueryPerformanceCounter(&qstart);
-    unsigned long frame_count = 0;
-
-    /* Per-second rollup for --pace-log. */
-    double pl_gap_min = 1e9, pl_gap_max = 0, pl_gap_sum = 0;
-    size_t pl_fill_before_min = (size_t)-1, pl_fill_before_max = 0, pl_fill_before_sum = 0;
-    size_t pl_fill_after_min  = (size_t)-1, pl_fill_after_max  = 0, pl_fill_after_sum  = 0;
-    unsigned pl_iters = 0, pl_timeouts = 0;
-    LARGE_INTEGER pl_last_qpc; QueryPerformanceCounter(&pl_last_qpc);
-    LARGE_INTEGER pl_window_start = pl_last_qpc;
+       rate control), NOT by skipping or duplicating frames. */
+    s->frame_period_ms = 1000.0 / fps;
+    QueryPerformanceFrequency(&s->qpf);
 
     /* Run-ahead setup. Disabled for HW (GL) cores: savestates don't capture GL
        context state, and re-running a frame with GL side-effects (FBO writes,
        texture uploads) would corrupt visible output. Software cores serialize
        to a flat byte buffer that round-trips cleanly. */
-    int ra_frames = g_settings.runahead_frames;
-    if (ra_frames > 0 && g_hw_render_accepted) {
+    s->ra_frames = g_settings.runahead_frames;
+    if (s->ra_frames > 0 && g_hw_render_accepted) {
         printf("[runahead] disabled for hardware-rendered cores\n");
-        ra_frames = 0;
+        s->ra_frames = 0;
     }
-    size_t ra_state_size = 0;
-    void  *ra_state_buf  = NULL;
-    if (ra_frames > 0) {
+    if (s->ra_frames > 0) {
         if (!core->retro_serialize_size || !core->retro_serialize || !core->retro_unserialize) {
             printf("[runahead] core lacks serialize support; disabling\n");
-            ra_frames = 0;
+            s->ra_frames = 0;
         } else {
-            ra_state_size = core->retro_serialize_size();
-            if (ra_state_size == 0) {
+            s->ra_state_size = core->retro_serialize_size();
+            if (s->ra_state_size == 0) {
                 printf("[runahead] core reports zero state size; disabling\n");
-                ra_frames = 0;
+                s->ra_frames = 0;
             } else {
-                ra_state_buf = malloc(ra_state_size);
-                if (!ra_state_buf) {
+                s->ra_state_buf = malloc(s->ra_state_size);
+                if (!s->ra_state_buf) {
                     fprintf(stderr, "[runahead] state buffer alloc failed (%zu bytes); disabling\n",
-                            ra_state_size);
-                    ra_frames = 0;
+                            s->ra_state_size);
+                    s->ra_frames = 0;
                 } else {
                     printf("[runahead] enabled: %d frame%s ahead, state=%zu bytes\n",
-                           ra_frames, ra_frames == 1 ? "" : "s", ra_state_size);
+                           s->ra_frames, s->ra_frames == 1 ? "" : "s", s->ra_state_size);
                 }
             }
         }
@@ -1676,7 +1643,7 @@ int main(int argc, char **argv) {
             SetThreadAffinityMask(GetCurrentThread(), emu_mask);
             printf("[affinity] emu thread pinned to mask 0x%llx\n",
                    (unsigned long long)emu_mask);
-            if (audio_ok) {
+            if (s->audio_ok) {
                 me_audio_set_thread_affinity((unsigned long long)audio_mask,
                                             THREAD_PRIORITY_TIME_CRITICAL);
                 printf("[affinity] audio thread pinned to mask 0x%llx, priority=TIME_CRITICAL\n",
@@ -1684,324 +1651,546 @@ int main(int argc, char **argv) {
             }
         } else {
             printf("[affinity] could not split cores (single-core or API unavailable); priority-only\n");
-            if (audio_ok)
+            if (s->audio_ok)
                 me_audio_set_thread_affinity(0, THREAD_PRIORITY_TIME_CRITICAL);
         }
         SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
         printf("[affinity] emu thread priority=HIGHEST\n");
     }
 
-    g_latency_log = latency_log;
-    /* Per-stage latency telemetry: split each iteration into
-         backpressure_wait (DXGI waitable)
-         pre_poll          (top of retro_run until the core polls input)
-         post_poll         (rest of retro_run after the poll callback)
-         present           (frame upload + Present)
-         pace_wait         (Sleep + spin to absolute QPC deadline)
-       Sums and a frame-N marker are printed each second. Hot-path cost
-       when disabled: one branch in me_input_poll_cb and at each
-       checkpoint — negligible. */
-    double ll_pre_sum = 0, ll_post_sum = 0, ll_present_sum = 0;
-    double ll_pace_sum = 0, ll_back_sum = 0;
-    double ll_iter_max = 0;
-    unsigned ll_iters = 0, ll_missed_polls = 0;
-    LARGE_INTEGER ll_window_start; QueryPerformanceCounter(&ll_window_start);
-    unsigned long ll_window_first_frame = 0;
+    s->pl_gap_min = 1e9;
+    s->pl_fill_before_min = s->pl_fill_after_min = (size_t)-1;
 
-    while (me_platform_pump()) {
-        LARGE_INTEGER ll_t0; if (latency_log) QueryPerformanceCounter(&ll_t0);
-        /* DXGI 1.3 waitable swap chain backpressure: with max frame latency
-           pinned to 1, this blocks until the previous Present has been
-           consumed by the compositor. Keeps CPU exactly one frame ahead of
-           GPU instead of letting Present queue frames silently. Pre-Win8.1
-           and the GDI present path return 0 here and rely on the QPC tail
-           below for pacing. */
-        if (g_use_d3d11) me_d3d11_wait_for_present(1000);
-        else if (me_vk_is_active()) me_vk_wait_for_present(1000);
-        LARGE_INTEGER ll_t_after_wait; if (latency_log) QueryPerformanceCounter(&ll_t_after_wait);
-        int xi_p = g_settings.xi_player_index;
-        static int xi_prev_fullscreen = 0, xi_prev_exit_fs = 0, xi_prev_aspect = 0;
-        static int xi_prev_quit = 0, xi_prev_reset = 0;
-        if (hk_pressed(&g_settings.hk_toggle_fullscreen) ||
-            hk_xi_pressed(&g_settings.hk_xi_toggle_fullscreen, xi_p, &xi_prev_fullscreen)) {
-            me_platform_toggle_fullscreen(g_hwnd);
-        }
-        if (hk_pressed(&g_settings.hk_exit_fullscreen) ||
-            hk_xi_pressed(&g_settings.hk_xi_exit_fullscreen, xi_p, &xi_prev_exit_fs)) {
-            me_platform_exit_fullscreen(g_hwnd);
-        }
-        if (hk_pressed(&g_settings.hk_cycle_aspect) ||
-            hk_xi_pressed(&g_settings.hk_xi_cycle_aspect, xi_p, &xi_prev_aspect)) {
-            g_aspect_mode = (g_aspect_mode + 1) % 3;
-            printf("[aspect] %s\n", g_aspect_names[g_aspect_mode]);
-        }
-        if (hk_pressed(&g_settings.hk_quit) ||
-            hk_xi_pressed(&g_settings.hk_xi_quit, xi_p, &xi_prev_quit)) {
-            me_platform_request_quit();
-        }
-        int did_reset = 0;
-        if (hk_pressed(&g_settings.hk_reset) ||
-            hk_xi_pressed(&g_settings.hk_xi_reset, xi_p, &xi_prev_reset)) {
-            if (core->retro_reset) {
-                core->retro_reset();
-                did_reset = 1;
-                printf("[hotkey] reset\n");
-            }
-        }
-        size_t fill_before = 0, fill_after = 0;
-        int timed_out = 0;
-        (void)frame_audio; (void)timed_out;
-        if (audio_ok && pace_log) fill_before = ME_RING_TOTAL - me_audio_writable_frames();
+    /* Anchor qstart AFTER all one-time setup so the very first frame's
+       deadline doesn't start out late. */
+    QueryPerformanceCounter(&s->qstart);
+    s->pl_last_qpc = s->pl_window_start = s->ll_window_start = s->qstart;
+    s->active = 1;
+    return 0;
 
-        /* GL is per-thread; make sure our context is current on this thread
-           before the core does any GL work. Cheap if already current. */
-        if (g_hw_render_accepted) {
-            me_gl_make_current();
-            /* Interop: lock the shared texture so GL has exclusive access
-               while the core renders. No-op if interop is inactive. */
-            me_gl_interop_lock();
+fail:
+    session_close(s);
+    return -1;
+}
+
+/* Hotkeys are live with or without a game loaded. Returns 1 if the reset
+   hotkey fired and reset the running core. */
+static int handle_hotkeys(me_session *s) {
+    int xi_p = g_settings.xi_player_index;
+    static int xi_prev_fullscreen = 0, xi_prev_exit_fs = 0, xi_prev_aspect = 0;
+    static int xi_prev_quit = 0, xi_prev_reset = 0;
+    if (hk_pressed(&g_settings.hk_toggle_fullscreen) ||
+        hk_xi_pressed(&g_settings.hk_xi_toggle_fullscreen, xi_p, &xi_prev_fullscreen)) {
+        me_platform_toggle_fullscreen(g_hwnd);
+    }
+    if (hk_pressed(&g_settings.hk_exit_fullscreen) ||
+        hk_xi_pressed(&g_settings.hk_xi_exit_fullscreen, xi_p, &xi_prev_exit_fs)) {
+        me_platform_exit_fullscreen(g_hwnd);
+    }
+    if (hk_pressed(&g_settings.hk_cycle_aspect) ||
+        hk_xi_pressed(&g_settings.hk_xi_cycle_aspect, xi_p, &xi_prev_aspect)) {
+        g_aspect_mode = (g_aspect_mode + 1) % 3;
+        printf("[aspect] %s\n", g_aspect_names[g_aspect_mode]);
+    }
+    if (hk_pressed(&g_settings.hk_quit) ||
+        hk_xi_pressed(&g_settings.hk_xi_quit, xi_p, &xi_prev_quit)) {
+        me_platform_request_quit();
+    }
+    int did_reset = 0;
+    if (hk_pressed(&g_settings.hk_reset) ||
+        hk_xi_pressed(&g_settings.hk_xi_reset, xi_p, &xi_prev_reset)) {
+        if (s->active && s->core->retro_reset) {
+            s->core->retro_reset();
+            did_reset = 1;
+            printf("[hotkey] reset\n");
         }
-        if (latency_log) g_poll_qpc.QuadPart = 0;
-        LARGE_INTEGER ll_t_before_run; if (latency_log) QueryPerformanceCounter(&ll_t_before_run);
-        if (ra_frames > 0) {
-            /* Run-ahead, single-instance technique. The core is currently at
-               frame F (the displayed frame from last iteration). To show the
-               user frame F+ra_frames worth of latency reduction:
-                 1. save state at F
-                 2. silently advance ra_frames more frames (A/V muted) so the
-                    sim is "looking ahead"
-                 3. run one more frame with A/V on — this is what we show
-                 4. load the saved state — undo the ahead+visible frames
-                 5. advance exactly one real frame (muted) so next iter starts
-                    at F+1 — net forward progress is one frame per iteration.
-               The displayed frame is ra_frames ahead of the underlying sim
-               clock, which is exactly the input-latency reduction the user
-               feels: their input applies "earlier" relative to what they see. */
-            if (!core->retro_serialize(ra_state_buf, ra_state_size)) {
-                fprintf(stderr, "[runahead] serialize failed; disabling for rest of session\n");
-                free(ra_state_buf); ra_state_buf = NULL;
-                ra_frames = 0;
-                core->retro_run();
+    }
+    return did_reset;
+}
+
+/* One main-loop iteration with a game running: backpressure wait, hotkeys,
+   retro_run (+ run-ahead), present, SRAM flush, audio DRC, deadline pacing. */
+static void session_run_frame(me_session *s) {
+    me_core *core = s->core;
+    const LARGE_INTEGER qpf = s->qpf;
+    LARGE_INTEGER ll_t0; if (g_latency_log) QueryPerformanceCounter(&ll_t0);
+    /* DXGI 1.3 waitable swap chain backpressure: with max frame latency
+       pinned to 1, this blocks until the previous Present has been
+       consumed by the compositor. Keeps CPU exactly one frame ahead of
+       GPU instead of letting Present queue frames silently. Pre-Win8.1
+       and the GDI present path return 0 here and rely on the QPC tail
+       below for pacing. */
+    if (g_use_d3d11) me_d3d11_wait_for_present(1000);
+    else if (me_vk_is_active()) me_vk_wait_for_present(1000);
+    LARGE_INTEGER ll_t_after_wait; if (g_latency_log) QueryPerformanceCounter(&ll_t_after_wait);
+    int did_reset = handle_hotkeys(s);
+    size_t fill_before = 0, fill_after = 0;
+    if (s->audio_ok && g_pace_log) fill_before = ME_RING_TOTAL - me_audio_writable_frames();
+
+    /* GL is per-thread; make sure our context is current on this thread
+       before the core does any GL work. Cheap if already current. */
+    if (g_hw_render_accepted) {
+        me_gl_make_current();
+        /* Interop: lock the shared texture so GL has exclusive access
+           while the core renders. No-op if interop is inactive. */
+        me_gl_interop_lock();
+    }
+    if (g_latency_log) g_poll_qpc.QuadPart = 0;
+    LARGE_INTEGER ll_t_before_run; if (g_latency_log) QueryPerformanceCounter(&ll_t_before_run);
+    if (s->ra_frames > 0) {
+        /* Run-ahead, single-instance technique. The core is currently at
+           frame F (the displayed frame from last iteration). To show the
+           user frame F+ra_frames worth of latency reduction:
+             1. save state at F
+             2. silently advance ra_frames more frames (A/V muted) so the
+                sim is "looking ahead"
+             3. run one more frame with A/V on — this is what we show
+             4. load the saved state — undo the ahead+visible frames
+             5. advance exactly one real frame (muted) so next iter starts
+                at F+1 — net forward progress is one frame per iteration.
+           The displayed frame is ra_frames ahead of the underlying sim
+           clock, which is exactly the input-latency reduction the user
+           feels: their input applies "earlier" relative to what they see. */
+        if (!core->retro_serialize(s->ra_state_buf, s->ra_state_size)) {
+            fprintf(stderr, "[runahead] serialize failed; disabling for rest of session\n");
+            free(s->ra_state_buf); s->ra_state_buf = NULL;
+            s->ra_frames = 0;
+            core->retro_run();
+        } else {
+            g_av_mute = 1;
+            for (int i = 0; i < s->ra_frames; i++) core->retro_run();
+            g_av_mute = 0;
+            core->retro_run();  /* this one is shown */
+            if (did_reset) {
+                /* Don't restore the pre-reset snapshot — the reset just happened. */
+            } else if (!core->retro_unserialize(s->ra_state_buf, s->ra_state_size)) {
+                fprintf(stderr, "[runahead] unserialize failed; disabling for rest of session\n");
+                free(s->ra_state_buf); s->ra_state_buf = NULL;
+                s->ra_frames = 0;
             } else {
                 g_av_mute = 1;
-                for (int i = 0; i < ra_frames; i++) core->retro_run();
+                core->retro_run();
                 g_av_mute = 0;
-                core->retro_run();  /* this one is shown */
-                if (did_reset) {
-                    /* Don't restore the pre-reset snapshot — the reset just happened. */
-                } else if (!core->retro_unserialize(ra_state_buf, ra_state_size)) {
-                    fprintf(stderr, "[runahead] unserialize failed; disabling for rest of session\n");
-                    free(ra_state_buf); ra_state_buf = NULL;
-                    ra_frames = 0;
-                } else {
-                    g_av_mute = 1;
-                    core->retro_run();
-                    g_av_mute = 0;
-                }
             }
-        } else {
-            core->retro_run();
         }
-        if (g_hw_render_accepted) me_gl_interop_unlock();
-        LARGE_INTEGER ll_t_after_run; if (latency_log) QueryPerformanceCounter(&ll_t_after_run);
-        present(g_hwnd);
-        LARGE_INTEGER ll_t_after_present; if (latency_log) QueryPerformanceCounter(&ll_t_after_present);
+    } else {
+        core->retro_run();
+    }
+    if (g_hw_render_accepted) me_gl_interop_unlock();
+    LARGE_INTEGER ll_t_after_run; if (g_latency_log) QueryPerformanceCounter(&ll_t_after_run);
+    present(g_hwnd);
+    LARGE_INTEGER ll_t_after_present; if (g_latency_log) QueryPerformanceCounter(&ll_t_after_present);
 
-        /* SRAM dirty-poll: catches in-game saves so a force-quit shortly after
-           the user hits "Save" still persists the write. 1s cadence + one-tick
-           debounce → worst case ~2s to land on disk. */
-        if (save_path[0] && core->retro_get_memory_data && core->retro_get_memory_size) {
-            DWORD now_ms = GetTickCount();
-            if (now_ms - sram_last_poll_ms >= 1000) {
-                sram_last_poll_ms = now_ms;
-                void *mem = core->retro_get_memory_data(RETRO_MEMORY_SAVE_RAM);
-                size_t sz = core->retro_get_memory_size(RETRO_MEMORY_SAVE_RAM);
-                if (mem && sz) {
-                    uint64_t h = me_fnv1a64(mem, sz);
-                    if (h != sram_disk_hash) {
-                        if (sram_pending && h == sram_last_hash) {
-                            /* Settled — write it out. */
-                            me_sram_save(core, save_path);
-                            sram_disk_hash = h;
-                            sram_pending = 0;
-                        } else {
-                            /* Still changing (or first time we noticed) — wait one more tick. */
-                            sram_pending = 1;
-                        }
+    /* SRAM dirty-poll: catches in-game saves so a force-quit shortly after
+       the user hits "Save" still persists the write. 1s cadence + one-tick
+       debounce → worst case ~2s to land on disk. */
+    if (s->save_path[0] && core->retro_get_memory_data && core->retro_get_memory_size) {
+        DWORD now_ms = GetTickCount();
+        if (now_ms - s->sram_last_poll_ms >= 1000) {
+            s->sram_last_poll_ms = now_ms;
+            void *mem = core->retro_get_memory_data(RETRO_MEMORY_SAVE_RAM);
+            size_t sz = core->retro_get_memory_size(RETRO_MEMORY_SAVE_RAM);
+            if (mem && sz) {
+                uint64_t h = me_fnv1a64(mem, sz);
+                if (h != s->sram_disk_hash) {
+                    if (s->sram_pending && h == s->sram_last_hash) {
+                        /* Settled — write it out. */
+                        me_sram_save(core, s->save_path);
+                        s->sram_disk_hash = h;
+                        s->sram_pending = 0;
                     } else {
-                        sram_pending = 0;
+                        /* Still changing (or first time we noticed) — wait one more tick. */
+                        s->sram_pending = 1;
                     }
-                    sram_last_hash = h;
+                } else {
+                    s->sram_pending = 0;
                 }
+                s->sram_last_hash = h;
             }
         }
+    }
 
-        /* Dynamic rate control: PI controller on ring-fill error. The integral
-           term `g_resamp_ratio_bias` absorbs the long-term core-vs-device
-           clock mismatch; the proportional term adds a tiny instantaneous
-           response to keep the ring near target. Bias clamped to ±0.5% so
-           pitch shift stays below audibility (~8 cents). */
-        double drc_p_term = 0.0;
-        if (audio_ok) {
-            size_t fill = ME_RING_TOTAL - me_audio_writable_frames();
-            if (pace_log) fill_after = fill;
+    /* Dynamic rate control: PI controller on ring-fill error. The integral
+       term `g_resamp_ratio_bias` absorbs the long-term core-vs-device
+       clock mismatch; the proportional term adds a tiny instantaneous
+       response to keep the ring near target. Bias clamped to ±0.5% so
+       pitch shift stays below audibility (~8 cents). */
+    double drc_p_term = 0.0;
+    if (s->audio_ok) {
+        size_t fill = ME_RING_TOTAL - me_audio_writable_frames();
+        if (g_pace_log) fill_after = fill;
 
-            /* 60-frame moving average of ring fill. Reacting to instantaneous
-               fill makes the rate bias chase per-frame noise and produces an
-               audible pitch wobble. Averaging over ~1 second smooths that out
-               while still tracking the true core-vs-device clock drift. */
-            static size_t fill_hist[60];
-            static int    fill_hist_idx = 0;
-            static int    fill_hist_filled = 0;
-            fill_hist[fill_hist_idx] = fill;
-            fill_hist_idx = (fill_hist_idx + 1) % 60;
-            if (fill_hist_idx == 0) fill_hist_filled = 1;
+        /* 60-frame moving average of ring fill. Reacting to instantaneous
+           fill makes the rate bias chase per-frame noise and produces an
+           audible pitch wobble. Averaging over ~1 second smooths that out
+           while still tracking the true core-vs-device clock drift. */
+        s->fill_hist[s->fill_hist_idx] = fill;
+        s->fill_hist_idx = (s->fill_hist_idx + 1) % 60;
+        if (s->fill_hist_idx == 0) s->fill_hist_filled = 1;
 
-            if (fill_hist_filled) {
-                uint64_t sum = 0;
-                for (int k = 0; k < 60; k++) sum += fill_hist[k];
-                double avg_fill = (double)sum / 60.0;
-                /* Normalized error: -1 = ring empty, 0 = at target, +1 = double target. */
-                double err = (avg_fill - (double)target_buffered) / (double)target_buffered;
-                /* Integral term: tracks the true core-vs-device clock mismatch.
-                   Bound to ±0.25% (~4 cents, still inaudible — Mesen targets
-                   the same window). Wider than the original ±0.1% because
-                   cores at identity ratio (Mesen NES @ 48000) need more
-                   headroom to drain a too-full ring within reasonable time. */
-                g_resamp_ratio_bias += 1.0e-6 * err;
-                if (g_resamp_ratio_bias >  0.0025) g_resamp_ratio_bias =  0.0025;
-                if (g_resamp_ratio_bias < -0.0025) g_resamp_ratio_bias = -0.0025;
-                /* Proportional term: very gentle for inaudible transient response.
-                   Max ±0.05% (~0.9 cents) and applied only this frame. */
-                drc_p_term = 0.0001 * err;
-                if (drc_p_term >  0.0005) drc_p_term =  0.0005;
-                if (drc_p_term < -0.0005) drc_p_term = -0.0005;
-            }
+        if (s->fill_hist_filled) {
+            uint64_t sum = 0;
+            for (int k = 0; k < 60; k++) sum += s->fill_hist[k];
+            double avg_fill = (double)sum / 60.0;
+            /* Normalized error: -1 = ring empty, 0 = at target, +1 = double target. */
+            double err = (avg_fill - (double)s->target_buffered) / (double)s->target_buffered;
+            /* Integral term: tracks the true core-vs-device clock mismatch.
+               Bound to ±0.25% (~4 cents, still inaudible — Mesen targets
+               the same window). Wider than the original ±0.1% because
+               cores at identity ratio (Mesen NES @ 48000) need more
+               headroom to drain a too-full ring within reasonable time. */
+            g_resamp_ratio_bias += 1.0e-6 * err;
+            if (g_resamp_ratio_bias >  0.0025) g_resamp_ratio_bias =  0.0025;
+            if (g_resamp_ratio_bias < -0.0025) g_resamp_ratio_bias = -0.0025;
+            /* Proportional term: very gentle for inaudible transient response.
+               Max ±0.05% (~0.9 cents) and applied only this frame. */
+            drc_p_term = 0.0001 * err;
+            if (drc_p_term >  0.0005) drc_p_term =  0.0005;
+            if (drc_p_term < -0.0005) drc_p_term = -0.0005;
         }
-        g_resamp_p_bias = drc_p_term;
+    }
+    g_resamp_p_bias = drc_p_term;
 
-        /* QPC absolute-deadline pace. Frame N must land at qstart + N*period.
-           Sleep most of the wait at 1ms resolution, then spin the last bit. */
-        frame_count++;
-        {
-            LARGE_INTEGER now;
+    /* QPC absolute-deadline pace. Frame N must land at qstart + N*period.
+       Sleep most of the wait at 1ms resolution, then spin the last bit. */
+    s->frame_count++;
+    {
+        LARGE_INTEGER now;
+        QueryPerformanceCounter(&now);
+        double elapsed_ms = (double)(now.QuadPart - s->qstart.QuadPart) * 1000.0 / (double)qpf.QuadPart;
+        double deadline_ms = (double)s->frame_count * s->frame_period_ms;
+        double wait_ms = deadline_ms - elapsed_ms;
+        if (wait_ms > 1.5) Sleep((DWORD)(wait_ms - 1.0));
+        while (1) {
             QueryPerformanceCounter(&now);
-            double elapsed_ms = (double)(now.QuadPart - qstart.QuadPart) * 1000.0 / (double)qpf.QuadPart;
-            double deadline_ms = (double)frame_count * frame_period_ms;
-            double wait_ms = deadline_ms - elapsed_ms;
-            if (wait_ms > 1.5) Sleep((DWORD)(wait_ms - 1.0));
-            while (1) {
-                QueryPerformanceCounter(&now);
-                elapsed_ms = (double)(now.QuadPart - qstart.QuadPart) * 1000.0 / (double)qpf.QuadPart;
-                if (elapsed_ms >= deadline_ms) break;
-            }
+            elapsed_ms = (double)(now.QuadPart - s->qstart.QuadPart) * 1000.0 / (double)qpf.QuadPart;
+            if (elapsed_ms >= deadline_ms) break;
         }
-        if (timing_log && (frame_count % 1000) == 0) {
-            LARGE_INTEGER now;
-            QueryPerformanceCounter(&now);
-            double elapsed_ms = (double)(now.QuadPart - qstart.QuadPart) * 1000.0 / (double)qpf.QuadPart;
-            double expected_ms = (double)frame_count * frame_period_ms;
-            double drift_ms = elapsed_ms - expected_ms;
-            me_log(ME_LOG_TIMING,
-                   "[timing] frame %lu expected=%.3f ms actual=%.3f ms drift=%+.3f ms (%+.3f us/frame) bias=%+.4f%%\n",
-                   frame_count, expected_ms, elapsed_ms, drift_ms,
-                   (drift_ms * 1000.0) / (double)frame_count,
+    }
+    if (g_timing_log && (s->frame_count % 1000) == 0) {
+        LARGE_INTEGER now;
+        QueryPerformanceCounter(&now);
+        double elapsed_ms = (double)(now.QuadPart - s->qstart.QuadPart) * 1000.0 / (double)qpf.QuadPart;
+        double expected_ms = (double)s->frame_count * s->frame_period_ms;
+        double drift_ms = elapsed_ms - expected_ms;
+        me_log(ME_LOG_TIMING,
+               "[timing] frame %lu expected=%.3f ms actual=%.3f ms drift=%+.3f ms (%+.3f us/frame) bias=%+.4f%%\n",
+               s->frame_count, expected_ms, elapsed_ms, drift_ms,
+               (drift_ms * 1000.0) / (double)s->frame_count,
+               g_resamp_ratio_bias * 100.0);
+    }
+    if (g_latency_log) {
+        LARGE_INTEGER ll_t_end; QueryPerformanceCounter(&ll_t_end);
+        double q = 1000.0 / (double)qpf.QuadPart;
+        double d_back    = (double)(ll_t_after_wait.QuadPart    - ll_t0.QuadPart)            * q;
+        double d_run     = (double)(ll_t_after_run.QuadPart     - ll_t_before_run.QuadPart)  * q;
+        double d_present = (double)(ll_t_after_present.QuadPart - ll_t_after_run.QuadPart)   * q;
+        double d_pace    = (double)(ll_t_end.QuadPart           - ll_t_after_present.QuadPart) * q;
+        double d_iter    = (double)(ll_t_end.QuadPart           - ll_t0.QuadPart)            * q;
+        double d_pre = d_run, d_post = 0;
+        if (g_poll_qpc.QuadPart != 0
+            && g_poll_qpc.QuadPart >= ll_t_before_run.QuadPart
+            && g_poll_qpc.QuadPart <= ll_t_after_run.QuadPart) {
+            d_pre  = (double)(g_poll_qpc.QuadPart      - ll_t_before_run.QuadPart) * q;
+            d_post = (double)(ll_t_after_run.QuadPart  - g_poll_qpc.QuadPart)      * q;
+        } else {
+            s->ll_missed_polls++;
+        }
+        s->ll_back_sum    += d_back;
+        s->ll_pre_sum     += d_pre;
+        s->ll_post_sum    += d_post;
+        s->ll_present_sum += d_present;
+        s->ll_pace_sum    += d_pace;
+        if (d_iter > s->ll_iter_max) s->ll_iter_max = d_iter;
+        if (s->ll_iters == 0) s->ll_window_first_frame = s->frame_count;
+        s->ll_iters++;
+        double window_ms = (double)(ll_t_end.QuadPart - s->ll_window_start.QuadPart) * q;
+        if (window_ms >= 1000.0 && s->ll_iters > 0) {
+            double n = (double)s->ll_iters;
+            me_log(ME_LOG_LATENCY,
+                   "[latency] frame %lu..%lu (n=%u) avg ms: back=%.3f pre_poll=%.3f post_poll=%.3f present=%.3f pace=%.3f | iter_max=%.3f missed_polls=%u\n",
+                   s->ll_window_first_frame, s->frame_count, s->ll_iters,
+                   s->ll_back_sum / n, s->ll_pre_sum / n, s->ll_post_sum / n,
+                   s->ll_present_sum / n, s->ll_pace_sum / n,
+                   s->ll_iter_max, s->ll_missed_polls);
+            s->ll_back_sum = s->ll_pre_sum = s->ll_post_sum = 0;
+            s->ll_present_sum = s->ll_pace_sum = 0;
+            s->ll_iter_max = 0;
+            s->ll_iters = 0; s->ll_missed_polls = 0;
+            s->ll_window_start = ll_t_end;
+        }
+    }
+    if (g_pace_log) {
+        LARGE_INTEGER now;
+        QueryPerformanceCounter(&now);
+        double gap_ms = (double)(now.QuadPart - s->pl_last_qpc.QuadPart) * 1000.0 / (double)qpf.QuadPart;
+        s->pl_last_qpc = now;
+        if (gap_ms < s->pl_gap_min) s->pl_gap_min = gap_ms;
+        if (gap_ms > s->pl_gap_max) s->pl_gap_max = gap_ms;
+        s->pl_gap_sum += gap_ms;
+        if (fill_before < s->pl_fill_before_min) s->pl_fill_before_min = fill_before;
+        if (fill_before > s->pl_fill_before_max) s->pl_fill_before_max = fill_before;
+        s->pl_fill_before_sum += fill_before;
+        if (fill_after  < s->pl_fill_after_min)  s->pl_fill_after_min  = fill_after;
+        if (fill_after  > s->pl_fill_after_max)  s->pl_fill_after_max  = fill_after;
+        s->pl_fill_after_sum  += fill_after;
+        s->pl_iters++;
+        double window_ms = (double)(now.QuadPart - s->pl_window_start.QuadPart) * 1000.0 / (double)qpf.QuadPart;
+        if (window_ms >= 1000.0 && s->pl_iters > 0) {
+            me_log(ME_LOG_PACE,
+                   "[pace] %ufps gap min/avg/max=%.1f/%.1f/%.1f ms fill_before(min/avg/max)=%zu/%zu/%zu fill_after=%zu/%zu/%zu bias=%+.4f%%\n",
+                   s->pl_iters,
+                   s->pl_gap_min, s->pl_gap_sum / s->pl_iters, s->pl_gap_max,
+                   s->pl_fill_before_min, s->pl_fill_before_sum / s->pl_iters, s->pl_fill_before_max,
+                   s->pl_fill_after_min,  s->pl_fill_after_sum  / s->pl_iters, s->pl_fill_after_max,
                    g_resamp_ratio_bias * 100.0);
+            s->pl_gap_min = 1e9; s->pl_gap_max = 0; s->pl_gap_sum = 0;
+            s->pl_fill_before_min = (size_t)-1; s->pl_fill_before_max = 0; s->pl_fill_before_sum = 0;
+            s->pl_fill_after_min  = (size_t)-1; s->pl_fill_after_max  = 0; s->pl_fill_after_sum  = 0;
+            s->pl_iters = 0;
+            s->pl_window_start = now;
         }
-        if (latency_log) {
-            LARGE_INTEGER ll_t_end; QueryPerformanceCounter(&ll_t_end);
-            double q = 1000.0 / (double)qpf.QuadPart;
-            double d_back    = (double)(ll_t_after_wait.QuadPart    - ll_t0.QuadPart)            * q;
-            double d_run     = (double)(ll_t_after_run.QuadPart     - ll_t_before_run.QuadPart)  * q;
-            double d_present = (double)(ll_t_after_present.QuadPart - ll_t_after_run.QuadPart)   * q;
-            double d_pace    = (double)(ll_t_end.QuadPart           - ll_t_after_present.QuadPart) * q;
-            double d_iter    = (double)(ll_t_end.QuadPart           - ll_t0.QuadPart)            * q;
-            double d_pre = d_run, d_post = 0;
-            if (g_poll_qpc.QuadPart != 0
-                && g_poll_qpc.QuadPart >= ll_t_before_run.QuadPart
-                && g_poll_qpc.QuadPart <= ll_t_after_run.QuadPart) {
-                d_pre  = (double)(g_poll_qpc.QuadPart      - ll_t_before_run.QuadPart) * q;
-                d_post = (double)(ll_t_after_run.QuadPart  - g_poll_qpc.QuadPart)      * q;
-            } else {
-                ll_missed_polls++;
-            }
-            ll_back_sum    += d_back;
-            ll_pre_sum     += d_pre;
-            ll_post_sum    += d_post;
-            ll_present_sum += d_present;
-            ll_pace_sum    += d_pace;
-            if (d_iter > ll_iter_max) ll_iter_max = d_iter;
-            if (ll_iters == 0) ll_window_first_frame = frame_count;
-            ll_iters++;
-            double window_ms = (double)(ll_t_end.QuadPart - ll_window_start.QuadPart) * q;
-            if (window_ms >= 1000.0 && ll_iters > 0) {
-                double n = (double)ll_iters;
-                me_log(ME_LOG_LATENCY,
-                       "[latency] frame %lu..%lu (n=%u) avg ms: back=%.3f pre_poll=%.3f post_poll=%.3f present=%.3f pace=%.3f | iter_max=%.3f missed_polls=%u\n",
-                       ll_window_first_frame, frame_count, ll_iters,
-                       ll_back_sum / n, ll_pre_sum / n, ll_post_sum / n,
-                       ll_present_sum / n, ll_pace_sum / n,
-                       ll_iter_max, ll_missed_polls);
-                ll_back_sum = ll_pre_sum = ll_post_sum = 0;
-                ll_present_sum = ll_pace_sum = 0;
-                ll_iter_max = 0;
-                ll_iters = 0; ll_missed_polls = 0;
-                ll_window_start = ll_t_end;
-            }
+    }
+}
+
+/* A ROM was dropped on the window: swap to it, whether or not a game is
+   running. If no core is assigned to it (or the core is missing) the current
+   game keeps running untouched. */
+static void load_dropped_rom(me_session *s, const char *rom_path) {
+    printf("[drop] %s\n", rom_path);
+    char core_path[MAX_PATH];
+    if (resolve_rom_core(rom_path, core_path, sizeof(core_path)) != 0) return;
+    if (s->active) session_close(s);
+    if (session_open(s, core_path, rom_path) != 0) {
+        fprintf(stderr, "[drop] could not load %s; no game running\n", rom_path);
+    }
+}
+
+int main(int argc, char **argv) {
+    SetUnhandledExceptionFilter(me_unhandled_exception);
+    init_exedir();
+
+    /* Create essential directories on first run (relative to exe). */
+    char _tmp[MAX_PATH];
+    CreateDirectoryA(exepath(_tmp, sizeof(_tmp), "roms"),     NULL);
+    CreateDirectoryA(exepath(_tmp, sizeof(_tmp), "cores"),    NULL);
+    CreateDirectoryA(exepath(_tmp, sizeof(_tmp), "saves"),    NULL);
+    CreateDirectoryA(exepath(_tmp, sizeof(_tmp), "firmware"), NULL);
+    CreateDirectoryA(exepath(_tmp, sizeof(_tmp), "lsfg"),     NULL);
+
+    /* settings.yaml is the base layer: load defaults, then YAML overrides them,
+       then CLI flags override YAML. Generate default if missing. */
+    me_settings_defaults(&g_settings);
+    char _settings_path[MAX_PATH];
+    exepath(_settings_path, sizeof(_settings_path), "settings.yaml");
+    if (me_settings_load(_settings_path, &g_settings) == 1) {
+        /* File not found; generate default. */
+        me_settings_generate_default(_settings_path);
+        /* Reload to pick up the defaults we just wrote. */
+        me_settings_load(_settings_path, &g_settings);
+    }
+    if (me_xinput_init())
+        printf("[xinput] controller support active (player index %d)\n", g_settings.xi_player_index);
+    else
+        printf("[xinput] XInput not available; controller input disabled\n");
+
+    g_no_audio      = g_settings.no_audio;
+    g_force_gdi     = g_settings.force_gdi;
+    g_force_d3d11   = g_settings.force_d3d11;
+    g_pace_log      = g_settings.pace_log;
+    g_timing_log    = g_settings.timing_log;
+    g_latency_log   = g_settings.latency_log;
+    g_force_vulkan  = g_settings.force_vulkan;
+    g_no_vsync      = g_settings.vk_no_vsync;
+    g_aspect_mode   = (int)g_settings.aspect;
+    g_env_trace     = g_settings.env_trace;
+
+    /* Vulkan options come from three sources, lowest → highest priority:
+       settings.yaml → CLI flag → user-set env var. Settings-derived values are
+       pushed into env vars only when the user hasn't already set them; the CLI
+       loop and explicit env vars always win because they overwrite. */
+    if (g_settings.vk_mailbox  && !getenv("LAGGUELESS_VK_MAILBOX"))  _putenv("LAGGUELESS_VK_MAILBOX=1");
+    if (g_settings.vk_validate && !getenv("LAGGUELESS_VK_VALIDATE")) _putenv("LAGGUELESS_VK_VALIDATE=1");
+
+    const char *positional[2] = { NULL, NULL };
+    int npos = 0;
+    const char *exe = argv[0] ? argv[0] : "laggueless.exe";
+    for (int i = 1; i < argc; i++) {
+        if      (strcmp(argv[i], "--no-audio") == 0) g_no_audio = 1;
+        else if (strcmp(argv[i], "--thread-affinity") == 0) g_settings.thread_affinity = 1;
+        else if (strcmp(argv[i], "--gdi")      == 0) g_force_gdi = 1;
+        else if (strcmp(argv[i], "--d3d11")    == 0) g_force_d3d11 = 1;
+        else if (strcmp(argv[i], "--vulkan")   == 0) g_force_vulkan = 1;
+        else if (strcmp(argv[i], "--no-vsync") == 0) g_no_vsync = 1;
+        else if (strcmp(argv[i], "--vk-exclusive")    == 0) g_settings.vk_exclusive_fullscreen = 1;
+        else if (strcmp(argv[i], "--no-vk-exclusive") == 0) g_settings.vk_exclusive_fullscreen = 0;
+        else if (strcmp(argv[i], "--lsfg")     == 0) g_lsfg_enabled = 1;
+        else if (strncmp(argv[i], "--lsfg-dll=", 11) == 0) {
+            snprintf(g_lsfg_dll_path, sizeof(g_lsfg_dll_path), "%s", argv[i] + 11);
+            g_lsfg_enabled = 1; /* --lsfg-dll= implies --lsfg */
         }
-        if (pace_log) {
-            LARGE_INTEGER now;
-            QueryPerformanceCounter(&now);
-            double gap_ms = (double)(now.QuadPart - pl_last_qpc.QuadPart) * 1000.0 / (double)qpf.QuadPart;
-            pl_last_qpc = now;
-            if (gap_ms < pl_gap_min) pl_gap_min = gap_ms;
-            if (gap_ms > pl_gap_max) pl_gap_max = gap_ms;
-            pl_gap_sum += gap_ms;
-            if (fill_before < pl_fill_before_min) pl_fill_before_min = fill_before;
-            if (fill_before > pl_fill_before_max) pl_fill_before_max = fill_before;
-            pl_fill_before_sum += fill_before;
-            if (fill_after  < pl_fill_after_min)  pl_fill_after_min  = fill_after;
-            if (fill_after  > pl_fill_after_max)  pl_fill_after_max  = fill_after;
-            pl_fill_after_sum  += fill_after;
-            pl_iters++;
-            if (timed_out) pl_timeouts++;
-            double window_ms = (double)(now.QuadPart - pl_window_start.QuadPart) * 1000.0 / (double)qpf.QuadPart;
-            if (window_ms >= 1000.0 && pl_iters > 0) {
-                me_log(ME_LOG_PACE,
-                       "[pace] %ufps gap min/avg/max=%.1f/%.1f/%.1f ms fill_before(min/avg/max)=%zu/%zu/%zu fill_after=%zu/%zu/%zu bias=%+.4f%%\n",
-                       pl_iters,
-                       pl_gap_min, pl_gap_sum / pl_iters, pl_gap_max,
-                       pl_fill_before_min, pl_fill_before_sum / pl_iters, pl_fill_before_max,
-                       pl_fill_after_min,  pl_fill_after_sum  / pl_iters, pl_fill_after_max,
-                       g_resamp_ratio_bias * 100.0);
-                pl_gap_min = 1e9; pl_gap_max = 0; pl_gap_sum = 0;
-                pl_fill_before_min = (size_t)-1; pl_fill_before_max = 0; pl_fill_before_sum = 0;
-                pl_fill_after_min  = (size_t)-1; pl_fill_after_max  = 0; pl_fill_after_sum  = 0;
-                pl_iters = 0; pl_timeouts = 0;
-                pl_window_start = now;
-            }
+        else if (strncmp(argv[i], "--lsfg-multiplier=", 18) == 0) {
+            g_settings.lsfg_multiplier = atoi(argv[i] + 18);
+        }
+        else if (strncmp(argv[i], "--lsfg-flow=", 12) == 0) {
+            g_settings.lsfg_flow_scale = (float)atof(argv[i] + 12);
+        }
+        else if (strcmp(argv[i], "--lsfg-perf") == 0) g_settings.lsfg_perf_mode = 1;
+        else if (strcmp(argv[i], "--pace-log") == 0) g_pace_log  = 1;
+        else if (strcmp(argv[i], "--timing-log") == 0) g_timing_log = 1;
+        else if (strcmp(argv[i], "--latency-log") == 0) g_latency_log = 1;
+        else if (strcmp(argv[i], "--env-trace") == 0) g_env_trace = 1;
+        else if (strcmp(argv[i], "-h")      == 0 || strcmp(argv[i], "--h")     == 0 ||
+                strcmp(argv[i], "-help")    == 0 || strcmp(argv[i], "--help")   == 0 ||
+                strcmp(argv[i], "---help")  == 0 || strcmp(argv[i], "-Help")    == 0 ||
+                strcmp(argv[i], "--Help")   == 0 || strcmp(argv[i], "-HELP")    == 0 ||
+                strcmp(argv[i], "--HELP")   == 0 || strcmp(argv[i], "/h")       == 0 ||
+                strcmp(argv[i], "/H")       == 0 || strcmp(argv[i], "/help")    == 0 ||
+                strcmp(argv[i], "/Help")    == 0 || strcmp(argv[i], "/HELP")    == 0 ||
+                strcmp(argv[i], "-?")       == 0 || strcmp(argv[i], "--?")      == 0 ||
+                strcmp(argv[i], "/?")       == 0 || strcmp(argv[i], "?")        == 0 ||
+                strcmp(argv[i], "help")     == 0 || strcmp(argv[i], "HELP")     == 0 ||
+                strcmp(argv[i], "Help")     == 0 || strcmp(argv[i], "-usage")   == 0 ||
+                strcmp(argv[i], "--usage")  == 0 || strcmp(argv[i], "/usage")   == 0) {
+            printf(
+                "laggueless - libretro core front-end\n"
+                "\n"
+                "usage: %s [options] [[<core.dll>] <rom>]\n"
+                "\n"
+                "options:\n"
+                "  -h, --help, -?, /?, /help    show this help and exit\n"
+                "  --no-audio                   disable audio output\n"
+                "  --thread-affinity            pin emu thread to P-cores, audio to a separate\n"
+                "                                 core; both get elevated OS priority\n"
+                "  --gdi                        force GDI for all cores (overrides --d3d11)\n"
+                "  --d3d11                      use D3D11 present path for 2D cores too\n"
+                "                                 (enables VRR / lower latency, but may tear\n"
+                "                                  on non-GSync/FreeSync displays)\n"
+                "  --vulkan                     use the Vulkan present path (work in progress;\n"
+                "                                 required for LSFG frame generation)\n"
+                "  --no-vsync                   (Vulkan only) use IMMEDIATE present mode\n"
+                "                                 (allows tearing, lowest latency)\n"
+                "  --vk-exclusive               (Vulkan only) acquire exclusive fullscreen\n"
+                "                                 (VK_EXT_full_screen_exclusive): bypasses the\n"
+                "                                 DWM compositor for the lowest input-to-pixel\n"
+                "                                 latency. Engages only while the window covers\n"
+                "                                 the whole monitor (fullscreen). (default on)\n"
+                "  --no-vk-exclusive            disable exclusive fullscreen (composited swapchain)\n"
+                "  --lsfg                       enable LSFG 3.1 frame generation (requires\n"
+                "                                 --vulkan and Lossless Scaling on Steam;\n"
+                "                                 place Lossless.dll in lsfg/ next to the exe)\n"
+                "  --lsfg-dll=<path>            path to Lossless.dll (overrides lsfg/ folder)\n"
+                "  --lsfg-multiplier=N          LSFG output multiplier: 2, 3, or 4 (default 2)\n"
+                "  --lsfg-flow=F                LSFG optical-flow scale 0.25..1.0 (default 1.0)\n"
+                "  --lsfg-perf                  LSFG performance mode (lower quality, lower GPU cost)\n"
+                "  --pace-log                   log audio pacing diagnostics\n"
+                "  --timing-log                 log frame timing diagnostics\n"
+                "  --latency-log                log per-stage latency (poll/core/present/wait)\n"
+                "  --env-trace                  log libretro environment calls\n"
+                "\n"
+                "arguments:\n"
+                "  (none)       open an empty window; drop a ROM onto it to play\n"
+                "  <rom>        play a ROM with the core assigned to its file type\n"
+                "                 (e.g. .nes -> cores\\mesen_libretro.dll)\n"
+                "  <core.dll> <rom>\n"
+                "               play a ROM with a specific libretro core DLL\n"
+                "\n"
+                "Dropping a ROM file onto the window loads it at any time, replacing the\n"
+                "current game.\n"
+                "\n"
+                "hotkeys (while running):\n"
+                "  F1   cycle aspect ratio (1:1 / 4:3 / 16:9)\n"
+                "  F11  toggle fullscreen\n"
+                "\n"
+                "example:\n"
+                "  %s \"roms\\Super Mario Bros. (World).nes\"\n",
+                exe, exe);
+            return 0;
+        }
+        else if (argv[i][0] == '-') {
+            fprintf(stderr, "unknown flag: %s (try --help)\n", argv[i]); return 1;
+        } else if (npos < 2) {
+            positional[npos++] = argv[i];
+        } else {
+            fprintf(stderr, "extra argument: %s (try --help)\n", argv[i]); return 1;
         }
     }
 
+    /* 0 args: empty window. 1 arg: ROM, core from the extension table.
+       2 args: explicit core + ROM. */
+    char table_core_path[MAX_PATH];
+    const char *core_path = NULL;
+    const char *rom_path  = NULL;
+    if (npos == 2) {
+        core_path = positional[0];
+        rom_path  = positional[1];
+    } else if (npos == 1) {
+        rom_path = positional[0];
+        if (resolve_rom_core(rom_path, table_core_path, sizeof(table_core_path)) != 0) return 1;
+        core_path = table_core_path;
+    }
+
+    /* ---- Step B1: Load Lossless.dll + extract shaders --------------------- */
+    if (g_lsfg_enabled) {
+        if (!g_force_vulkan) {
+            fprintf(stderr,
+                "[lsfg] WARNING: --lsfg requires --vulkan. Enabling Vulkan automatically.\n");
+            g_force_vulkan = 1;
+        }
+        g_lsfg_shaders = me_lsfg_load(g_lsfg_dll_path[0] ? g_lsfg_dll_path : NULL);
+        if (!g_lsfg_shaders) {
+            /* Error already printed by me_lsfg_load(). Exit cleanly. */
+            return 1;
+        }
+        fprintf(stderr, "[lsfg] DLL: %s\n", me_lsfg_dll_path(g_lsfg_shaders));
+        fprintf(stderr, "[lsfg] shaders extracted: %d\n",
+                me_lsfg_shader_count(g_lsfg_shaders));
+        /* Sanity check: Lossless.dll should have at least 30 shader resources */
+        if (me_lsfg_shader_count(g_lsfg_shaders) < 30) {
+            fprintf(stderr,
+                "[lsfg] WARNING: only %d shader resources found (expected 30+).\n"
+                "[lsfg]          This may not be a valid Lossless Scaling DLL.\n",
+                me_lsfg_shader_count(g_lsfg_shaders));
+        }
+        fprintf(stderr, "[lsfg] Step B1 OK — DLL loaded, shaders ready\n");
+    }
+
+    /* Windows' default Sleep granularity is ~15.6 ms; frame pacing needs
+       1 ms resolution. */
+    timeBeginPeriod(1);
+
+    me_session session;
+    memset(&session, 0, sizeof(session));
+    int exit_code = 0;
+    if (rom_path) {
+        if (session_open(&session, core_path, rom_path) != 0) exit_code = 1;
+    } else if (create_main_window(640, 480) == 0) {
+        me_platform_set_idle(g_hwnd, 1);
+        printf("[main] no game loaded; drop a ROM onto the window to play\n");
+    } else {
+        exit_code = 1;
+    }
+
+    while (exit_code == 0 && me_platform_pump()) {
+        char dropped[MAX_PATH];
+        if (me_platform_take_dropped_file(dropped, sizeof(dropped))) {
+            load_dropped_rom(&session, dropped);
+        }
+        if (session.active) {
+            session_run_frame(&session);
+        } else {
+            /* Nothing to emulate: keep hotkeys (fullscreen, quit) working and
+               sleep until the next window message or ~one frame passes. */
+            if (GetForegroundWindow() == g_hwnd) me_xinput_poll(g_settings.xi_player_index);
+            handle_hotkeys(&session);
+            MsgWaitForMultipleObjects(0, NULL, FALSE, 16, QS_ALLINPUT);
+        }
+    }
+
+    if (session.active) session_close(&session);
     timeEndPeriod(1);
-    if (audio_ok) me_audio_shutdown();
-    if (g_use_d3d11) me_d3d11_shutdown();
-    me_vk_lsfg_shutdown();   /* B3: must come before me_vk_shutdown */
-    me_vk_shutdown();
     me_lsfg_free(g_lsfg_shaders); g_lsfg_shaders = NULL;
-
-    if (g_hw_render_accepted && g_hw_render.context_destroy) {
-        g_hw_render.context_destroy();
-    }
-    free(ra_state_buf);
-    if (save_path[0]) me_sram_save(core, save_path);
-    core->retro_unload_game();
-    core->retro_deinit();
-    if (g_hw_render_accepted) me_gl_shutdown();
-    free(rom_data);
-    free(g_back);
-    me_core_unload(core);
     me_settings_free(&g_settings);
     me_log_close_all();
-    return 0;
+    return exit_code;
 }

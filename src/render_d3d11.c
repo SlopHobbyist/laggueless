@@ -233,6 +233,14 @@ void *me_d3d11_create_shared_texture(unsigned w, unsigned h) {
 void me_d3d11_use_shared(int yes) { g_use_shared = yes; }
 
 void me_d3d11_shutdown(void) {
+    /* Unbind everything and flush so the swap chain is really destroyed on
+       Release — DXGI defers it otherwise, and a new flip-model swap chain
+       can't be created on the same HWND while the old one lingers. */
+    if (g_ctx) {
+        ID3D11DeviceContext_ClearState(g_ctx);
+        ID3D11DeviceContext_Flush(g_ctx);
+    }
+    g_use_shared = 0;
     if (g_srv_shared) { ID3D11ShaderResourceView_Release(g_srv_shared); g_srv_shared = NULL; }
     if (g_tex_shared) { ID3D11Texture2D_Release(g_tex_shared);           g_tex_shared = NULL; }
     if (g_rs)  { ID3D11RasterizerState_Release(g_rs);   g_rs  = NULL; }

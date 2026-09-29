@@ -26,10 +26,23 @@ You can download cores here: [https://buildbot.libretro.com/nightly/windows/x86_
 Place them in the cores folder.
 
 ## Usage
-`laggueless.exe [options] <core.dll> <rom>`
+`laggueless.exe [options] [[<core.dll>] <rom>]`
+
+- **No arguments** (e.g. double-clicking the exe): opens an empty window. Drag a ROM onto it to play.
+- **`<rom>`**: plays the ROM in the core we picked for its file type (see below).
+- **`<core.dll> <rom>`**: plays the ROM in a specific core.
+
+Dragging a ROM onto the window loads it at any time, replacing the current game (its save is written first).
 
 #### Example:
-`laggueless.exe ".\cores\mesen_libretro.dll" ".\roms\Super Mario Bros. (World).nes" --vulkan --lsfg`
+`laggueless.exe ".\roms\Super Mario Bros. (World).nes" --vulkan --lsfg`
+
+#### ROM types
+Every file type opens in one core of our choosing. The core must be in the `cores` folder.
+
+| Extensions | Core |
+| --- | --- |
+| `.nes` `.fds` `.unf` `.unif` | Mesen (`mesen_libretro.dll`) |
 
 #### Optional Arguments:
 

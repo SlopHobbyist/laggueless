@@ -321,6 +321,10 @@ static int init_shared(WAVEFORMATEX *mix) {
 
 int me_audio_init(unsigned *out_device_rate, int mode) {
     InitializeCriticalSection(&g_ring_cs);
+    /* Re-init after me_audio_shutdown (loading another game): the thread
+       exits on g_quit, and stale ring positions would replay old audio. */
+    g_quit = 0;
+    g_ring_read = g_ring_write = 0;
 
     HRESULT hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
     if (FAILED(hr) && hr != RPC_E_CHANGED_MODE) {
