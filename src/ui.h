@@ -25,8 +25,26 @@ void me_ui_notify_error(const char *fmt, ...);    /* message box */
 typedef void (*me_settings_patch)(me_settings *s, const void *ctx);
 int  me_ui_persist(me_settings_patch patch, const void *ctx);
 
+/* Dialogs are empty in-memory templates (caption + font); controls are
+   created in WM_INITDIALOG so no resource script is needed. `cx`/`cy` are
+   dialog units. me_ui_dialog is modal to the UI thread only;
+   me_ui_dialog_modeless returns the window (hidden until shown). */
+INT_PTR me_ui_dialog(HWND owner, const wchar_t *title, short cx, short cy,
+                     DLGPROC proc, LPARAM param);
+HWND me_ui_dialog_modeless(HWND owner, const wchar_t *title, short cx, short cy,
+                           DLGPROC proc, LPARAM param);
+/* Child control positioned in dialog units, in the dialog's font. */
+HWND me_ui_add_control(HWND dlg, const char *cls, const char *text, DWORD style,
+                       int x, int y, int w, int h, int id);
+void me_ui_init_common_controls(void);
+
 /* Binding dialogs (ui_bindings.c). Modal to the UI thread only. */
 void me_ui_player_dialog(HWND owner, int player);
 void me_ui_hotkeys_dialog(HWND owner);
+
+/* Cores menu (ui_cores.c). Download runs on its own thread, with a progress
+   window on the UI thread; Set Cores is modal to the UI thread only. */
+void me_ui_download_cores(HWND owner);
+void me_ui_set_cores_dialog(HWND owner);
 
 #endif

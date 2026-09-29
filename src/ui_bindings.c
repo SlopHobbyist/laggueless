@@ -67,40 +67,6 @@ typedef struct {
     HWND list, hint, slot_combo, adv_check;
 } bind_dlg;
 
-/* ---- dialog template ------------------------------------------------------ */
-/* An empty in-memory dialog (caption + font); controls are created in
-   WM_INITDIALOG so no resource script is needed. */
-static INT_PTR run_dialog(HWND owner, const wchar_t *title, short cx, short cy,
-                          DLGPROC proc, LPARAM param) {
-    DWORD buf[128];  /* DWORD-aligned, as DLGTEMPLATE requires */
-    memset(buf, 0, sizeof(buf));
-    DLGTEMPLATE *t = (DLGTEMPLATE *)buf;
-    t->style = DS_MODALFRAME | DS_CENTER | DS_SETFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU;
-    t->cx = cx;
-    t->cy = cy;
-    WORD *p = (WORD *)(t + 1);
-    *p++ = 0;  /* no menu */
-    *p++ = 0;  /* default dialog class */
-    for (const wchar_t *s = title; *s; s++) *p++ = (WORD)*s;
-    *p++ = 0;
-    *p++ = 9;  /* point size */
-    for (const wchar_t *s = L"Segoe UI"; *s; s++) *p++ = (WORD)*s;
-    *p++ = 0;
-    return DialogBoxIndirectParamW(GetModuleHandleW(NULL), t, owner, proc, param);
-}
-
-/* Create a child control positioned in dialog units. */
-static HWND add_control(HWND dlg, const char *cls, const char *text, DWORD style,
-                        int x, int y, int w, int h, int id) {
-    RECT r = { x, y, x + w, y + h };
-    MapDialogRect(dlg, &r);
-    HWND c = CreateWindowExA(0, cls, text, WS_CHILD | WS_VISIBLE | style,
-                             r.left, r.top, r.right - r.left, r.bottom - r.top,
-                             dlg, (HMENU)(INT_PTR)id, GetModuleHandleA(NULL), NULL);
-    SendMessageA(c, WM_SETFONT, (WPARAM)SendMessageA(dlg, WM_GETFONT, 0, 0), TRUE);
-    return c;
-}
-
 /* ---- list contents -------------------------------------------------------- */
 static void kb_cell_text(const me_kb_bindings *b, char *out, size_t sz) {
     out[0] = '\0';
@@ -416,27 +382,27 @@ static void create_controls(HWND dlg, bind_dlg *d) {
                  d->player + 1, d->core_name, shown);
     else
         snprintf(scope, sizeof(scope), "Editing Player %d controls for all cores.%s", d->player + 1, shown);
-    add_control(dlg, "STATIC", scope, SS_LEFT, 7, 3, 306, 17, IDC_SCOPE);
+    me_ui_add_control(dlg, "STATIC", scope, SS_LEFT, 7, 3, 306, 17, IDC_SCOPE);
 
-    add_control(dlg, "STATIC", "Input:", SS_LEFT, 7, 23, 40, 10, 0);
-    add_control(dlg, "BUTTON", "Keyboard and controller",
+    me_ui_add_control(dlg, "STATIC", "Input:", SS_LEFT, 7, 23, 40, 10, 0);
+    me_ui_add_control(dlg, "BUTTON", "Keyboard and controller",
                 BS_AUTORADIOBUTTON | WS_GROUP | WS_TABSTOP, 50, 22, 105, 11, IDC_SRC_BOTH);
-    add_control(dlg, "BUTTON", "Keyboard only",   BS_AUTORADIOBUTTON, 160, 22, 70, 11, IDC_SRC_KEYBOARD);
-    add_control(dlg, "BUTTON", "Controller only", BS_AUTORADIOBUTTON, 233, 22, 80, 11, IDC_SRC_CONTROLLER);
+    me_ui_add_control(dlg, "BUTTON", "Keyboard only",   BS_AUTORADIOBUTTON, 160, 22, 70, 11, IDC_SRC_KEYBOARD);
+    me_ui_add_control(dlg, "BUTTON", "Controller only", BS_AUTORADIOBUTTON, 233, 22, 80, 11, IDC_SRC_CONTROLLER);
 
-    add_control(dlg, "STATIC", "Controller:", SS_LEFT, 7, 40, 40, 10, 0);
-    d->slot_combo = add_control(dlg, "COMBOBOX", "", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP | WS_GROUP,
+    me_ui_add_control(dlg, "STATIC", "Controller:", SS_LEFT, 7, 40, 40, 10, 0);
+    d->slot_combo = me_ui_add_control(dlg, "COMBOBOX", "", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP | WS_GROUP,
                                 50, 38, 130, 80, IDC_SLOT);
     fill_slot_combo(d);
 
     if (!d->is_hotkeys) {
         /* Greyed out when the running core offers nothing extra. */
-        d->adv_check = add_control(dlg, "BUTTON", "Show advanced inputs",
+        d->adv_check = me_ui_add_control(dlg, "BUTTON", "Show advanced inputs",
                                    BS_AUTOCHECKBOX | WS_TABSTOP | WS_GROUP, 193, 39, 120, 11, IDC_ADVANCED);
         EnableWindow(d->adv_check, d->layout.advanced != 0);
     }
 
-    d->list = add_control(dlg, WC_LISTVIEWA, "",
+    d->list = me_ui_add_control(dlg, WC_LISTVIEWA, "",
                           LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_NOSORTHEADER |
                           WS_BORDER | WS_TABSTOP,
                           7, 56, 306, 160, IDC_LIST);
@@ -453,11 +419,11 @@ static void create_controls(HWND dlg, bind_dlg *d) {
         SendMessageA(d->list, LVM_INSERTCOLUMNA, (WPARAM)c, (LPARAM)&col);
     }
 
-    d->hint = add_control(dlg, "STATIC", "", SS_LEFT, 7, 220, 306, 18, IDC_HINT);
+    d->hint = me_ui_add_control(dlg, "STATIC", "", SS_LEFT, 7, 220, 306, 18, IDC_HINT);
 
-    add_control(dlg, "BUTTON", "Default", BS_PUSHBUTTON | WS_TABSTOP | WS_GROUP, 7, 243, 55, 14, IDC_DEFAULT);
-    add_control(dlg, "BUTTON", "Cancel",  BS_PUSHBUTTON | WS_TABSTOP, 199, 243, 55, 14, IDCANCEL);
-    add_control(dlg, "BUTTON", "Save",    BS_PUSHBUTTON | WS_TABSTOP, 258, 243, 55, 14, IDC_SAVE);
+    me_ui_add_control(dlg, "BUTTON", "Default", BS_PUSHBUTTON | WS_TABSTOP | WS_GROUP, 7, 243, 55, 14, IDC_DEFAULT);
+    me_ui_add_control(dlg, "BUTTON", "Cancel",  BS_PUSHBUTTON | WS_TABSTOP, 199, 243, 55, 14, IDCANCEL);
+    me_ui_add_control(dlg, "BUTTON", "Save",    BS_PUSHBUTTON | WS_TABSTOP, 258, 243, 55, 14, IDC_SAVE);
     refresh_all(dlg, d);
     idle_hint(d);
 }
@@ -555,16 +521,8 @@ static INT_PTR CALLBACK bind_dlg_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) 
     return FALSE;
 }
 
-static void init_common_controls(void) {
-    static int done = 0;
-    if (done) return;
-    INITCOMMONCONTROLSEX icc = { sizeof(icc), ICC_LISTVIEW_CLASSES | ICC_STANDARD_CLASSES };
-    InitCommonControlsEx(&icc);
-    done = 1;
-}
-
 void me_ui_player_dialog(HWND owner, int player) {
-    init_common_controls();
+    me_ui_init_common_controls();
     static bind_dlg d;  /* large; one dialog at a time on the UI thread */
     memset(&d, 0, sizeof(d));
     d.player = player;
@@ -589,12 +547,12 @@ void me_ui_player_dialog(HWND owner, int player) {
     load_from(&d, live, d.core_index);
     me_settings_unlock();
 
-    run_dialog(owner, player == 0 ? L"Player 1 Controls" : L"Player 2 Controls",
+    me_ui_dialog(owner, player == 0 ? L"Player 1 Controls" : L"Player 2 Controls",
                320, 264, bind_dlg_proc, (LPARAM)&d);
 }
 
 void me_ui_hotkeys_dialog(HWND owner) {
-    init_common_controls();
+    me_ui_init_common_controls();
     static bind_dlg d;
     memset(&d, 0, sizeof(d));
     d.is_hotkeys = 1;
@@ -606,5 +564,5 @@ void me_ui_hotkeys_dialog(HWND owner) {
     load_from(&d, me_app_settings(), -1);
     me_settings_unlock();
 
-    run_dialog(owner, L"Hotkeys", 320, 264, bind_dlg_proc, (LPARAM)&d);
+    me_ui_dialog(owner, L"Hotkeys", 320, 264, bind_dlg_proc, (LPARAM)&d);
 }

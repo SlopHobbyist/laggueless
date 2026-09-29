@@ -1,4 +1,5 @@
 #include "ui.h"
+#include <commctrl.h>
 #include <commdlg.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -30,6 +31,8 @@ enum {
     IDM_BACKEND_VULKAN = 140,
     IDM_BACKEND_GDI,
     IDM_BACKEND_D3D11,
+    IDM_DOWNLOAD_CORES = 150,
+    IDM_SET_CORES,
     IDM_RECENT_FIRST = 200,   /* .. IDM_RECENT_FIRST + ME_RECENT_MAX - 1 */
 };
 
@@ -61,6 +64,11 @@ HMENU me_ui_create_menu(void) {
     AppendMenuA(controls, MF_STRING, IDM_HOTKEYS, "&Hotkeys...");
     AppendMenuA(bar, MF_POPUP, (UINT_PTR)controls, "C&ontrols");
 
+    HMENU cores = CreatePopupMenu();
+    AppendMenuA(cores, MF_STRING, IDM_DOWNLOAD_CORES, "&Download Cores...");
+    AppendMenuA(cores, MF_STRING, IDM_SET_CORES,      "&Set Cores...");
+    AppendMenuA(bar, MF_POPUP, (UINT_PTR)cores, "Co&res");
+
     g_view_menu = CreatePopupMenu();
     g_backend_menu = CreatePopupMenu();
     AppendMenuA(g_backend_menu, MF_STRING, IDM_BACKEND_VULKAN, "&Vulkan");
@@ -72,6 +80,61 @@ HMENU me_ui_create_menu(void) {
     AppendMenuA(bar, MF_POPUP, (UINT_PTR)g_view_menu, "&View");
 
     return bar;
+}
+
+/* ---- dialog helpers ------------------------------------------------------- */
+typedef struct { DWORD words[128]; } dlg_template;   /* DWORD-aligned, as DLGTEMPLATE requires */
+
+static DLGTEMPLATE *build_template(dlg_template *buf, DWORD style, const wchar_t *title,
+                                   short cx, short cy) {
+    memset(buf, 0, sizeof(*buf));
+    DLGTEMPLATE *t = (DLGTEMPLATE *)buf->words;
+    t->style = style | DS_CENTER | DS_SETFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU;
+    t->cx = cx;
+    t->cy = cy;
+    WORD *p = (WORD *)(t + 1);
+    *p++ = 0;  /* no menu */
+    *p++ = 0;  /* default dialog class */
+    for (const wchar_t *s = title; *s; s++) *p++ = (WORD)*s;
+    *p++ = 0;
+    *p++ = 9;  /* point size */
+    for (const wchar_t *s = L"Segoe UI"; *s; s++) *p++ = (WORD)*s;
+    *p++ = 0;
+    return t;
+}
+
+INT_PTR me_ui_dialog(HWND owner, const wchar_t *title, short cx, short cy,
+                     DLGPROC proc, LPARAM param) {
+    dlg_template buf;
+    DLGTEMPLATE *t = build_template(&buf, DS_MODALFRAME, title, cx, cy);
+    return DialogBoxIndirectParamW(GetModuleHandleW(NULL), t, owner, proc, param);
+}
+
+HWND me_ui_dialog_modeless(HWND owner, const wchar_t *title, short cx, short cy,
+                           DLGPROC proc, LPARAM param) {
+    dlg_template buf;
+    DLGTEMPLATE *t = build_template(&buf, DS_MODALFRAME | WS_MINIMIZEBOX, title, cx, cy);
+    return CreateDialogIndirectParamW(GetModuleHandleW(NULL), t, owner, proc, param);
+}
+
+HWND me_ui_add_control(HWND dlg, const char *cls, const char *text, DWORD style,
+                       int x, int y, int w, int h, int id) {
+    RECT r = { x, y, x + w, y + h };
+    MapDialogRect(dlg, &r);
+    HWND c = CreateWindowExA(0, cls, text, WS_CHILD | WS_VISIBLE | style,
+                             r.left, r.top, r.right - r.left, r.bottom - r.top,
+                             dlg, (HMENU)(INT_PTR)id, GetModuleHandleA(NULL), NULL);
+    SendMessageA(c, WM_SETFONT, (WPARAM)SendMessageA(dlg, WM_GETFONT, 0, 0), TRUE);
+    return c;
+}
+
+void me_ui_init_common_controls(void) {
+    static int done = 0;
+    if (done) return;
+    INITCOMMONCONTROLSEX icc = { sizeof(icc),
+                                 ICC_LISTVIEW_CLASSES | ICC_STANDARD_CLASSES | ICC_PROGRESS_CLASS };
+    InitCommonControlsEx(&icc);
+    done = 1;
 }
 
 /* ---- persistence ---------------------------------------------------------- */
@@ -240,7 +303,7 @@ static void refresh_menu(HMENU m) {
 
 /* ---- commands ------------------------------------------------------------- */
 static void open_rom_dialog(HWND owner) {
-    char patterns[256], filter[600], path[MAX_PATH] = "", initial_dir[MAX_PATH];
+    char patterns[1024], filter[2200], path[MAX_PATH] = "", initial_dir[MAX_PATH];
     me_rom_patterns(patterns, sizeof(patterns));
     /* Filter is a list of NUL-separated description/pattern pairs. */
     int n = snprintf(filter, sizeof(filter), "Games (%s)%c%s%cAll files (*.*)%c*.*%c",
@@ -287,6 +350,8 @@ static void on_command(HWND h, UINT id) {
         case IDM_PLAYER1:    me_ui_player_dialog(h, 0); break;
         case IDM_PLAYER2:    me_ui_player_dialog(h, 1); break;
         case IDM_HOTKEYS:    me_ui_hotkeys_dialog(h); break;
+        case IDM_DOWNLOAD_CORES: me_ui_download_cores(h); break;
+        case IDM_SET_CORES:  me_ui_set_cores_dialog(h); break;
         case IDM_FULLSCREEN: me_platform_toggle_fullscreen(h); break;
         case IDM_FRAME_GEN:  me_cmd_post(ME_CMD_FRAME_GEN, !s->lsfg_enabled, NULL); break;
         case IDM_BACKEND_VULKAN:

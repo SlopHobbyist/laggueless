@@ -671,6 +671,18 @@ static void load_document(yaml_document_t *doc, yaml_node_t *root, me_settings *
         }
     }
 
+    /* console -> core picks */
+    yaml_node_t *cc = map_get(doc, root, "console_cores");
+    if (cc && cc->type == YAML_MAPPING_NODE) {
+        out->console_cores_n = 0;
+        for (yaml_node_pair_t *p = cc->data.mapping.pairs.start;
+             p < cc->data.mapping.pairs.top; p++) {
+            const char *console = scalar_str(doc_get(doc, p->key));
+            const char *dll = scalar_str(doc_get(doc, p->value));
+            if (console && *console) me_settings_set_console_core(out, console, dll);
+        }
+    }
+
     /* recent ROMs */
     yaml_node_t *recent = map_get(doc, root, "recent");
     if (recent && recent->type == YAML_SEQUENCE_NODE) {
@@ -877,6 +889,17 @@ int me_settings_save(const char *path, const me_settings *s) {
             write_player(f, "      ", g_player_keys[pl], &e->controls[pl], &e->overrides[pl]);
     }
 
+    fprintf(f, "\nconsole_cores:");
+    if (s->console_cores_n == 0) fprintf(f, " {}");
+    fputc('\n', f);
+    for (int i = 0; i < s->console_cores_n; i++) {
+        fprintf(f, "  ");
+        write_quoted(f, s->console_cores[i].console);
+        fprintf(f, ": ");
+        write_quoted(f, s->console_cores[i].dll);
+        fputc('\n', f);
+    }
+
     fprintf(f, "\nrecent:");
     if (s->recent_n == 0) fprintf(f, " []");
     fputc('\n', f);
@@ -966,4 +989,32 @@ const struct me_core_entry *me_settings_find_core(const me_settings *s,
                                                   const char *core_path) {
     int i = me_settings_find_core_index(s, core_path);
     return i >= 0 ? &s->cores[i] : NULL;
+}
+
+static int console_core_index(const me_settings *s, const char *console) {
+    for (int i = 0; i < s->console_cores_n; i++)
+        if (iequals(s->console_cores[i].console, console)) return i;
+    return -1;
+}
+
+const char *me_settings_console_core(const me_settings *s, const char *console) {
+    int i = console_core_index(s, console);
+    return i >= 0 ? s->console_cores[i].dll : NULL;
+}
+
+void me_settings_set_console_core(me_settings *s, const char *console, const char *dll) {
+    int i = console_core_index(s, console);
+    if (!dll || !*dll) {
+        if (i < 0) return;
+        memmove(&s->console_cores[i], &s->console_cores[i + 1],
+                (size_t)(s->console_cores_n - i - 1) * sizeof(s->console_cores[0]));
+        s->console_cores_n--;
+        return;
+    }
+    if (i < 0) {
+        if (s->console_cores_n >= ME_CONSOLE_CORES_MAX) return;
+        i = s->console_cores_n++;
+        snprintf(s->console_cores[i].console, sizeof(s->console_cores[i].console), "%s", console);
+    }
+    snprintf(s->console_cores[i].dll, sizeof(s->console_cores[i].dll), "%s", dll);
 }

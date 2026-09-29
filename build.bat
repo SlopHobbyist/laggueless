@@ -27,7 +27,7 @@ if not exist "%BUILD%" mkdir "%BUILD%"
 
 REM ---- flags -----------------------------------------------------------------
 set "CFLAGS=-std=c11 -O2 -g -Wall -Wextra -Wshadow -Wno-unused-parameter -I%SRC% -I%ROOT%include"
-set "LDFLAGS=-lgdi32 -luser32 -lopengl32 -lkernel32 -lole32 -luuid -lwinmm -lavrt -ld3d11 -ldxgi -lshell32 -lcomdlg32 -lcomctl32 -lyaml"
+set "LDFLAGS=-lgdi32 -luser32 -lopengl32 -lkernel32 -lole32 -luuid -lwinmm -lavrt -ld3d11 -ldxgi -lshell32 -lcomdlg32 -lcomctl32 -lwininet -lyaml"
 
 REM ---- Vulkan SDK (optional) -------------------------------------------------
 REM If VULKAN_SDK env var is set, compile with ME_HAVE_VULKAN=1 and link
@@ -90,6 +90,8 @@ if errorlevel 1 (
 REM ---- collect sources -------------------------------------------------------
 set "SOURCES="
 for %%F in ("%SRC%\*.c") do set "SOURCES=!SOURCES! "%%F""
+REM LZMA SDK subset (public domain) for unpacking downloaded cores.
+for %%F in ("%SRC%\lzma\*.c") do set "SOURCES=!SOURCES! "%%F""
 
 REM ---- resources (manifest: themed dialog controls) --------------------------
 REM windres ships with mingw binutils. Without it the build still works; the

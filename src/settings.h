@@ -90,6 +90,9 @@ typedef enum {
 /* File > Open Recent length. */
 #define ME_RECENT_MAX 20
 
+/* Consoles with a core picked in Cores > Set Cores. */
+#define ME_CONSOLE_CORES_MAX 64
+
 typedef enum {
     ME_ASPECT_1_1 = 0,
     ME_ASPECT_4_3 = 1,
@@ -170,6 +173,14 @@ typedef struct {
     } *cores;
     size_t cores_n;
 
+    /* Cores > Set Cores: the player's core for a console, only where it
+       differs from our pick (rom_cores.c). Keyed by console id ("nes"). */
+    struct me_console_core {
+        char console[32];
+        char dll[128];           /* DLL filename in cores/ */
+    } console_cores[ME_CONSOLE_CORES_MAX];
+    int console_cores_n;
+
     /* Recently played ROMs, most recent first, no duplicates. */
     char recent[ME_RECENT_MAX][260];
     int  recent_n;
@@ -218,6 +229,12 @@ void me_settings_set_core_map(me_settings *s, int core, int player, const me_con
 
 /* Same match as me_settings_find_core, as an index into s->cores (-1 if none). */
 int me_settings_find_core_index(const me_settings *s, const char *core_path);
+
+/* The player's core DLL for a console id, or NULL for our pick. */
+const char *me_settings_console_core(const me_settings *s, const char *console);
+
+/* Set the player's core for a console; NULL or "" goes back to our pick. */
+void me_settings_set_console_core(me_settings *s, const char *console, const char *dll);
 
 /* Display names for the binding dialogs. */
 const char *me_input_label(me_input_id id);

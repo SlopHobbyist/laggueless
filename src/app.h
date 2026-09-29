@@ -15,7 +15,7 @@
 #include "settings.h"
 
 typedef enum {
-    ME_CMD_LOAD_ROM,    /* path: ROM to load (core from the extension table) */
+    ME_CMD_LOAD_ROM,    /* path: ROM to load (core from its console, rom_cores.h) */
     ME_CMD_HARD_RESET,  /* reload core + game */
     ME_CMD_SOFT_RESET,  /* retro_reset */
     ME_CMD_POWER,       /* power off the running game, or back on */
@@ -35,9 +35,10 @@ me_settings *me_app_settings(void);
 const char  *me_app_settings_path(void);
 
 /* Guards the parts of the live settings both threads touch: control maps,
-   hotkeys, input sources and controller slots. The emulation thread holds it
-   only for a few microseconds per frame (input poll, hotkey check); the UI
-   thread only to copy maps in or out. Never hold it across anything slow. */
+   hotkeys, input sources, controller slots and console core picks. The
+   emulation thread holds it only for a few microseconds per frame (input
+   poll, hotkey check) and when it looks up a ROM's core; the UI thread only
+   to copy settings in or out. Never hold it across anything slow. */
 void me_settings_lock(void);
 void me_settings_unlock(void);
 

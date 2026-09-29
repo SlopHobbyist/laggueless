@@ -1295,23 +1295,27 @@ static int create_main_window(int w, int h) {
     return 0;
 }
 
-/* Look up the core for a ROM in the extension table and resolve it to
-   cores\<dll> next to the exe. Returns 0 and fills core_path on success;
-   otherwise fills `err` with a user-facing reason. */
+/* Look up the core for a ROM's console (Cores > Set Cores, else our pick)
+   and resolve it to cores\<dll> next to the exe. Returns 0 and fills
+   core_path on success; otherwise fills `err` with a user-facing reason. */
 static int resolve_rom_core(const char *rom_path, char *core_path, size_t core_path_sz,
                             char *err, size_t err_sz) {
     if (GetFileAttributesA(rom_path) == INVALID_FILE_ATTRIBUTES) {
         snprintf(err, err_sz, "ROM not found:\n%s", rom_path);
         return -1;
     }
-    const char *dll = me_rom_core_for(rom_path);
-    if (!dll) {
+    char dll[MAX_PATH];
+    me_settings_lock();   /* the UI thread writes the console picks */
+    int found = me_rom_core_for(&g_settings, rom_path, dll, sizeof(dll)) == 0;
+    me_settings_unlock();
+    if (!found) {
         snprintf(err, err_sz, "No core is assigned to this file type:\n%s", rom_path);
         return -1;
     }
     snprintf(core_path, core_path_sz, "%scores\\%s", g_exedir, dll);
     if (GetFileAttributesA(core_path) == INVALID_FILE_ATTRIBUTES) {
-        snprintf(err, err_sz, "Core %s not found.\nPlace it in %scores\\", dll, g_exedir);
+        snprintf(err, err_sz, "Core %s not found.\nUse Cores > Download Cores, or place it in %scores\\",
+                 dll, g_exedir);
         return -1;
     }
     return 0;

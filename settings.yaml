@@ -417,5 +417,10 @@ cores:
           keyboard:   Return
           controller: Start
 
+# Which core each console's games open in. Cores > Set Cores edits this.
+# Consoles not listed use laggueless' pick. Values are DLL filenames in the
+# cores folder, e.g.  snes: snes9x_libretro.dll
+console_cores: {}
+
 # File > Open Recent (most recent first). Filled in as you play.
 recent: []

@@ -22,14 +22,15 @@ The goal was to create a libretro core compatible emulator program. Users find R
 6. Run laggueless.exe --help
 
 ## Cores
-You can download cores here: [https://buildbot.libretro.com/nightly/windows/x86_64/](https://buildbot.libretro.com/nightly/windows/x86_64/)
-Place them in the cores folder.
+**Cores > Download Cores** downloads every core from the libretro buildbot ([RetroArch_cores.7z](https://buildbot.libretro.com/nightly/windows/x86_64/RetroArch_cores.7z), a few hundred MB, about 2 GB unpacked) and unpacks it into the `cores` folder. It asks first, and the game keeps running while it works.
+
+You can also download cores yourself from [https://buildbot.libretro.com/nightly/windows/x86_64/](https://buildbot.libretro.com/nightly/windows/x86_64/) and place them in the `cores` folder.
 
 ## Usage
 `laggueless.exe [options] [[<core.dll>] <rom>]`
 
 - **No arguments** (e.g. double-clicking the exe): opens an empty window. Drag a ROM onto it to play.
-- **`<rom>`**: plays the ROM in the core we picked for its file type (see below).
+- **`<rom>`**: plays the ROM in its console's core (see below).
 - **`<core.dll> <rom>`**: plays the ROM in a specific core.
 
 Dragging a ROM onto the window loads it at any time, replacing the current game (its save is written first).
@@ -38,11 +39,44 @@ Dragging a ROM onto the window loads it at any time, replacing the current game 
 `laggueless.exe ".\roms\Super Mario Bros. (World).nes" --vulkan --lsfg`
 
 #### ROM types
-Every file type opens in one core of our choosing. The core must be in the `cores` folder.
+Every file type belongs to one console, and each console's games open in the core we picked for it unless you pick another in **Cores > Set Cores**. The core must be in the `cores` folder.
 
-| Extensions | Core |
-| --- | --- |
-| `.nes` `.fds` `.unf` `.unif` | Mesen (`mesen_libretro.dll`) |
+| Console | Extensions | Our core |
+| --- | --- | --- |
+| NES / Famicom | `.nes` `.fds` `.unf` `.unif` | Mesen (`mesen_libretro.dll`) |
+| SNES / Super Famicom | `.sfc` `.smc` `.swc` `.fig` `.bs` `.st` | bsnes (`bsnes_libretro.dll`) |
+| Game Boy | `.gb` `.dmg` `.sgb` | Gambatte (`gambatte_libretro.dll`) |
+| Game Boy Color | `.gbc` `.cgb` | Gambatte (`gambatte_libretro.dll`) |
+| Game Boy Advance | `.gba` `.agb` | mGBA (`mgba_libretro.dll`) |
+| Nintendo DS | `.nds` `.dsi` `.ids` | melonDS DS (`melondsds_libretro.dll`) |
+| Nintendo 3DS | `.3ds` `.3dsx` `.cci` `.cxi` | Azahar (`azahar_libretro.dll`) |
+| Nintendo 64 | `.n64` `.z64` `.v64` `.ndd` | ParaLLEl N64 (`parallel_n64_libretro.dll`) |
+| GameCube / Wii | `.gcm` `.gcz` `.rvz` `.wbfs` `.ciso` `.wia` | Dolphin (`dolphin_libretro.dll`) |
+| Virtual Boy | `.vb` `.vboy` | Beetle VB (`mednafen_vb_libretro.dll`) |
+| Pokemon Mini | `.min` | PokeMini (`pokemini_libretro.dll`) |
+| Mega Drive / Genesis | `.md` `.gen` `.smd` `.mdx` `.bin` | Genesis Plus GX (`genesis_plus_gx_libretro.dll`) |
+| Sega 32X | `.32x` | PicoDrive (`picodrive_libretro.dll`) |
+| Master System | `.sms` | Genesis Plus GX (`genesis_plus_gx_libretro.dll`) |
+| Game Gear | `.gg` | Genesis Plus GX (`genesis_plus_gx_libretro.dll`) |
+| SG-1000 | `.sg` `.sc` `.mv` | Genesis Plus GX (`genesis_plus_gx_libretro.dll`) |
+| Dreamcast | `.gdi` `.cdi` | Flycast (`flycast_libretro.dll`) |
+| PC Engine / TurboGrafx-16 | `.pce` | Beetle PCE (`mednafen_pce_libretro.dll`) |
+| SuperGrafx | `.sgx` | Beetle PCE (`mednafen_pce_libretro.dll`) |
+| PlayStation | `.cue` `.chd` `.ccd` `.toc` `.m3u` `.pbp` | Beetle PSX (`mednafen_psx_libretro.dll`) |
+| PlayStation Portable | `.iso` `.cso` | PPSSPP (`ppsspp_libretro.dll`) |
+| Atari 2600 | `.a26` | Stella (`stella_libretro.dll`) |
+| Atari 5200 | `.a52` | a5200 (`a5200_libretro.dll`) |
+| Atari 7800 | `.a78` | ProSystem (`prosystem_libretro.dll`) |
+| Atari Lynx | `.lnx` `.lyx` | Handy (`handy_libretro.dll`) |
+| Atari Jaguar | `.j64` `.jag` | Virtual Jaguar (`virtualjaguar_libretro.dll`) |
+| Neo Geo Pocket | `.ngp` | Beetle NeoPop (`mednafen_ngp_libretro.dll`) |
+| Neo Geo Pocket Color | `.ngc` `.ngpc` `.npc` | Beetle NeoPop (`mednafen_ngp_libretro.dll`) |
+| WonderSwan | `.ws` `.pc2` | Beetle WonderSwan (`mednafen_wswan_libretro.dll`) |
+| WonderSwan Color | `.wsc` `.pcv2` | Beetle WonderSwan (`mednafen_wswan_libretro.dll`) |
+| ColecoVision | `.col` `.cv` | Gearcoleco (`gearcoleco_libretro.dll`) |
+| Intellivision | `.int` | FreeIntv (`freeintv_libretro.dll`) |
+| Vectrex | `.vec` | vecx (`vecx_libretro.dll`) |
+| MSX | `.mx1` `.mx2` | blueMSX (`bluemsx_libretro.dll`) |
 
 #### Menu bar
 The game never pauses for the menus or their windows (speedrun rules): it keeps running while menus and dialogs are open and while the window is moved or resized. The menu bar hides in fullscreen.
@@ -52,6 +86,7 @@ The game never pauses for the menus or their windows (speedrun rules): it keeps 
 | File | Open ROM, Open Recent (last 20 games played), Exit |
 | Console | Hard Reset (reload the game), Soft Reset (the console's reset button), Power On / Off |
 | Controls | Player 1, Player 2, Hotkeys. Each opens a window listing every control: click a binding to change it, right-click to clear it. Pick keyboard, controller or both, and which controller slot. Default restores the shipped bindings. Player 1/2 edit the running core's own map if it has one in `settings.yaml`, otherwise the map every core shares. |
+| Cores | Download Cores (see [Cores](#cores); a progress window shows the download and can cancel it), Set Cores (every console with the core its games open in: click a console to pick another core from the ones that can run it; cores not in the `cores` folder are marked "not installed"). Default restores our picks. Changes apply the next time a game is opened. |
 | View | Toggle Full Screen, Frame Gen (Vulkan only; toggling it briefly stalls while the renderer rebuilds), Rendering Backend (takes effect on restart) |
 
 Changes made from the menus are saved to `settings.yaml`, which laggueless rewrites (without comments) when it saves.
