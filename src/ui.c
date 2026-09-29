@@ -39,6 +39,7 @@ enum {
     IDM_SCREEN_BOTTOM,
     IDM_SCREEN_BOTH,
     IDM_RECENT_FIRST = 200,   /* .. IDM_RECENT_FIRST + ME_RECENT_MAX - 1 */
+    IDM_RECENT_CLEAR = 200 + ME_RECENT_MAX,
 };
 
 /* Most adapters a console has (the Mega Drive's two). */
@@ -184,6 +185,8 @@ static void recent_push(me_settings *s, const char *path) {
 
 static void patch_recent(me_settings *s, const void *ctx) { recent_push(s, (const char *)ctx); }
 
+static void patch_recent_clear(me_settings *s, const void *ctx) { (void)ctx; s->recent_n = 0; }
+
 static void patch_screens(me_settings *s, const void *ctx) {
     s->screens = *(const me_screens *)ctx;
 }
@@ -288,6 +291,8 @@ static void rebuild_recent_menu(void) {
         snprintf(label, sizeof(label), "%s\t%s", name_esc, dir_esc);
         AppendMenuA(g_recent_menu, MF_STRING, IDM_RECENT_FIRST + i, label);
     }
+    AppendMenuA(g_recent_menu, MF_SEPARATOR, 0, NULL);
+    AppendMenuA(g_recent_menu, MF_STRING, IDM_RECENT_CLEAR, "Clear Recent");
 }
 
 /* Players 1-4, greyed past what the running game has; then its console's
@@ -449,6 +454,10 @@ static void on_command(HWND h, UINT id) {
     }
     switch (id) {
         case IDM_OPEN:       open_rom_dialog(h); break;
+        case IDM_RECENT_CLEAR:
+            s->recent_n = 0;
+            me_ui_persist(patch_recent_clear, NULL);
+            break;
         case IDM_EXIT:       PostMessageA(h, WM_CLOSE, 0, 0); break;
         case IDM_HARD_RESET: me_cmd_post(ME_CMD_HARD_RESET, 0, NULL); break;
         case IDM_SOFT_RESET: me_cmd_post(ME_CMD_SOFT_RESET, 0, NULL); break;
