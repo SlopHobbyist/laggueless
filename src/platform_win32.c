@@ -54,7 +54,7 @@ static LONG mouse_bit(UINT msg) {
    actually differs from what we last set, so we never stack up hides/shows.
    The cursor belongs to the window's thread, so this runs on the UI thread. */
 static void me_update_cursor_visibility(void) {
-    int should_hide = g_fs.active && g_app_active;
+    int should_hide = g_fs.active && g_app_active && !me_app_settings()->show_cursor_fullscreen;
     if (should_hide && !g_cursor_hidden) {
         while (ShowCursor(FALSE) >= 0) {}
         g_cursor_hidden = 1;
@@ -63,6 +63,8 @@ static void me_update_cursor_visibility(void) {
         g_cursor_hidden = 0;
     }
 }
+
+void me_platform_update_cursor(void) { me_update_cursor_visibility(); }
 
 /* ---- fullscreen (UI thread) ----------------------------------------------- */
 static void fs_exit(HWND hwnd) {
@@ -123,7 +125,8 @@ static LRESULT CALLBACK me_wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_SETCURSOR:
             /* While fullscreen + active, suppress the class cursor over the client
                area so it stays hidden even as the mouse moves. */
-            if (g_fs.active && g_app_active && LOWORD(lp) == HTCLIENT) {
+            if (g_fs.active && g_app_active && !me_app_settings()->show_cursor_fullscreen &&
+                LOWORD(lp) == HTCLIENT) {
                 SetCursor(NULL);
                 return TRUE;
             }

@@ -26,6 +26,7 @@ enum {
     IDM_PLAYER3,
     IDM_PLAYER4,
     IDM_HOTKEYS,
+    IDM_SHOW_CURSOR,
     IDM_FULLSCREEN = 130,
     IDM_FRAME_GEN,
     IDM_BACKEND_VULKAN = 140,
@@ -192,6 +193,10 @@ static const UINT k_screen_ids[] = {
     [ME_SCREENS_BOTTOM] = IDM_SCREEN_BOTTOM,
 };
 
+static void patch_show_cursor(me_settings *s, const void *ctx) {
+    s->show_cursor_fullscreen = *(const int *)ctx;
+}
+
 static void patch_frame_gen(me_settings *s, const void *ctx) {
     s->lsfg_enabled = *(const int *)ctx;
 }
@@ -325,6 +330,8 @@ static void rebuild_controls_menu(const me_app_status *st) {
     }
 
     AppendMenuA(m, MF_SEPARATOR, 0, NULL);
+    AppendMenuA(m, MF_STRING | (me_app_settings()->show_cursor_fullscreen ? MF_CHECKED : MF_UNCHECKED),
+                IDM_SHOW_CURSOR, "Show &Cursor in Fullscreen");
     AppendMenuA(m, MF_STRING, IDM_HOTKEYS, "&Hotkeys...");
 }
 
@@ -451,6 +458,13 @@ static void on_command(HWND h, UINT id) {
         case IDM_PLAYER3:
         case IDM_PLAYER4:    me_ui_player_dialog(h, (int)(id - IDM_PLAYER1)); break;
         case IDM_HOTKEYS:    me_ui_hotkeys_dialog(h); break;
+        case IDM_SHOW_CURSOR: {
+            int on = !s->show_cursor_fullscreen;
+            s->show_cursor_fullscreen = on;
+            me_ui_persist(patch_show_cursor, &on);
+            me_platform_update_cursor();
+            break;
+        }
         case IDM_DOWNLOAD_CORES: me_ui_download_cores(h); break;
         case IDM_SET_CORES:  me_ui_set_cores_dialog(h); break;
         case IDM_FULLSCREEN: me_platform_toggle_fullscreen(h); break;

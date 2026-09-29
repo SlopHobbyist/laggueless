@@ -172,6 +172,8 @@ controls:
   player3_controller: 2
   player4_input: both
   player4_controller: 3
+  show_cursor_fullscreen: false  # keep the mouse cursor visible in fullscreen
+                                 # (touch screens). Controls > Show Cursor in Fullscreen
 
   universal:
     player1:

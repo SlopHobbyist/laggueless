@@ -27,6 +27,10 @@ void me_platform_toggle_fullscreen(HWND hwnd);
 void me_platform_exit_fullscreen(HWND hwnd);
 int  me_platform_is_fullscreen(void);
 
+/* Re-apply fullscreen cursor hiding after show_cursor_fullscreen changes.
+   UI thread only. */
+void me_platform_update_cursor(void);
+
 /* Edge-triggered key-press detection. Returns 1 the first time the key is
    queried after a WM_KEYDOWN; subsequent calls return 0 until the key is
    released and pressed again. Modifier flags (ctrl/alt/shift) must all match

@@ -171,6 +171,10 @@ typedef struct {
     int            show_advanced_inputs;
     me_control_map advanced[ME_MAX_PLAYERS];
 
+    /* Keep the mouse cursor visible in fullscreen (Controls menu), for
+       touch screens. Off by default: fullscreen hides it. */
+    int            show_cursor_fullscreen;
+
     /* Per-core entry. */
     struct me_core_entry {
         char  name[64];          /* short name from yaml (e.g. "snes9x") */

@@ -292,6 +292,34 @@ struct me_var { char *key; char *def_value; };
 static struct me_var *g_vars = NULL;
 static size_t g_var_count = 0;
 
+/* Core options we pick over the core's default, used only when the core
+   offers that exact value. Touch screens: the mouse is the stylus, at the
+   real cursor, so cores take it as an absolute pointer and don't draw a
+   cursor of their own. */
+static const struct { const char *key, *value; } k_var_overrides[] = {
+    { "melonds_show_cursor", "disabled" },  /* melonDS DS */
+    { "melonds_touch_mode",  "Touch" },     /* melonDS (melonDS DS's auto already takes the pointer) */
+    { "noods_touchCursor",   "disabled" },  /* NooDS */
+    { "desmume_pointer_type", "touch" },    /* DeSmuME */
+};
+
+/* The override for `key` if `values` ("v1|v2|v3") lists it, else NULL. */
+static const char *me_var_override(const char *key, const char *values) {
+    for (size_t i = 0; i < sizeof(k_var_overrides) / sizeof(k_var_overrides[0]); i++) {
+        if (strcmp(k_var_overrides[i].key, key) != 0) continue;
+        const char *want = k_var_overrides[i].value;
+        size_t n = strlen(want);
+        for (const char *p = values; *p; ) {
+            while (*p == ' ') p++;
+            size_t len = strcspn(p, "|");
+            if (len == n && strncmp(p, want, n) == 0) return want;
+            p += len;
+            if (*p == '|') p++;
+        }
+    }
+    return NULL;
+}
+
 static void me_vars_set(const struct retro_variable *src) {
     /* Free any previous set (some cores re-declare on retry). */
     for (size_t i = 0; i < g_var_count; i++) {
@@ -309,6 +337,8 @@ static void me_vars_set(const struct retro_variable *src) {
         const char *semi = strchr(val, ';');
         const char *p = semi ? semi + 1 : val;
         while (*p == ' ') p++;
+        const char *over = me_var_override(src[i].key, p);
+        if (over) p = over;
         size_t len = 0; while (p[len] && p[len] != '|') len++;
         char *d = (char *)malloc(len + 1);
         if (d) { memcpy(d, p, len); d[len] = '\0'; }
@@ -986,6 +1016,21 @@ static void poll_touch(void) {
     g_touch.buttons = 0;
     if (!console_has_touch() || !g_view.valid || !me_platform_cursor_pos(&cx, &cy)) return;
 
+    /* The touch screen: the bottom screen of a two-screen console, else the
+       image shown. */
+    unsigned tx = g_view.sx, ty = g_view.sy, tw = g_view.sw, th = g_view.sh;
+    find_screen(g_view.fw, g_view.fh, 1, &tx, &ty, &tw, &th);
+
+    /* Touch screen hidden (View > Screen > Top Screen): nothing to touch.
+       Park the pointer mid-screen, where the core's cursor can't show at
+       the edge of the screen that is shown, and hold the mouse still. */
+    if (tx >= g_view.sx + g_view.sw || g_view.sx >= tx + tw ||
+        ty >= g_view.sy + g_view.sh || g_view.sy >= ty + th) {
+        g_touch.x = (int16_t)((int)((tx + tw / 2.0) * 65534.0 / g_view.fw) - 32767);
+        g_touch.y = (int16_t)((int)((ty + th / 2.0) * 65534.0 / g_view.fh) - 32767);
+        return;
+    }
+
     g_touch.inside = cx >= g_view.dx && cx < g_view.dx + g_view.dw &&
                      cy >= g_view.dy && cy < g_view.dy + g_view.dh;
     if (g_touch.inside) g_touch.buttons = buttons;
@@ -997,8 +1042,6 @@ static void poll_touch(void) {
     g_touch.x = (int16_t)((int)(clampd(fx, g_view.sx, g_view.sw) * 65534.0 / g_view.fw) - 32767);
     g_touch.y = (int16_t)((int)(clampd(fy, g_view.sy, g_view.sh) * 65534.0 / g_view.fh) - 32767);
 
-    unsigned tx = g_view.sx, ty = g_view.sy, tw = g_view.sw, th = g_view.sh;
-    find_screen(g_view.fw, g_view.fh, 1, &tx, &ty, &tw, &th);
     int px = (int)clampd(fx, tx, tw), py = (int)clampd(fy, ty, th);
     if (g_touch.primed) {
         g_touch.mx = (int16_t)(px - g_touch.px);

@@ -648,6 +648,8 @@ static void load_document(yaml_document_t *doc, yaml_node_t *root, me_settings *
                                                 out->show_advanced_inputs);
         yaml_node_t *adv = map_get(doc, controls, "advanced");
         if (adv) parse_players(doc, adv, out->advanced, NULL);
+        out->show_cursor_fullscreen = scalar_bool(map_get(doc, controls, "show_cursor_fullscreen"),
+                                                  out->show_cursor_fullscreen);
     }
     for (int pl = 0; pl < ME_MAX_PLAYERS; pl++) out->xi_index[pl] = clamp_slot(out->xi_index[pl]);
 
@@ -891,6 +893,7 @@ int me_settings_save(const char *path, const me_settings *s) {
     fprintf(f, "  universal:\n");
     for (int pl = 0; pl < ME_MAX_PLAYERS; pl++)
         write_player(f, "    ", g_player_keys[pl], &s->universal[pl], NULL);
+    fprintf(f, "  show_cursor_fullscreen: %s\n", yn(s->show_cursor_fullscreen));
     fprintf(f, "  show_advanced: %s\n", yn(s->show_advanced_inputs));
     fprintf(f, "  advanced:\n");
     for (int pl = 0; pl < ME_MAX_PLAYERS; pl++) {
