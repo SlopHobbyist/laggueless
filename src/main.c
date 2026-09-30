@@ -849,10 +849,10 @@ static size_t me_audio_sample_batch_cb(const int16_t *data, size_t frames) {
     resample_and_push(data, frames);
     return frames;
 }
-/* RetroPad state per player (libretro port), refreshed in input_poll. The
-   active control maps are chosen per game from settings.yaml: the universal
-   map, or the core's own map when it has one. The UI thread edits these maps
-   in place under me_settings_lock(). */
+/* RetroPad state per player (libretro port), refreshed in input_poll. Each
+   poll takes the player's bindings from settings.yaml's maps for the game
+   (me_controls_effective: universal, the console's, the core's own); the
+   UI thread edits those maps in place under me_settings_lock(). */
 static int16_t g_pad[ME_MAX_PLAYERS][16];
 /* Input devices (bit per RETRO_DEVICE_*) the core has read, for --env-trace. */
 static unsigned g_devices_read;
@@ -860,7 +860,8 @@ static unsigned g_devices_read;
 static int16_t g_analog[ME_MAX_PLAYERS][4];
 enum { AN_LX = 0, AN_LY, AN_RX, AN_RY };
 
-static const me_control_map *g_active_map[ME_MAX_PLAYERS];
+/* The running core's entry in g_settings.cores, or -1. */
+static int g_core_index = -1;
 
 static int key_down_kb(const me_kb_binding *b) {
     if (b->vk == 0) return 0;
@@ -895,9 +896,7 @@ static int vk_claimed_by_hotkey(unsigned vk) {
 }
 
 /* Caller holds the settings lock. */
-static int input_down(int player, me_input_id id) {
-    const me_control_map *map = g_active_map[player];
-    if (!map) return 0;
+static int input_down(const me_control_map *map, int player, me_input_id id) {
     /* Advanced inputs have their own bindings (settings.h). */
     if (g_in_layout.advanced & (1u << id)) map = &g_settings.advanced[player];
     me_input_source src = g_settings.input_source[player];
@@ -924,17 +923,20 @@ static unsigned live_inputs(void) {
     return g_in_layout.live | (g_settings.show_advanced_inputs ? g_in_layout.advanced : 0);
 }
 
-static int live_down(int player, me_input_id id) {
-    return (live_inputs() & (1u << id)) ? input_down(player, id) : 0;
+static int live_down(const me_control_map *map, int p, me_input_id id) {
+    return (live_inputs() & (1u << id)) ? input_down(map, p, id) : 0;
 }
 
 /* Caller holds the settings lock. */
 static void poll_player(int p) {
     int16_t *pad = g_pad[p];
-    int up    = live_down(p, ME_IN_DPAD_UP);
-    int down  = live_down(p, ME_IN_DPAD_DOWN);
-    int lf    = live_down(p, ME_IN_DPAD_LEFT);
-    int right = live_down(p, ME_IN_DPAD_RIGHT);
+    me_control_map map;
+    me_controls_effective(&g_settings, &g_in_layout, g_core_index, 1, p, &map);
+    const me_control_map *m = &map;
+    int up    = live_down(m, p, ME_IN_DPAD_UP);
+    int down  = live_down(m, p, ME_IN_DPAD_DOWN);
+    int lf    = live_down(m, p, ME_IN_DPAD_LEFT);
+    int right = live_down(m, p, ME_IN_DPAD_RIGHT);
     /* Left stick as D-pad on consoles without a stick (settings.h). It adds
        to the D-pad bindings before SOCD, so stick and D-pad pushed opposite
        ways still cancel to neutral. */
@@ -956,25 +958,27 @@ static void poll_player(int p) {
     pad[RETRO_DEVICE_ID_JOYPAD_DOWN]   = down;
     pad[RETRO_DEVICE_ID_JOYPAD_LEFT]   = lf;
     pad[RETRO_DEVICE_ID_JOYPAD_RIGHT]  = right;
-    pad[RETRO_DEVICE_ID_JOYPAD_B]      = live_down(p, ME_IN_B);
-    pad[RETRO_DEVICE_ID_JOYPAD_A]      = live_down(p, ME_IN_A);
-    pad[RETRO_DEVICE_ID_JOYPAD_Y]      = live_down(p, ME_IN_Y);
-    pad[RETRO_DEVICE_ID_JOYPAD_X]      = live_down(p, ME_IN_X);
-    pad[RETRO_DEVICE_ID_JOYPAD_START]  = live_down(p, ME_IN_START);
-    pad[RETRO_DEVICE_ID_JOYPAD_SELECT] = live_down(p, ME_IN_BACK);
-    pad[RETRO_DEVICE_ID_JOYPAD_L]      = live_down(p, ME_IN_LB);
-    pad[RETRO_DEVICE_ID_JOYPAD_R]      = live_down(p, ME_IN_RB);
-    pad[RETRO_DEVICE_ID_JOYPAD_L2]     = live_down(p, ME_IN_LT);
-    pad[RETRO_DEVICE_ID_JOYPAD_R2]     = live_down(p, ME_IN_RT);
-    pad[RETRO_DEVICE_ID_JOYPAD_L3]     = live_down(p, ME_IN_LSTICK);
-    pad[RETRO_DEVICE_ID_JOYPAD_R3]     = live_down(p, ME_IN_RSTICK);
+    pad[RETRO_DEVICE_ID_JOYPAD_B]      = live_down(m, p, ME_IN_B);
+    pad[RETRO_DEVICE_ID_JOYPAD_A]      = live_down(m, p, ME_IN_A);
+    pad[RETRO_DEVICE_ID_JOYPAD_Y]      = live_down(m, p, ME_IN_Y);
+    pad[RETRO_DEVICE_ID_JOYPAD_X]      = live_down(m, p, ME_IN_X);
+    pad[RETRO_DEVICE_ID_JOYPAD_START]  = live_down(m, p, ME_IN_START);
+    pad[RETRO_DEVICE_ID_JOYPAD_SELECT] = live_down(m, p, ME_IN_BACK);
+    pad[RETRO_DEVICE_ID_JOYPAD_L]      = live_down(m, p, ME_IN_LB);
+    pad[RETRO_DEVICE_ID_JOYPAD_R]      = live_down(m, p, ME_IN_RB);
+    pad[RETRO_DEVICE_ID_JOYPAD_L2]     = live_down(m, p, ME_IN_LT);
+    pad[RETRO_DEVICE_ID_JOYPAD_R2]     = live_down(m, p, ME_IN_RT);
+    pad[RETRO_DEVICE_ID_JOYPAD_L3]     = live_down(m, p, ME_IN_LSTICK);
+    pad[RETRO_DEVICE_ID_JOYPAD_R3]     = live_down(m, p, ME_IN_RSTICK);
 
     /* Stick directions are also surfaced through RETRO_DEVICE_ANALOG so cores
        like mupen64plus_next that read the analog stick see motion. Opposing
        directions cancel; non-opposing produce full deflection in that axis.
-       Real XInput axis values take priority over keyboard digital mappings.
-       A stick the console doesn't have stays centered; an advanced stick
-       (PSP right stick, DS touch joystick) moves only through its bindings. */
+       Each axis follows the real XInput stick while it is pushed, else its
+       digital bindings (keys, or buttons like the N64's C-Left on Xbox Y,
+       which must work while the other stick moves). A stick the console
+       doesn't have stays centered; an advanced stick (PSP right stick, DS
+       touch joystick) moves only through its bindings. */
     int16_t *an = g_analog[p];
     int slot = g_settings.xi_index[p];
     int use_pad = g_settings.input_source[p] != ME_SRC_KEYBOARD;
@@ -988,31 +992,25 @@ static void poll_player(int p) {
     int16_t xi_ly = use_l ? me_xinput_axis(slot, ME_XI_AXIS_LY) : 0;
     int16_t xi_rx = use_r ? me_xinput_axis(slot, ME_XI_AXIS_RX) : 0;
     int16_t xi_ry = use_r ? me_xinput_axis(slot, ME_XI_AXIS_RY) : 0;
-    if (xi_lx != 0 || xi_ly != 0 || xi_rx != 0 || xi_ry != 0) {
-        /* Real analog input present: use controller axes directly. */
-        /* XInput X: right=+32767, matches libretro. No inversion needed.
-           XInput Y: up=+32767, but libretro expects down=+32767. Invert Y.
-           Clamp -32768 → -32767 before negating to avoid int16_t overflow. */
-        #define XI_CLAMP(v) ((v) < -32767 ? (int16_t)-32767 : (v))
-        an[AN_LX] =  XI_CLAMP(xi_lx);
-        an[AN_LY] = -XI_CLAMP(xi_ly);
-        an[AN_RX] =  XI_CLAMP(xi_rx);
-        an[AN_RY] = -XI_CLAMP(xi_ry);
-        #undef XI_CLAMP
-    } else {
-        int lu = live_down(p, ME_IN_LSTICK_UP),    ld = live_down(p, ME_IN_LSTICK_DOWN);
-        int ll = live_down(p, ME_IN_LSTICK_LEFT),  lr = live_down(p, ME_IN_LSTICK_RIGHT);
-        int ru = live_down(p, ME_IN_RSTICK_UP),    rd = live_down(p, ME_IN_RSTICK_DOWN);
-        int rl = live_down(p, ME_IN_RSTICK_LEFT),  rr = live_down(p, ME_IN_RSTICK_RIGHT);
-        if (lu && ld) lu = ld = 0;
-        if (ll && lr) ll = lr = 0;
-        if (ru && rd) ru = rd = 0;
-        if (rl && rr) rl = rr = 0;
-        an[AN_LX] = (int16_t)((lr ? 32767 : 0) - (ll ? 32767 : 0));
-        an[AN_LY] = (int16_t)((ld ? 32767 : 0) - (lu ? 32767 : 0));
-        an[AN_RX] = (int16_t)((rr ? 32767 : 0) - (rl ? 32767 : 0));
-        an[AN_RY] = (int16_t)((rd ? 32767 : 0) - (ru ? 32767 : 0));
-    }
+    int lu = live_down(m, p, ME_IN_LSTICK_UP),    ld = live_down(m, p, ME_IN_LSTICK_DOWN);
+    int ll = live_down(m, p, ME_IN_LSTICK_LEFT),  lr = live_down(m, p, ME_IN_LSTICK_RIGHT);
+    int ru = live_down(m, p, ME_IN_RSTICK_UP),    rd = live_down(m, p, ME_IN_RSTICK_DOWN);
+    int rl = live_down(m, p, ME_IN_RSTICK_LEFT),  rr = live_down(m, p, ME_IN_RSTICK_RIGHT);
+    if (lu && ld) lu = ld = 0;
+    if (ll && lr) ll = lr = 0;
+    if (ru && rd) ru = rd = 0;
+    if (rl && rr) rl = rr = 0;
+    /* XInput X: right=+32767, matches libretro. No inversion needed.
+       XInput Y: up=+32767, but libretro expects down=+32767. Invert Y.
+       Clamp -32768 → -32767 before negating to avoid int16_t overflow. */
+    #define XI_CLAMP(v) ((v) < -32767 ? (int16_t)-32767 : (v))
+    #define DIGITAL(pos, neg) (int16_t)(((pos) ? 32767 : 0) - ((neg) ? 32767 : 0))
+    an[AN_LX] = xi_lx ?  XI_CLAMP(xi_lx) : DIGITAL(lr, ll);
+    an[AN_LY] = xi_ly ? -XI_CLAMP(xi_ly) : DIGITAL(ld, lu);
+    an[AN_RX] = xi_rx ?  XI_CLAMP(xi_rx) : DIGITAL(rr, rl);
+    an[AN_RY] = xi_ry ? -XI_CLAMP(xi_ry) : DIGITAL(rd, ru);
+    #undef XI_CLAMP
+    #undef DIGITAL
 }
 
 /* Where one screen of a two-screen console is in the core's (fw x fh)
@@ -1684,7 +1682,7 @@ static void session_reset_globals(void) {
     g_players = ME_MAX_PLAYERS;
     g_adapter = NULL;
     g_adapter_ports = 0;
-    memset(g_active_map, 0, sizeof(g_active_map));
+    g_core_index = -1;
     memset(g_pad, 0, sizeof(g_pad));
     memset(g_analog, 0, sizeof(g_analog));
     g_devices_read = 0;
@@ -1937,20 +1935,13 @@ static int session_open(me_session *s, const char *core_path_in, const char *rom
     const char *core_path = s->core_path;
     const char *rom_path  = s->rom_path;
 
-    /* Pick the active control maps: the per-core entry if it exists and has
-       use_universal=false, otherwise the universal maps. */
+    /* The core's own control map, if it has one (use_universal=false); the
+       console's and universal fill in the rest (poll_player). */
     {
-        struct me_core_entry *ce = NULL;
-        int ci = me_settings_find_core_index(&g_settings, core_path);
-        if (ci >= 0) ce = &g_settings.cores[ci];
-        int own = ce && !ce->use_universal;
-        for (int p = 0; p < ME_MAX_PLAYERS; p++)
-            g_active_map[p] = own ? &ce->controls[p] : &g_settings.universal[p];
-        if (own)
+        g_core_index = me_settings_find_core_index(&g_settings, core_path);
+        const struct me_core_entry *ce = g_core_index >= 0 ? &g_settings.cores[g_core_index] : NULL;
+        if (ce && !ce->use_universal)
             printf("[settings] using per-core controls for %s\n", ce->name);
-        else
-            printf("[settings] using universal controls%s%s\n",
-                   ce ? " for " : "", ce ? ce->name : "");
     }
 
     me_core *core = me_core_load(core_path);
@@ -1970,11 +1961,12 @@ static int session_open(me_session *s, const char *core_path_in, const char *rom
 
     snprintf(g_core_name, sizeof(g_core_name), "%s", info.library_name ? info.library_name : "");
     {
+        /* Uncurated: every input, for the core's input descriptors to narrow. */
         me_input_layout l;
-        if (me_layout_for_game(g_core_name, rom_path, &l))
+        const me_console *c = me_console_at(console);
+        if (me_layout_for_game(g_core_name, rom_path, c ? c->id : NULL, c ? c->name : NULL, &l))
             printf("[input] %s controller (%d inputs)\n", l.name, l.n);
-        else
-            me_layout_unknown(&l);   /* the core's input descriptors may narrow it */
+        if (l.key[0]) printf("[input] controls: %s\n", l.key);
         set_input_layout(&l);
     }
     g_console = console;

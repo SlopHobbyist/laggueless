@@ -1,20 +1,54 @@
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
 #include "consoles.h"
 #include <ctype.h>
 #include <stdio.h>
 #include <string.h>
+#include "xinput_pad.h"
 
 /* How the frontend's inputs reach the core: me_input_id → RetroPad button.
    A = RetroPad A, B = RetroPad B, X/Y = X/Y, LB/RB = L/R, LT/RT = L2/R2,
    stick clicks = L3/R3, Back = Select. Each console below lists which of
    those RetroPad buttons its cores wire to a real controller button, and
-   what that button is called. Taken from the cores' own input descriptors. */
+   what that button is called. Taken from the cores' own input descriptors.
+
+   The RetroPad is a SNES pad: B the bottom face button, A the right one, Y
+   the left, X the top. The universal map binds the Xbox button in each of
+   those places (Xbox A to RetroPad B...), and a console's defaults below
+   rebind the buttons its controller has somewhere else. */
 
 typedef struct { me_input_id id; const char *label; } row;
-typedef struct { const char *name; const row *rows; } console;
+
+/* An input's default controller buttons (any of them presses it) and
+   keyboard key, replacing universal's; 0s keep universal's. */
+typedef struct {
+    me_input_id id;
+    unsigned    xi[ME_XI_MAX_BINDINGS];
+    unsigned    vk;
+} pad_default;
+
+/* `rows` NULL: the core's descriptors list the inputs; only the defaults
+   and key are ours. */
+typedef struct {
+    const char        *key;
+    const char        *name;
+    const row         *rows;
+    const pad_default *defaults;
+} console;
 
 #define DPAD { ME_IN_DPAD_UP, "D-Pad Up" }, { ME_IN_DPAD_DOWN, "D-Pad Down" }, \
              { ME_IN_DPAD_LEFT, "D-Pad Left" }, { ME_IN_DPAD_RIGHT, "D-Pad Right" }
 #define END  { 0, NULL }
+#define DEFAULTS_END { ME_IN_COUNT, { 0 }, 0 }
+
+/* Two face buttons side by side (NES, Game Boy, Master System, PC Engine,
+   Lynx...): the left one on Xbox X and Y, the right one on A and B. */
+#define TWO_BUTTONS(left, right) \
+    { left,  { ME_XI_X, ME_XI_Y }, 0 }, { right, { ME_XI_A, ME_XI_B }, 0 }
+
+static const pad_default k_two_buttons[] = {
+    TWO_BUTTONS(ME_IN_B, ME_IN_A), DEFAULTS_END
+};
 
 /* Nintendo. Every NES, SNES, Game Boy, GBA and DS core uses these. NES
    cores also offer turbo A/B, A+B, FDS disk and VS coin buttons; GB/GBA
@@ -40,9 +74,50 @@ static const row k_vb_rows[] = {
     { ME_IN_A, "A" }, { ME_IN_B, "B" }, { ME_IN_LB, "L" }, { ME_IN_RB, "R" },
     { ME_IN_BACK, "Select" }, { ME_IN_START, "Start" }, END
 };
+/* The right D-pad on the right stick. */
+static const pad_default k_vb_defaults[] = {
+    TWO_BUTTONS(ME_IN_B, ME_IN_A),
+    { ME_IN_LT, { ME_XI_RSTICK_UP },   0 }, { ME_IN_LSTICK, { ME_XI_RSTICK_DOWN },  0 },
+    { ME_IN_RT, { ME_XI_RSTICK_LEFT }, 0 }, { ME_IN_RSTICK, { ME_XI_RSTICK_RIGHT }, 0 },
+    DEFAULTS_END
+};
 static const row k_pokemini_rows[] = {
     DPAD, { ME_IN_A, "A" }, { ME_IN_B, "B" }, { ME_IN_RB, "C" },
     { ME_IN_LB, "Shake" }, { ME_IN_BACK, "Power" }, END
+};
+/* ParaLLEl N64 and Mupen64Plus-Next. The C buttons are the right stick.
+   Their "C Buttons Mode" (hold R2 and the face buttons are C buttons) is
+   left out, and with it RetroPad A and X, which only work in that mode. */
+static const row k_n64_rows[] = {
+    DPAD, { ME_IN_B, "A" }, { ME_IN_Y, "B" }, { ME_IN_LT, "Z" },
+    { ME_IN_LB, "L" }, { ME_IN_RB, "R" }, { ME_IN_START, "Start" },
+    { ME_IN_LSTICK_UP,   "Control Stick Up" },   { ME_IN_LSTICK_DOWN,  "Control Stick Down" },
+    { ME_IN_LSTICK_LEFT, "Control Stick Left" }, { ME_IN_LSTICK_RIGHT, "Control Stick Right" },
+    { ME_IN_RSTICK_UP,   "C-Up" },   { ME_IN_RSTICK_DOWN,  "C-Down" },
+    { ME_IN_RSTICK_LEFT, "C-Left" }, { ME_IN_RSTICK_RIGHT, "C-Right" }, END
+};
+/* A on Xbox A and B left of it on X, as on the N64 pad; C-Left and
+   C-Right also on the face buttons beside them (Y, B); Z on the left
+   trigger, R on either right shoulder button. */
+static const pad_default k_n64_defaults[] = {
+    { ME_IN_B,  { ME_XI_A },  0 }, { ME_IN_Y,  { ME_XI_X }, 0 },
+    { ME_IN_LT, { ME_XI_LT }, VK_SPACE }, { ME_IN_RB, { ME_XI_RB, ME_XI_RT }, 0 },
+    { ME_IN_LSTICK_UP,    { ME_XI_LSTICK_UP },    VK_UP },
+    { ME_IN_LSTICK_DOWN,  { ME_XI_LSTICK_DOWN },  VK_DOWN },
+    { ME_IN_LSTICK_LEFT,  { ME_XI_LSTICK_LEFT },  VK_LEFT },
+    { ME_IN_LSTICK_RIGHT, { ME_XI_LSTICK_RIGHT }, VK_RIGHT },
+    { ME_IN_RSTICK_UP,    { ME_XI_RSTICK_UP },             'I' },
+    { ME_IN_RSTICK_DOWN,  { ME_XI_RSTICK_DOWN },           'K' },
+    { ME_IN_RSTICK_LEFT,  { ME_XI_RSTICK_LEFT,  ME_XI_Y }, 'J' },
+    { ME_IN_RSTICK_RIGHT, { ME_XI_RSTICK_RIGHT, ME_XI_B }, 'L' },
+    DEFAULTS_END
+};
+/* Dolphin names the RetroPad's buttons after the GameCube's (RetroPad A is
+   GameCube A...) and lists them itself. The big A in the middle goes on
+   Xbox A, B left of it on X, X right of it on B, Y above on Y. */
+static const pad_default k_gamecube_defaults[] = {
+    { ME_IN_A, { ME_XI_A }, 0 }, { ME_IN_B, { ME_XI_X }, 0 },
+    { ME_IN_X, { ME_XI_B }, 0 }, { ME_IN_Y, { ME_XI_Y }, 0 }, DEFAULTS_END
 };
 
 /* Sega. Genesis Plus GX, PicoDrive and ClownMDEmu share one 6-button
@@ -56,6 +131,13 @@ static const row k_md_blastem_rows[] = {
     DPAD, { ME_IN_B, "A" }, { ME_IN_A, "B" }, { ME_IN_RB, "C" },
     { ME_IN_Y, "X" }, { ME_IN_X, "Y" }, { ME_IN_LB, "Z" },
     { ME_IN_START, "Start" }, { ME_IN_BACK, "Mode" }, END
+};
+/* The other cores' layout, which the universal map gives them: A, B, C on
+   Xbox X, A, B and X, Y, Z on LB, Y, RB. */
+static const pad_default k_md_blastem_defaults[] = {
+    { ME_IN_B, { ME_XI_X },  0 }, { ME_IN_A, { ME_XI_A }, 0 }, { ME_IN_RB, { ME_XI_B },  0 },
+    { ME_IN_Y, { ME_XI_LB }, 0 }, { ME_IN_X, { ME_XI_Y }, 0 }, { ME_IN_LB, { ME_XI_RB }, 0 },
+    DEFAULTS_END
 };
 static const row k_sms_rows[] = {
     DPAD, { ME_IN_B, "1" }, { ME_IN_A, "2" }, { ME_IN_START, "Pause" }, END
@@ -82,10 +164,18 @@ static const row k_2600_rows[] = {
     { ME_IN_RB, "Right Difficulty A" }, { ME_IN_RT, "Right Difficulty B" },
     { ME_IN_LSTICK, "TV Type Color" },  { ME_IN_RSTICK, "TV Type B/W" }, END
 };
+/* One fire button: any face button. */
+static const pad_default k_2600_defaults[] = {
+    { ME_IN_B, { ME_XI_A, ME_XI_B, ME_XI_X, ME_XI_Y }, 0 }, DEFAULTS_END
+};
 static const row k_7800_rows[] = {
     DPAD, { ME_IN_B, "1" }, { ME_IN_A, "2" },
     { ME_IN_START, "Pause" }, { ME_IN_BACK, "Select" }, { ME_IN_X, "Reset" },
     { ME_IN_LB, "Left Difficulty" }, { ME_IN_RB, "Right Difficulty" }, END
+};
+/* Reset moves off Xbox Y (button 1 here) to the right stick click. */
+static const pad_default k_7800_defaults[] = {
+    TWO_BUTTONS(ME_IN_B, ME_IN_A), { ME_IN_X, { ME_XI_RSTICK }, 0 }, DEFAULTS_END
 };
 /* Handy and Gearlynx; Beetle Lynx swaps A and B. Screen rotation is left out. */
 static const row k_lynx_rows[] = {
@@ -95,6 +185,15 @@ static const row k_lynx_rows[] = {
 static const row k_lynx_beetle_rows[] = {
     DPAD, { ME_IN_B, "A" }, { ME_IN_A, "B" },
     { ME_IN_LB, "Option 1" }, { ME_IN_RB, "Option 2" }, { ME_IN_START, "Pause" }, END
+};
+static const pad_default k_lynx_beetle_defaults[] = {
+    TWO_BUTTONS(ME_IN_A, ME_IN_B), DEFAULTS_END
+};
+
+/* Atari800 as a 5200: its fire buttons where a5200 has them (Fire 1, the
+   upper one, on Xbox B; Fire 2 on A). It lists its own inputs. */
+static const pad_default k_5200_atari800_defaults[] = {
+    { ME_IN_B, { ME_XI_B }, 0 }, { ME_IN_A, { ME_XI_A }, 0 }, DEFAULTS_END
 };
 
 /* SNK and Bandai. */
@@ -108,6 +207,13 @@ static const row k_ws_rows[] = {
     { ME_IN_LT,        "Y3 (Down)" },  { ME_IN_LB,         "Y4 (Left)" },
     { ME_IN_A, "A" }, { ME_IN_B, "B" }, { ME_IN_START, "Start" }, END
 };
+/* The Y pad (the second D-pad) on the right stick. */
+static const pad_default k_ws_defaults[] = {
+    TWO_BUTTONS(ME_IN_B, ME_IN_A),
+    { ME_IN_RT, { ME_XI_RSTICK_UP },   0 }, { ME_IN_RB, { ME_XI_RSTICK_RIGHT }, 0 },
+    { ME_IN_LT, { ME_XI_RSTICK_DOWN }, 0 }, { ME_IN_LB, { ME_XI_RSTICK_LEFT },  0 },
+    DEFAULTS_END
+};
 
 /* Sony. PPSSPP also describes a right stick the PSP doesn't have. */
 static const row k_psp_rows[] = {
@@ -118,34 +224,65 @@ static const row k_psp_rows[] = {
     { ME_IN_LSTICK_LEFT, "Analog Left" }, { ME_IN_LSTICK_RIGHT, "Analog Right" }, END
 };
 
-static const console k_nes      = { "NES",               k_nes_rows };
-static const console k_snes     = { "SNES",              k_snes_rows };
-static const console k_gb       = { "Game Boy",          k_nes_rows };
-static const console k_gbc      = { "Game Boy Color",    k_nes_rows };
-static const console k_gba      = { "Game Boy Advance",  k_gba_rows };
-static const console k_nds      = { "Nintendo DS",       k_snes_rows };
-static const console k_vb       = { "Virtual Boy",       k_vb_rows };
-static const console k_pokemini = { "Pokemon Mini",      k_pokemini_rows };
-static const console k_md       = { "Mega Drive / Genesis", k_md_rows };
-static const console k_md_blastem = { "Mega Drive / Genesis", k_md_blastem_rows };
-static const console k_sms      = { "Master System",     k_sms_rows };
-static const console k_sg1000   = { "SG-1000",           k_sms_rows };
-static const console k_gg       = { "Game Gear",         k_gg_rows };
-static const console k_pce      = { "PC Engine",         k_pce_rows };
-static const console k_sgx      = { "SuperGrafx",        k_pce_rows };
-static const console k_2600     = { "Atari 2600",        k_2600_rows };
-static const console k_7800     = { "Atari 7800",        k_7800_rows };
-static const console k_lynx     = { "Atari Lynx",        k_lynx_rows };
-static const console k_lynx_beetle = { "Atari Lynx",     k_lynx_beetle_rows };
-static const console k_ngp      = { "Neo Geo Pocket",    k_ngp_rows };
-static const console k_ngpc     = { "Neo Geo Pocket Color", k_ngp_rows };
-static const console k_ws       = { "WonderSwan",        k_ws_rows };
-static const console k_wsc      = { "WonderSwan Color",  k_ws_rows };
-static const console k_psp      = { "PSP",               k_psp_rows };
+/* Others; these cores list their own inputs. blueMSX as a ColecoVision:
+   the fire buttons and keypad 1 and 2 where Gearcoleco has them (left fire
+   on Xbox A, right fire on B, 1 on X, 2 on Y). */
+static const pad_default k_coleco_bluemsx_defaults[] = {
+    { ME_IN_A, { ME_XI_A }, 0 }, { ME_IN_B, { ME_XI_B }, 0 },
+    { ME_IN_X, { ME_XI_X }, 0 }, { ME_IN_Y, { ME_XI_Y }, 0 }, DEFAULTS_END
+};
+/* FreeIntv: the Intellivision's left and right side buttons on Xbox X and
+   B, its top buttons on Y; A repeats the last keypad button. */
+static const pad_default k_intv_defaults[] = {
+    { ME_IN_A, { ME_XI_X }, 0 }, { ME_IN_B, { ME_XI_B }, 0 },
+    { ME_IN_Y, { ME_XI_Y }, 0 }, { ME_IN_X, { ME_XI_A }, 0 }, DEFAULTS_END
+};
+/* VecX: the Vectrex's four buttons in a row, 1 to 4, on Xbox X, A, B, Y. */
+static const pad_default k_vectrex_defaults[] = {
+    { ME_IN_A, { ME_XI_X }, 0 }, { ME_IN_B, { ME_XI_A }, 0 },
+    { ME_IN_X, { ME_XI_B }, 0 }, { ME_IN_Y, { ME_XI_Y }, 0 }, DEFAULTS_END
+};
+
+/* Keys are rom_cores.h console ids, with a suffix where a core lays the
+   controller out differently from the console's other cores. */
+static const console k_nes      = { "nes",      "NES",               k_nes_rows,      k_two_buttons };
+static const console k_snes     = { "snes",     "SNES",              k_snes_rows,     NULL };
+static const console k_gb       = { "gb",       "Game Boy",          k_nes_rows,      k_two_buttons };
+static const console k_gbc      = { "gbc",      "Game Boy Color",    k_nes_rows,      k_two_buttons };
+static const console k_gba      = { "gba",      "Game Boy Advance",  k_gba_rows,      k_two_buttons };
+static const console k_nds      = { "nds",      "Nintendo DS",       k_snes_rows,     NULL };
+static const console k_n64      = { "n64",      "Nintendo 64",       k_n64_rows,      k_n64_defaults };
+static const console k_gamecube = { "gamecube", "GameCube",          NULL,            k_gamecube_defaults };
+static const console k_vb       = { "vb",       "Virtual Boy",       k_vb_rows,       k_vb_defaults };
+static const console k_pokemini = { "pokemini", "Pokemon Mini",      k_pokemini_rows, k_two_buttons };
+static const console k_md       = { "md",       "Mega Drive / Genesis", k_md_rows,    NULL };
+static const console k_md_blastem = { "md_blastem", "Mega Drive / Genesis", k_md_blastem_rows,
+                                      k_md_blastem_defaults };
+static const console k_sms      = { "sms",      "Master System",     k_sms_rows,      k_two_buttons };
+static const console k_sg1000   = { "sg1000",   "SG-1000",           k_sms_rows,      k_two_buttons };
+static const console k_gg       = { "gg",       "Game Gear",         k_gg_rows,       k_two_buttons };
+static const console k_pce      = { "pce",      "PC Engine",         k_pce_rows,      k_two_buttons };
+static const console k_sgx      = { "sgx",      "SuperGrafx",        k_pce_rows,      k_two_buttons };
+static const console k_2600     = { "a2600",    "Atari 2600",        k_2600_rows,     k_2600_defaults };
+static const console k_5200_atari800 = { "a5200_atari800", "Atari 5200", NULL,    k_5200_atari800_defaults };
+static const console k_7800     = { "a7800",    "Atari 7800",        k_7800_rows,     k_7800_defaults };
+static const console k_lynx     = { "lynx",     "Atari Lynx",        k_lynx_rows,     k_two_buttons };
+static const console k_lynx_beetle = { "lynx_beetle", "Atari Lynx",  k_lynx_beetle_rows,
+                                       k_lynx_beetle_defaults };
+static const console k_ngp      = { "ngp",      "Neo Geo Pocket",    k_ngp_rows,      k_two_buttons };
+static const console k_ngpc     = { "ngpc",     "Neo Geo Pocket Color", k_ngp_rows,   k_two_buttons };
+static const console k_ws       = { "ws",       "WonderSwan",        k_ws_rows,       k_ws_defaults };
+static const console k_wsc      = { "wsc",      "WonderSwan Color",  k_ws_rows,       k_ws_defaults };
+static const console k_psp      = { "psp",      "PSP",               k_psp_rows,      NULL };
+static const console k_coleco_bluemsx = { "coleco_bluemsx", "ColecoVision", NULL, k_coleco_bluemsx_defaults };
+static const console k_intv     = { "intv",     "Intellivision",     NULL,            k_intv_defaults };
+static const console k_vectrex  = { "vectrex",  "Vectrex",           NULL,            k_vectrex_defaults };
 
 /* First match wins. `cores`: '|'-separated library_name prefixes, NULL = any
    core. `exts`: '|'-separated ROM extensions, NULL = any. A NULL console
-   means no curated layout (the core's descriptors are used). */
+   means no curated layout (the core's descriptors are used), and neither
+   does a console without rows, which only brings default bindings. Games
+   no rule matches get the default bindings of no console: universal's. */
 static const struct {
     const char *cores;
     const char *exts;
@@ -158,6 +295,8 @@ static const struct {
     { NULL, "gbc|cgb",                                   &k_gbc },
     { NULL, "gba|agb",                                   &k_gba },
     { NULL, "nds|dsi|ids",                               &k_nds },
+    { "ParaLLEl N64|Mupen64Plus-Next",      NULL,        &k_n64 },
+    { "dolphin",                            NULL,        &k_gamecube },
     { "Beetle VB",                          NULL,        &k_vb },
     { "PokeMini",                           NULL,        &k_pokemini },
 
@@ -178,16 +317,20 @@ static const struct {
 
     /* Atari. */
     { "Stella",                             NULL,        &k_2600 },
+    { "Atari800",                           "a52",       &k_5200_atari800 },
     { "ProSystem",                          NULL,        &k_7800 },
     { "Handy|Gearlynx",                     NULL,        &k_lynx },
     { "Beetle Lynx",                        NULL,        &k_lynx_beetle },
 
-    /* SNK, Bandai, Sony. */
+    /* SNK, Bandai, Sony, others. */
     { "Beetle NeoPop|RACE",                 "ngc|ngpc",  &k_ngpc },
     { "Beetle NeoPop|RACE",                 NULL,        &k_ngp },
     { "Beetle WonderSwan",                  "wsc",       &k_wsc },
     { "Beetle WonderSwan",                  NULL,        &k_ws },
     { "PPSSPP",                             NULL,        &k_psp },
+    { "blueMSX",                            "col|cv",    &k_coleco_bluemsx },
+    { "freeintv",                           NULL,        &k_intv },
+    { "VecX",                               NULL,        &k_vectrex },
 };
 
 /* Is `s` (length n) one of the '|'-separated items in `list`? Prefix match
@@ -245,21 +388,85 @@ void me_layout_unknown(me_input_layout *out) {
         add_row(out, k_default_order[i], me_input_label(k_default_order[i]), 0);
 }
 
-int me_layout_for_game(const char *library_name, const char *rom_path, me_input_layout *out) {
+static void set_defaults(me_input_layout *l, const pad_default *d) {
+    for (; d && d->id < ME_IN_COUNT; d++) {
+        me_xi_bindings *xi = &l->def_xis[d->id];
+        memset(xi, 0, sizeof(*xi));
+        for (int i = 0; i < ME_XI_MAX_BINDINGS && d->xi[i]; i++) xi->b[xi->count++].buttons = d->xi[i];
+        if (xi->count) l->def_xi |= 1u << d->id;
+        if (d->vk) {
+            me_kb_bindings *kb = &l->def_kbs[d->id];
+            memset(kb, 0, sizeof(*kb));
+            kb->b[0].vk = d->vk;
+            kb->count = 1;
+            l->def_kb |= 1u << d->id;
+        }
+    }
+}
+
+int me_layout_for_game(const char *library_name, const char *rom_path,
+                       const char *console_id, const char *console_name,
+                       me_input_layout *out) {
     const char *lib = library_name ? library_name : "";
     const char *ext = extension_of(rom_path ? rom_path : "");
+    me_layout_unknown(out);
+    snprintf(out->key, sizeof(out->key), "%s", console_id ? console_id : "");
+    snprintf(out->console, sizeof(out->console), "%s", console_name ? console_name : "");
     for (size_t i = 0; i < sizeof(k_rules) / sizeof(k_rules[0]); i++) {
         if (k_rules[i].cores && !in_list(k_rules[i].cores, lib, 1)) continue;
         if (k_rules[i].exts  && !in_list(k_rules[i].exts,  ext, 0)) continue;
         const console *c = k_rules[i].c;
         if (!c) return 0;
-        memset(out, 0, sizeof(*out));
+        snprintf(out->key, sizeof(out->key), "%s", c->key);
+        snprintf(out->console, sizeof(out->console), "%s", c->name);
+        set_defaults(out, c->defaults);
+        if (!c->rows) return 0;
         out->curated = 1;
         snprintf(out->name, sizeof(out->name), "%s", c->name);
+        out->n = 0;
+        out->live = out->advanced = 0;
+        memset(out->labels, 0, sizeof(out->labels));
         for (const row *r = c->rows; r->label; r++) add_row(out, r->id, r->label, 0);
         return 1;
     }
     return 0;
+}
+
+/* Copy what `src` knows about the console (not its rows) into `dst`. */
+static void keep_console(me_input_layout *dst, const me_input_layout *src) {
+    memcpy(dst->key, src->key, sizeof(dst->key));
+    memcpy(dst->console, src->console, sizeof(dst->console));
+    dst->def_kb = src->def_kb;
+    dst->def_xi = src->def_xi;
+    memcpy(dst->def_kbs, src->def_kbs, sizeof(dst->def_kbs));
+    memcpy(dst->def_xis, src->def_xis, sizeof(dst->def_xis));
+}
+
+void me_controls_effective(const me_settings *s, const me_input_layout *l, int core,
+                           int with_console, int player, me_control_map *out) {
+    *out = s->universal[player];
+    for (int id = 0; id < ME_IN_COUNT; id++) {
+        if (l->def_kb & (1u << id)) out->keys[id] = l->def_kbs[id];
+        if (l->def_xi & (1u << id)) out->xi[id]   = l->def_xis[id];
+    }
+    const me_control_map *over[2] = { NULL, NULL };
+    unsigned bits[2] = { 0, 0 };
+    int ci = with_console ? me_settings_find_console_controls(s, l->key) : -1;
+    if (ci >= 0) {
+        over[0] = &s->console_controls[ci].controls[player];
+        bits[0] = s->console_controls[ci].overrides[player];
+    }
+    if (core >= 0 && (size_t)core < s->cores_n && !s->cores[core].use_universal) {
+        over[1] = &s->cores[core].controls[player];
+        bits[1] = s->cores[core].overrides[player];
+    }
+    for (int k = 0; k < 2; k++) {
+        for (int id = 0; id < ME_IN_COUNT && over[k]; id++) {
+            if (!(bits[k] & (1u << id))) continue;
+            out->keys[id] = over[k]->keys[id];
+            out->xi[id]   = over[k]->xi[id];
+        }
+    }
 }
 
 /* RetroPad button → our input. */
@@ -336,6 +543,7 @@ void me_layout_from_descriptors(const char *core_name,
                                 const struct retro_input_descriptor *d,
                                 me_input_layout *out) {
     unsigned banned = banned_ids(d);
+    me_input_layout was = *out;
     memset(out, 0, sizeof(*out));
     add_described(out, d, banned, 0);
     if (out->n == 0) me_layout_unknown(out);
@@ -343,6 +551,7 @@ void me_layout_from_descriptors(const char *core_name,
     /* Only banned inputs are held back: a core may read inputs it never
        described (analog sticks especially), and those must keep working. */
     out->live = ME_IN_ALL & ~banned;
+    keep_console(out, &was);
 }
 
 void me_layout_set_advanced(me_input_layout *l, const struct retro_input_descriptor *d) {

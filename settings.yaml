@@ -137,8 +137,15 @@ hotkeys:
 
 # Controls
 # ---------
-# Controls > Player 1 / Player 2 edit these from the menu.
-# `universal` is the default mapping applied to every core.
+# Controls > Player N edits these from the menu: universal with no game
+# running, else the running game's console_controls.
+# `universal` is the mapping every console starts from. Its controller
+# face buttons go where the RetroPad has them (Xbox A on RetroPad B, the
+# bottom button...), and cores lay their console's pad out on the RetroPad by
+# position, so a PlayStation's Cross lands on Xbox A and a SNES's Y on Xbox X.
+# Consoles whose buttons sit elsewhere have built-in defaults on top (NES B
+# and A side by side on Xbox X/Y and A/B; GameCube A on Xbox A; N64 C-Left and
+# C-Right on Y and B as well as the right stick...). See console_controls.
 # Each core listed under `cores:` has its own `use_universal` toggle.
 #   use_universal: true  -> ignore the per-core `controls:` block, use universal
 #   use_universal: false -> use the per-core `controls:` block
@@ -151,8 +158,10 @@ hotkeys:
 # `playerN_rumble`: that player's pad rumbles when the game asks (N64 Rumble
 #   Pak, DualShock, GameCube...). Consoles without rumble never ask.
 #
-# Naming uses Xbox / XInput vocabulary throughout:
-#   Face buttons:  a, b, x, y           (Xbox layout)
+# Inputs are the RetroPad's (the controller cores see), named in Xbox /
+# XInput vocabulary:
+#   Face buttons:  a, b, x, y           (RetroPad = SNES layout: b bottom,
+#                                        a right, y left, x top)
 #   D-pad:         dpad_up/down/left/right
 #   Shoulders:     lb, rb
 #   Triggers:      lt, rt
@@ -201,24 +210,32 @@ controls:
       dpad_right:
         keyboard:   Right
         controller: DPadRight
-      a:
+      a:                   # RetroPad A: the right face button
         keyboard:   X
-        controller: A
-      b:
-        keyboard:   Z
         controller: B
-      x:
+      b:                   # RetroPad B: the bottom face button
+        keyboard:   Z
+        controller: A
+      x:                   # RetroPad X: the top face button
         keyboard:   S
-        controller: X
-      y:
-        keyboard:   A
         controller: Y
+      y:                   # RetroPad Y: the left face button
+        keyboard:   A
+        controller: X
       lb:
         keyboard:   Q
         controller: LB
       rb:
         keyboard:   W
         controller: RB
+      lt:
+        controller: LT
+      rt:
+        controller: RT
+      lstick:
+        controller: LStick
+      rstick:
+        controller: RStick
       start:
         keyboard:   Return
         controller: Start
@@ -235,17 +252,25 @@ controls:
       dpad_right:
         controller: DPadRight
       a:
-        controller: A
-      b:
         controller: B
+      b:
+        controller: A
       x:
-        controller: X
-      y:
         controller: Y
+      y:
+        controller: X
       lb:
         controller: LB
       rb:
         controller: RB
+      lt:
+        controller: LT
+      rt:
+        controller: RT
+      lstick:
+        controller: LStick
+      rstick:
+        controller: RStick
       start:
         controller: Start
       back:
@@ -260,17 +285,25 @@ controls:
       dpad_right:
         controller: DPadRight
       a:
-        controller: A
-      b:
         controller: B
+      b:
+        controller: A
       x:
-        controller: X
-      y:
         controller: Y
+      y:
+        controller: X
       lb:
         controller: LB
       rb:
         controller: RB
+      lt:
+        controller: LT
+      rt:
+        controller: RT
+      lstick:
+        controller: LStick
+      rstick:
+        controller: RStick
       start:
         controller: Start
       back:
@@ -285,17 +318,25 @@ controls:
       dpad_right:
         controller: DPadRight
       a:
-        controller: A
-      b:
         controller: B
+      b:
+        controller: A
       x:
-        controller: X
-      y:
         controller: Y
+      y:
+        controller: X
       lb:
         controller: LB
       rb:
         controller: RB
+      lt:
+        controller: LT
+      rt:
+        controller: RT
+      lstick:
+        controller: LStick
+      rstick:
+        controller: RStick
       start:
         controller: Start
       back:
@@ -314,38 +355,14 @@ controls:
     player3: {}
     player4: {}
 
-# Per-core settings. `use_universal` controls whether the universal mapping
-# above is used, or the `controls:` block below it.
+# Per-core settings. `use_universal: false` gives a core its own map: the
+# inputs in its `controls:` block, over the console's controls and universal.
 cores:
   snes9x:
     dll: snes9x_libretro.dll
     use_universal: true
     controls:
-      player1:
-        a:
-          keyboard:   X
-          controller: A
-        b:
-          keyboard:   Z
-          controller: B
-        x:
-          keyboard:   S
-          controller: X
-        y:
-          keyboard:   A
-          controller: Y
-        lb:
-          keyboard:   Q
-          controller: LB
-        rb:
-          keyboard:   W
-          controller: RB
-        start:
-          keyboard:   Return
-          controller: Start
-        back:
-          keyboard:   RShift
-          controller: Back
+      player1: {}
 
   bsnes:
     dll: bsnes_libretro.dll
@@ -361,22 +378,9 @@ cores:
 
   mesen:
     dll: mesen_libretro.dll
-    use_universal: false
-    # NES only has A/B/Start/Back — universal's A=X, B=Z are fine.
+    use_universal: true
     controls:
-      player1:
-        a:
-          keyboard:   [X, S]
-          controller: [A, Y]
-        b:
-          keyboard:   [Z, A]
-          controller: [B, X]
-        start:
-          keyboard:   Return
-          controller: Start
-        back:
-          keyboard:   RShift
-          controller: Back
+      player1: {}
 
   mesen_s:
     dll: mesen-s_libretro.dll
@@ -390,104 +394,13 @@ cores:
     controls:
       player1: {}
 
-  mupen64plus_next:
-    dll: mupen64plus_next_libretro.dll
-    use_universal: false
-    # N64 has a unique layout (C-buttons, Z-trigger). Override the universal map.
-    # Left stick = analog stick, right stick = C-buttons, lt = Z-trigger.
-    controls:
-      player1:
-        lstick_up:
-          keyboard:   Up
-          controller: LStickUp
-        lstick_down:
-          keyboard:   Down
-          controller: LStickDown
-        lstick_left:
-          keyboard:   Left
-          controller: LStickLeft
-        lstick_right:
-          keyboard:   Right
-          controller: LStickRight
-        a:
-          keyboard:   X
-          controller: A
-        b:
-          keyboard:   Z
-          controller: B
-        lb:
-          keyboard:   Q
-          controller: LB
-        rb:
-          keyboard:   W
-          controller: RB
-        lt:                       # Z-trigger
-          keyboard:   Space
-          controller: LT
-        # C-buttons (libretro right stick)
-        rstick_up:
-          keyboard:   I
-          controller: RStickUp
-        rstick_down:
-          keyboard:   K
-          controller: RStickDown
-        rstick_left:
-          keyboard:   J
-          controller: RStickLeft
-        rstick_right:
-          keyboard:   L
-          controller: RStickRight
-        start:
-          keyboard:   Return
-          controller: Start
-
-  parallel_n64:
-    dll: parallel_n64_libretro.dll
-    use_universal: false
-    controls:
-      player1:
-        lstick_up:
-          keyboard:   Up
-          controller: LStickUp
-        lstick_down:
-          keyboard:   Down
-          controller: LStickDown
-        lstick_left:
-          keyboard:   Left
-          controller: LStickLeft
-        lstick_right:
-          keyboard:   Right
-          controller: LStickRight
-        a:
-          keyboard:   X
-          controller: A
-        b:
-          keyboard:   Z
-          controller: B
-        lb:
-          keyboard:   Q
-          controller: LB
-        rb:
-          keyboard:   W
-          controller: RB
-        lt:
-          keyboard:   Space
-          controller: LT
-        rstick_up:
-          keyboard:   I
-          controller: RStickUp
-        rstick_down:
-          keyboard:   K
-          controller: RStickDown
-        rstick_left:
-          keyboard:   J
-          controller: RStickLeft
-        rstick_right:
-          keyboard:   L
-          controller: RStickRight
-        start:
-          keyboard:   Return
-          controller: Start
+# Per-console controls: what you changed for one console's games (Controls >
+# Player N while one of them runs changes these, not universal). Same format
+# as universal, listing only the inputs that differ from the console's
+# built-in defaults. Keys are console ids (nes, snes, n64, psx, md...), some
+# with a suffix for a core that lays the pad out its own way (md_blastem,
+# lynx_beetle). A core with use_universal: false above overrides this too.
+console_controls: {}
 
 # Which core each console's games open in. Cores > Set Cores edits this.
 # Consoles not listed use laggueless' pick. Values are DLL filenames in the

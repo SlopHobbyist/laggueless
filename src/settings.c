@@ -383,8 +383,12 @@ void me_settings_defaults(me_settings *out) {
 #define SET1(slot, name) do { (slot).b[0] = parse_chord(name); (slot).count = 1; } while(0)
 #define XI1(slot, mask)  do { (slot).b[0].buttons = (mask); (slot).count = 1; } while(0)
 
-    /* Universal defaults match what main.c used to hard-code in step 5.
-       Players 2-4 get the controller layout only; the keyboard is player 1's. */
+    /* Universal defaults. Players 2-4 get the controller layout only; the
+       keyboard is player 1's. The controller's face buttons go where the
+       RetroPad has them, not by name: RetroPad B is the bottom button (Xbox
+       A), A the right one (Xbox B), Y the left (X), X the top (Y). Cores lay
+       their console's controller out on the RetroPad by position; consoles
+       where that isn't enough have their own defaults (consoles.c). */
     SET1(out->universal[0].keys[ME_IN_DPAD_UP],    "Up");
     SET1(out->universal[0].keys[ME_IN_DPAD_DOWN],  "Down");
     SET1(out->universal[0].keys[ME_IN_DPAD_LEFT],  "Left");
@@ -403,12 +407,16 @@ void me_settings_defaults(me_settings *out) {
         XI1(m->xi[ME_IN_DPAD_DOWN],  ME_XI_DPAD_DOWN);
         XI1(m->xi[ME_IN_DPAD_LEFT],  ME_XI_DPAD_LEFT);
         XI1(m->xi[ME_IN_DPAD_RIGHT], ME_XI_DPAD_RIGHT);
-        XI1(m->xi[ME_IN_A],          ME_XI_A);
-        XI1(m->xi[ME_IN_B],          ME_XI_B);
-        XI1(m->xi[ME_IN_X],          ME_XI_X);
-        XI1(m->xi[ME_IN_Y],          ME_XI_Y);
+        XI1(m->xi[ME_IN_A],          ME_XI_B);
+        XI1(m->xi[ME_IN_B],          ME_XI_A);
+        XI1(m->xi[ME_IN_X],          ME_XI_Y);
+        XI1(m->xi[ME_IN_Y],          ME_XI_X);
         XI1(m->xi[ME_IN_LB],         ME_XI_LB);
         XI1(m->xi[ME_IN_RB],         ME_XI_RB);
+        XI1(m->xi[ME_IN_LT],         ME_XI_LT);
+        XI1(m->xi[ME_IN_RT],         ME_XI_RT);
+        XI1(m->xi[ME_IN_LSTICK],     ME_XI_LSTICK);
+        XI1(m->xi[ME_IN_RSTICK],     ME_XI_RSTICK);
         XI1(m->xi[ME_IN_START],      ME_XI_START);
         XI1(m->xi[ME_IN_BACK],       ME_XI_BACK);
     }
@@ -421,6 +429,9 @@ void me_settings_free(me_settings *s) {
     free(s->cores);
     s->cores = NULL;
     s->cores_n = 0;
+    free(s->console_controls);
+    s->console_controls = NULL;
+    s->console_controls_n = 0;
 }
 
 /* ---- libyaml DOM walk ----------------------------------------------------- */
@@ -689,6 +700,24 @@ static void load_document(yaml_document_t *doc, yaml_node_t *root, me_settings *
         }
     }
 
+    /* console -> the player's controls for its games */
+    yaml_node_t *ctl = map_get(doc, root, "console_controls");
+    if (ctl && ctl->type == YAML_MAPPING_NODE) {
+        size_t n = (size_t)(ctl->data.mapping.pairs.top - ctl->data.mapping.pairs.start);
+        free(out->console_controls);
+        out->console_controls = (struct me_console_controls *)calloc(n ? n : 1, sizeof(*out->console_controls));
+        out->console_controls_n = 0;
+        for (yaml_node_pair_t *p = ctl->data.mapping.pairs.start;
+             out->console_controls && p < ctl->data.mapping.pairs.top; p++) {
+            const char *key = scalar_str(doc_get(doc, p->key));
+            yaml_node_t *v = doc_get(doc, p->value);
+            if (!key || !*key || !v || v->type != YAML_MAPPING_NODE) continue;
+            struct me_console_controls *e = &out->console_controls[out->console_controls_n++];
+            snprintf(e->key, sizeof(e->key), "%s", key);
+            parse_players(doc, v, e->controls, e->overrides);
+        }
+    }
+
     /* console -> core picks */
     yaml_node_t *cc = map_get(doc, root, "console_cores");
     if (cc && cc->type == YAML_MAPPING_NODE) {
@@ -938,6 +967,18 @@ int me_settings_save(const char *path, const me_settings *s) {
             write_player(f, "      ", g_player_keys[pl], &e->controls[pl], &e->overrides[pl]);
     }
 
+    fprintf(f, "\nconsole_controls:");
+    if (s->console_controls_n == 0) fprintf(f, " {}");
+    fputc('\n', f);
+    for (size_t i = 0; i < s->console_controls_n; i++) {
+        const struct me_console_controls *e = &s->console_controls[i];
+        fprintf(f, "  ");
+        write_quoted(f, e->key);
+        fprintf(f, ":\n");
+        for (int pl = 0; pl < ME_MAX_PLAYERS; pl++)
+            write_player(f, "    ", g_player_keys[pl], &e->controls[pl], &e->overrides[pl]);
+    }
+
     fprintf(f, "\nconsole_cores:");
     if (s->console_cores_n == 0) fprintf(f, " {}");
     fputc('\n', f);
@@ -1007,16 +1048,53 @@ void me_settings_set_universal(me_settings *s, int player, const me_control_map 
     }
 }
 
-void me_settings_set_core_map(me_settings *s, int core, int player, const me_control_map *m) {
-    struct me_core_entry *e = &s->cores[core];
-    const me_control_map *u = &s->universal[player];
-    e->controls[player] = *m;
-    e->overrides[player] = 0;
+/* Bit per input whose bindings in `m` differ from `base`. */
+static unsigned changed_inputs(const me_control_map *m, const me_control_map *base) {
+    unsigned bits = 0;
     for (int id = 0; id < ME_IN_COUNT; id++) {
-        if (!me_kb_bindings_equal(&m->keys[id], &u->keys[id]) ||
-            !me_xi_bindings_equal(&m->xi[id], &u->xi[id]))
-            e->overrides[player] |= 1u << id;
+        if (!me_kb_bindings_equal(&m->keys[id], &base->keys[id]) ||
+            !me_xi_bindings_equal(&m->xi[id], &base->xi[id]))
+            bits |= 1u << id;
     }
+    return bits;
+}
+
+void me_settings_set_core_map(me_settings *s, int core, int player, const me_control_map *m,
+                              const me_control_map *base) {
+    struct me_core_entry *e = &s->cores[core];
+    e->controls[player] = *m;
+    e->overrides[player] = changed_inputs(m, base);
+}
+
+int me_settings_find_console_controls(const me_settings *s, const char *key) {
+    if (!key || !*key) return -1;
+    for (size_t i = 0; i < s->console_controls_n; i++)
+        if (iequals(s->console_controls[i].key, key)) return (int)i;
+    return -1;
+}
+
+void me_settings_set_console_map(me_settings *s, const char *key, int player,
+                                 const me_control_map *m, const me_control_map *base) {
+    if (!key || !*key) return;
+    unsigned bits = changed_inputs(m, base);
+    int i = me_settings_find_console_controls(s, key);
+    if (i < 0) {
+        if (!bits) return;
+        struct me_console_controls *grown = (struct me_console_controls *)realloc(
+            s->console_controls, (s->console_controls_n + 1) * sizeof(*grown));
+        if (!grown) return;
+        s->console_controls = grown;
+        i = (int)s->console_controls_n++;
+        memset(&grown[i], 0, sizeof(grown[i]));
+        snprintf(grown[i].key, sizeof(grown[i].key), "%s", key);
+    }
+    struct me_console_controls *e = &s->console_controls[i];
+    e->controls[player] = *m;
+    e->overrides[player] = bits;
+    for (int pl = 0; pl < ME_MAX_PLAYERS; pl++)
+        if (e->overrides[pl]) return;
+    memmove(e, e + 1, (s->console_controls_n - (size_t)i - 1) * sizeof(*e));
+    s->console_controls_n--;
 }
 
 /* Generate a default settings.yaml file if it doesn't exist.

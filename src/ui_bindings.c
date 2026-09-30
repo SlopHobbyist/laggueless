@@ -6,6 +6,8 @@
    every input. Hidden inputs keep their bindings for other cores. "Show
    advanced inputs" adds the core's extras (FDS disk swap, coins, lid/mic...),
    which have their own bindings (settings.h).
+   With a game running, changes go to its console's map (or the core's own
+   map, if it has one); with none, or a console we don't know, to universal.
    Clicking a binding captures the next key / button; right-clicking clears it.
    Capture polls GetAsyncKeyState and XInput on a timer instead of reading
    WM_KEYDOWN, because the dialog manager eats Tab/Enter/Esc/arrows.
@@ -45,8 +47,10 @@ enum { COL_NAME = 0, COL_KEYBOARD = 1, COL_CONTROLLER = 2 };
 typedef struct {
     int is_hotkeys;
     int player;              /* player dialogs: 0 .. ME_MAX_PLAYERS - 1 */
-    int core_index;          /* player dialogs: per-core map being edited, -1 = universal */
+    int core_index;          /* player dialogs: per-core map being edited, -1 = none */
     char core_name[64];
+    int console_map;         /* player dialogs: the game's console has a map
+                                (layout.key), edited unless the core has its own */
     int rows;
     int ids[ME_IN_COUNT];    /* row → me_input_id / me_hotkey_id */
     me_input_layout layout;  /* player dialogs: which inputs, and their names */
@@ -306,13 +310,13 @@ static void load_from(bind_dlg *d, const me_settings *s, int core_index) {
         d->slot   = s->hk_xi_index;
         return;
     }
-    const me_control_map *m = core_index >= 0 ? &s->cores[core_index].controls[d->player]
-                                              : &s->universal[d->player];
+    me_control_map m;
+    me_controls_effective(s, &d->layout, core_index, d->console_map, d->player, &m);
     const me_control_map *adv = &s->advanced[d->player];
     for (int id = 0; id < ME_IN_COUNT; id++) {
         int a = (d->layout.advanced >> id) & 1;
-        d->kb[id] = a ? adv->keys[id] : m->keys[id];
-        d->xi[id] = a ? adv->xi[id]   : m->xi[id];
+        d->kb[id] = a ? adv->keys[id] : m.keys[id];
+        d->xi[id] = a ? adv->xi[id]   : m.xi[id];
     }
     d->source = s->input_source[d->player];
     d->slot   = s->xi_index[d->player];
@@ -330,17 +334,25 @@ static void store_into(const bind_dlg *d, me_settings *s, int core_index) {
         return;
     }
     /* Advanced rows go to the advanced map; the map's own binding for that
-       input (another console's button there) is left alone. */
-    me_control_map m = core_index >= 0 ? s->cores[core_index].controls[d->player]
-                                       : s->universal[d->player];
+       input (another console's button there) is left alone. `base` is what
+       the player has without the map being edited. */
+    me_control_map base;
+    if (core_index >= 0 || d->console_map)
+        me_controls_effective(s, &d->layout, -1, core_index >= 0 && d->console_map,
+                              d->player, &base);
+    else
+        base = s->universal[d->player];
+    me_control_map m = base;
     me_control_map *adv = &s->advanced[d->player];
     for (int id = 0; id < ME_IN_COUNT; id++) {
         int a = (d->layout.advanced >> id) & 1;
         (a ? adv : &m)->keys[id] = d->kb[id];
         (a ? adv : &m)->xi[id]   = d->xi[id];
     }
-    if (core_index >= 0) me_settings_set_core_map(s, core_index, d->player, &m);
-    else                 me_settings_set_universal(s, d->player, &m);
+    if (core_index >= 0) me_settings_set_core_map(s, core_index, d->player, &m, &base);
+    else if (d->console_map)
+        me_settings_set_console_map(s, d->layout.key, d->player, &m, &base);
+    else me_settings_set_universal(s, d->player, &m);
     s->input_source[d->player] = d->source;
     s->xi_index[d->player]     = d->slot;
     s->show_advanced_inputs    = d->show_advanced;
@@ -362,12 +374,11 @@ static void patch_bindings(me_settings *s, const void *ctx) {
     store_into(d, s, core_in(d, s));
 }
 
+/* What a fresh install has: for a game, its console's defaults. */
 static void apply_defaults(HWND dlg, bind_dlg *d) {
     me_settings t;
     me_settings_load_template(&t);
-    int ci = core_in(d, &t);
-    if (ci >= 0 && t.cores[ci].use_universal) ci = -1;
-    load_from(d, &t, ci);
+    load_from(d, &t, core_in(d, &t));
     me_settings_free(&t);
     refresh_all(dlg, d);
 }
@@ -392,6 +403,9 @@ static void create_controls(HWND dlg, bind_dlg *d) {
     else if (d->core_index >= 0)
         snprintf(scope, sizeof(scope), "Editing Player %d controls for %s only (this core has its own map).%s",
                  d->player + 1, d->core_name, shown);
+    else if (d->console_map)
+        snprintf(scope, sizeof(scope), "Editing Player %d controls for %s games only.%s",
+                 d->player + 1, d->layout.console[0] ? d->layout.console : d->layout.key, shown);
     else
         snprintf(scope, sizeof(scope), "Editing Player %d controls for all cores.%s", d->player + 1, shown);
     me_ui_add_control(dlg, "STATIC", scope, SS_LEFT, 7, 3, 306, 17, IDC_SCOPE);
@@ -551,7 +565,8 @@ void me_ui_player_dialog(HWND owner, int player) {
     memset(&d, 0, sizeof(d));
     d.player = player;
 
-    /* Edit the running core's own map if it has one, else the universal map. */
+    /* Edit the running core's own map if it has one, else its console's,
+       else the universal map. */
     me_settings *live = me_app_settings();
     me_app_status st;
     me_status_get(&st);
@@ -559,6 +574,7 @@ void me_ui_player_dialog(HWND owner, int player) {
     /* Rows: the loaded (or powered-off) game's controller, else every input. */
     if (st.core_path[0]) me_layout_get(&d.layout);
     else                 me_layout_unknown(&d.layout);
+    d.console_map = d.layout.key[0] != '\0';
     d.core_index = -1;
     if (st.core_path[0]) {
         int ci = me_settings_find_core_index(live, st.core_path);

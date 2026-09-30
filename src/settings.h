@@ -194,10 +194,22 @@ typedef struct {
         int   use_universal;
         me_control_map controls[ME_MAX_PLAYERS]; /* used when use_universal == 0 */
         /* Bit per me_input_id: set when this core overrides the input; the
-           rest follow the universal map. */
+           rest follow the console's map (consoles.h), then universal. */
         unsigned overrides[ME_MAX_PLAYERS];
     } *cores;
     size_t cores_n;
+
+    /* Per-console maps: the player's changes for one console's games
+       (Controls > Player N while one runs), over the console's default
+       bindings (consoles.c) and universal. Keyed by the controller layout's
+       key (me_input_layout.key: "nes", "md_blastem"...). Only the inputs
+       with an `overrides` bit mean anything. */
+    struct me_console_controls {
+        char     key[32];
+        me_control_map controls[ME_MAX_PLAYERS];
+        unsigned overrides[ME_MAX_PLAYERS];
+    } *console_controls;
+    size_t console_controls_n;
 
     /* Cores > Set Cores: the player's core for a console, only where it
        differs from our pick (rom_cores.c). Keyed by console id ("nes"). */
@@ -267,9 +279,19 @@ const struct me_core_entry *me_settings_find_core(const me_settings *s,
    override. */
 void me_settings_set_universal(me_settings *s, int player, const me_control_map *m);
 
-/* Replace a core's own map for `player`; inputs that differ from universal
-   become overrides. */
-void me_settings_set_core_map(me_settings *s, int core, int player, const me_control_map *m);
+/* Replace a core's own map for `player`; inputs that differ from `base`
+   (what the player would have without it) become overrides. */
+void me_settings_set_core_map(me_settings *s, int core, int player, const me_control_map *m,
+                              const me_control_map *base);
+
+/* Index of the console map for `key` in s->console_controls, or -1. */
+int  me_settings_find_console_controls(const me_settings *s, const char *key);
+
+/* Replace the console map for `key` and `player`: inputs that differ from
+   `base` (universal with the console's defaults) become overrides. A
+   console left with none is dropped. */
+void me_settings_set_console_map(me_settings *s, const char *key, int player,
+                                 const me_control_map *m, const me_control_map *base);
 
 /* Same match as me_settings_find_core, as an index into s->cores (-1 if none). */
 int me_settings_find_core_index(const me_settings *s, const char *core_path);
