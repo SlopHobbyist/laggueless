@@ -587,8 +587,13 @@ static unsigned port_device(int p) {
    emptied first, so the console sees the picked one alone: Dolphin plugs
    its GameCube controller into a Wii without taking the Wii Remote out of
    its config (Wii Remote 1 is in by default), and puts the Remote back on
-   its next config change, where emptying the port takes both out. */
-static void plug_port(me_core *core, int p) {
+   its next config change, where emptying the port takes both out. `was`,
+   the controller it had (NULL if none), goes out its own way first where
+   it has one (rom_cores.h me_controller.unplug). */
+static void plug_port(me_core *core, int p, const me_controller *was) {
+    unsigned out = was && was->unplug ? core_device(was->unplug, p) : 0;
+    if (out)
+        core->retro_set_controller_port_device((unsigned)p, out);
     if (p < ME_MAX_PLAYERS && g_controller[p])
         core->retro_set_controller_port_device((unsigned)p, RETRO_DEVICE_NONE);
     core->retro_set_controller_port_device((unsigned)p, port_device(p));
@@ -614,7 +619,7 @@ static void plug_gamepads(me_core *core) {
     if (!core->retro_set_controller_port_device) return;
     for (int p = 0; p < g_ci_ports && p < ME_MAX_PLAYERS; p++) {
         g_controller[p] = pick_controller(core, p);
-        plug_port(core, p);
+        plug_port(core, p, NULL);
         set_controller_layout(p);
     }
 }
@@ -627,7 +632,7 @@ static void apply_controllers(me_core *core) {
         g_controller[p] = pick_controller(core, p);
         if (g_controller[p] == was) continue;
         if (!(g_adapter_ports >> p & 1u))
-            plug_port(core, p);
+            plug_port(core, p, was);
         set_controller_layout(p);
     }
 }
@@ -655,7 +660,7 @@ static void apply_adapter(me_core *core) {
             if (want & bit)
                 core->retro_set_controller_port_device((unsigned)p, adapter_device(a, p));
             else if (g_adapter_ports & bit)
-                plug_port(core, p);
+                plug_port(core, p, NULL);
         }
         g_adapter_ports = want;
         g_adapter = a;

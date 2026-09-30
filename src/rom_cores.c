@@ -37,14 +37,20 @@ static const me_adapter k_pce_adapters[] = {
    in an upright Wii Remote, which games played sideways (Mario Kart Wii,
    New Super Mario Bros. Wii) turn a quarter-turn. Its "WiiMote + Classic
    Controller" comes before the Pro, which the name also matches. The
-   MotionPlus remotes are left out: a gamepad has no gyro to drive them. */
+   MotionPlus remotes are left out: a gamepad has no gyro to drive them.
+   Dolphin never disconnects a Wii Remote the Wii has connected (its libretro
+   build ignores the remote's source going to none), so one taken out would
+   go on pressing the new controller's buttons as well. Its "Real WiiMote"
+   clears the emulated remote's bindings and, with no real remote, connects
+   nothing new: the remote stays connected but still. */
+#define ME_WII_REMOTE_OUT "real wiimote"
 static const me_controller k_wii_controllers[] = {
-    { "gamecube",        "GameCube Controller",    "gamecube controller",              "gamecube" },
-    { "classic",         "Classic Controller",     "wiimote + classic controller",     "wii_classic" },
-    { "classic_pro",     "Classic Controller Pro", "wiimote + classic controller pro", "wii_classic_pro" },
-    { "nunchuk",         "Wii Remote + Nunchuk",   "wiimote + nunchuk",                "wii_nunchuk" },
-    { "remote_sideways", "Wii Remote (sideways)",  "wiimote (sideways)",               "wii_sideways" },
-    { "remote",          "Wii Remote (upright)",   "wiimote (upright)",                "wii_remote" },
+    { "gamecube",        "GameCube Controller",    "gamecube controller",              "gamecube",        NULL },
+    { "classic",         "Classic Controller",     "wiimote + classic controller",     "wii_classic",     ME_WII_REMOTE_OUT },
+    { "classic_pro",     "Classic Controller Pro", "wiimote + classic controller pro", "wii_classic_pro", ME_WII_REMOTE_OUT },
+    { "nunchuk",         "Wii Remote + Nunchuk",   "wiimote + nunchuk",                "wii_nunchuk",     ME_WII_REMOTE_OUT },
+    { "remote_sideways", "Wii Remote (sideways)",  "wiimote (sideways)",               "wii_sideways",    ME_WII_REMOTE_OUT },
+    { "remote",          "Wii Remote (upright)",   "wiimote (upright)",                "wii_remote",      ME_WII_REMOTE_OUT },
     { NULL }
 };
 

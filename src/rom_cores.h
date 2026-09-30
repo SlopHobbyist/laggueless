@@ -34,6 +34,9 @@ typedef struct {
     const char *name;     /* Controls menu ("Classic Controller") */
     const char *devices;  /* as me_adapter's; a core with none can't use it */
     const char *layout;   /* its controller's key in consoles.c ("wii_classic") */
+    const char *unplug;   /* NULL, or the core's device (as `devices`) to plug
+                             in before taking this controller out, where
+                             unplugging the port alone leaves it working */
 } me_controller;
 
 typedef struct {
