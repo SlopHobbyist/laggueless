@@ -29,7 +29,13 @@ typedef struct {
 typedef struct {
     const char *id;     /* settings.yaml key ("nes") */
     const char *name;   /* shown in Cores > Set Cores ("NES / Famicom") */
-    const char *exts;   /* '|'-separated, no dots */
+    const char *exts;   /* '|'-separated, no dots. Each extension is in exactly
+                           one console's list: the console File Associations
+                           gives it to. */
+    const char *also_exts;  /* NULL, or extensions in other consoles' `exts`
+                               that this console's games come in too ("bin"
+                               for the Atari 7800). The ROM's header tells
+                               them apart, or the player picks. */
     const char *cores;  /* '|'-separated core names, our pick first; the DLL is
                            <name>_libretro.dll */
     int players;        /* controller ports on the console */
@@ -49,8 +55,19 @@ enum {
 int               me_console_count(void);
 const me_console *me_console_at(int i);
 
-/* Index of the console that claims this ROM's extension, or -1. */
-int me_console_for_rom(const char *rom_path);
+/* A set of consoles, a bit per index (there are at most 64). */
+typedef unsigned long long me_console_set;
+
+/* me_console_for_rom's results that aren't a console index. */
+enum { ME_ROM_UNKNOWN = -1, ME_ROM_AMBIGUOUS = -2 };
+
+/* Index of the console a ROM is for. Its extension gives the candidates (the
+   console whose `exts` has it, and those whose `also_exts` do); with more
+   than one, the file's header decides, reading a cue sheet's data track for
+   a .cue. ME_ROM_UNKNOWN: no console takes the extension. ME_ROM_AMBIGUOUS:
+   the header doesn't settle it, and the player has to pick. `candidates`
+   (may be NULL) gets the consoles it could be. */
+int me_console_for_rom(const char *rom_path, me_console_set *candidates);
 
 /* The console's adapter with this id, or NULL. */
 const me_adapter *me_console_adapter(const me_console *c, const char *id);
@@ -66,10 +83,6 @@ void me_console_core_dll(const me_settings *s, const me_console *c, char *dll, s
 /* Display name for a core DLL ("Mesen" for mesen_libretro.dll); the DLL
    filename itself for cores we don't know. */
 void me_core_display_name(const char *dll, char *out, size_t out_sz);
-
-/* Core DLL filename for a ROM, via me_console_core_dll. Returns 0, or -1 if
-   no console claims the ROM's extension. */
-int me_rom_core_for(const me_settings *s, const char *rom_path, char *dll, size_t dll_sz);
 
 /* All extensions in the table as a file-dialog pattern: "*.nes;*.fds;...". */
 void me_rom_patterns(char *out, size_t out_sz);

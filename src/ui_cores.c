@@ -312,9 +312,12 @@ static void sc_fill_list(cores_dlg *d) {
         char types[128];
         size_t len = 0;
         types[0] = '\0';
-        for (const char *p = c->exts; *p && len + 3 < sizeof(types); p++) {
-            if (p == c->exts || p[-1] == '|') { if (len) types[len++] = ' '; types[len++] = '.'; }
-            if (*p != '|') types[len++] = *p;
+        const char *lists[2] = { c->exts, c->also_exts ? c->also_exts : "" };
+        for (int l = 0; l < 2; l++) {
+            for (const char *p = lists[l]; *p && len + 3 < sizeof(types); p++) {
+                if (p == lists[l] || p[-1] == '|') { if (len) types[len++] = ' '; types[len++] = '.'; }
+                if (*p != '|') types[len++] = *p;
+            }
         }
         types[len] = '\0';
         sc_set_cell(d->list, i, COL_TYPES, types);

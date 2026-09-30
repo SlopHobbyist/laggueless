@@ -6,6 +6,7 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include "rom_cores.h"
 #include "settings.h"
 
 HMENU me_ui_create_menu(void);
@@ -18,6 +19,9 @@ LRESULT me_ui_handle(HWND h, UINT msg, WPARAM wp, LPARAM lp, int *handled);
 void me_ui_notify_loaded(const char *rom_path);   /* add to Open Recent */
 void me_ui_notify_frame_gen(int on);              /* result of ME_CMD_FRAME_GEN */
 void me_ui_notify_error(const char *fmt, ...);    /* message box */
+/* Ask which of `consoles` a ROM is for (its file type is shared and its
+   header doesn't say), then load it as that console's game. */
+void me_ui_pick_console(const char *rom_path, me_console_set consoles);
 
 /* Re-read settings.yaml, apply `patch`, and write it back. Re-reading (rather
    than saving the live struct) keeps command-line overrides out of the file.

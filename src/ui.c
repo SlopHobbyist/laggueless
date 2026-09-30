@@ -13,6 +13,7 @@
 #define WM_ME_LOADED    (WM_APP + 10)
 #define WM_ME_ERROR     (WM_APP + 11)
 #define WM_ME_FRAME_GEN (WM_APP + 12)   /* wp: 1 = on */
+#define WM_ME_PICK      (WM_APP + 13)   /* lParam = malloc'd pick_request */
 
 enum {
     IDM_OPEN = 100,
@@ -250,6 +251,94 @@ void me_ui_notify_error(const char *fmt, ...) {
     vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
     post_string(WM_ME_ERROR, 0, buf);
+}
+
+typedef struct {
+    me_console_set consoles;
+    char           path[MAX_PATH];
+} pick_request;
+
+void me_ui_pick_console(const char *rom_path, me_console_set consoles) {
+    HWND h = me_platform_hwnd();
+    pick_request *r = h ? malloc(sizeof(*r)) : NULL;
+    if (!r) return;
+    r->consoles = consoles;
+    snprintf(r->path, sizeof(r->path), "%s", rom_path);
+    if (!PostMessageA(h, WM_ME_PICK, 0, (LPARAM)r)) free(r);
+}
+
+/* ---- Pick Console ------------------------------------------------------------ */
+enum { IDC_PICK_FILE = 1400, IDC_PICK_HINT, IDC_PICK_LIST };
+
+typedef struct {
+    const pick_request *req;
+    int n, console[64];   /* list row -> console index */
+} pick_dlg;
+
+/* Ends with the picked console's index + 1, or 0. */
+static INT_PTR CALLBACK pick_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
+    pick_dlg *d = (pick_dlg *)GetWindowLongPtrW(dlg, DWLP_USER);
+    switch (msg) {
+        case WM_INITDIALOG: {
+            d = (pick_dlg *)lp;
+            SetWindowLongPtrW(dlg, DWLP_USER, (LONG_PTR)d);
+            const char *base = d->req->path;
+            for (const char *p = base; *p; p++) if (*p == '\\' || *p == '/') base = p + 1;
+            me_ui_add_control(dlg, "STATIC", base, SS_LEFT | SS_NOPREFIX | SS_ENDELLIPSIS,
+                              7, 7, 226, 9, IDC_PICK_FILE);
+            me_ui_add_control(dlg, "STATIC",
+                              "Several consoles use this type of file, and the file doesn't say "
+                              "which one it's for. Pick its console:",
+                              SS_LEFT, 7, 19, 226, 18, IDC_PICK_HINT);
+            HWND list = me_ui_add_control(dlg, "LISTBOX", "",
+                                          LBS_NOTIFY | LBS_NOINTEGRALHEIGHT | WS_BORDER |
+                                          WS_VSCROLL | WS_TABSTOP,
+                                          7, 41, 226, 72, IDC_PICK_LIST);
+            me_settings_lock();   /* the emulation thread reads the core picks */
+            for (int i = 0; i < me_console_count() && d->n < 64; i++) {
+                if (!(d->req->consoles >> i & 1)) continue;
+                const me_console *c = me_console_at(i);
+                char dll[MAX_PATH], core[128], label[256];
+                me_console_core_dll(me_app_settings(), c, dll, sizeof(dll));
+                me_core_display_name(dll, core, sizeof(core));
+                snprintf(label, sizeof(label), "%s  (%s)", c->name, core);
+                SendMessageA(list, LB_ADDSTRING, 0, (LPARAM)label);
+                d->console[d->n++] = i;
+            }
+            me_settings_unlock();
+            SendMessageA(list, LB_SETCURSEL, 0, 0);
+            me_ui_add_control(dlg, "BUTTON", "Open",   BS_DEFPUSHBUTTON | WS_TABSTOP | WS_GROUP,
+                              119, 119, 55, 14, IDOK);
+            me_ui_add_control(dlg, "BUTTON", "Cancel", BS_PUSHBUTTON | WS_TABSTOP,
+                              178, 119, 55, 14, IDCANCEL);
+            SetFocus(list);
+            return FALSE;   /* focus set */
+        }
+        case WM_COMMAND:
+            switch (LOWORD(wp)) {
+                case IDC_PICK_LIST:
+                    if (HIWORD(wp) != LBN_DBLCLK) break;
+                    /* fall through - a double-click opens */
+                case IDOK: {
+                    LRESULT sel = SendDlgItemMessageA(dlg, IDC_PICK_LIST, LB_GETCURSEL, 0, 0);
+                    if (sel >= 0 && sel < d->n) EndDialog(dlg, d->console[sel] + 1);
+                    return TRUE;
+                }
+                case IDCANCEL:
+                    EndDialog(dlg, 0);
+                    return TRUE;
+            }
+            break;
+    }
+    return FALSE;
+}
+
+/* Modal to the UI thread only: the running game (if any) keeps going, and is
+   replaced once a console is picked. */
+static void pick_console(HWND owner, const pick_request *r) {
+    pick_dlg d = { .req = r };
+    INT_PTR picked = me_ui_dialog(owner, L"Pick Console", 240, 140, pick_proc, (LPARAM)&d);
+    if (picked > 0) me_cmd_post(ME_CMD_LOAD_ROM, (int)picked, r->path);
 }
 
 /* ---- menu refresh ----------------------------------------------------------- */
@@ -530,6 +619,12 @@ LRESULT me_ui_handle(HWND h, UINT msg, WPARAM wp, LPARAM lp, int *handled) {
             char *text = (char *)lp;
             MessageBoxA(h, text, "laggueless", MB_OK | MB_ICONWARNING);
             free(text);
+            return 0;
+        }
+        case WM_ME_PICK: {
+            pick_request *r = (pick_request *)lp;
+            pick_console(h, r);
+            free(r);
             return 0;
         }
     }

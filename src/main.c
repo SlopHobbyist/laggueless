@@ -1502,6 +1502,7 @@ typedef struct me_session {
     unsigned base_w, base_h;  /* AV base geometry (LSFG frame size) */
     char     core_path[MAX_PATH];
     char     rom_path[MAX_PATH];
+    int      console;         /* rom_cores.h index, or -1 if unknown */
     unsigned char *rom_data;
     char     save_path[MAX_PATH];
 
@@ -1626,23 +1627,33 @@ static int create_main_window(int w, int h) {
     return 0;
 }
 
-/* Look up the core for a ROM's console (Cores > Set Cores, else our pick)
-   and resolve it to cores\<dll> next to the exe. Returns 0 and fills
-   core_path on success; otherwise fills `err` with a user-facing reason. */
-static int resolve_rom_core(const char *rom_path, char *core_path, size_t core_path_sz,
-                            char *err, size_t err_sz) {
+/* Work out a ROM's console and its core (Cores > Set Cores, else our pick)
+   as cores\<dll> next to the exe. `*console` is the console the player
+   picked, or -1 to go by the ROM's extension and header. Returns 0 with
+   *console and core_path filled; ME_ROM_AMBIGUOUS when the player has to pick
+   the console from *candidates; otherwise -1 with a user-facing reason in
+   `err`. */
+static int resolve_rom_core(const char *rom_path, int *console, me_console_set *candidates,
+                            char *core_path, size_t core_path_sz, char *err, size_t err_sz) {
     if (GetFileAttributesA(rom_path) == INVALID_FILE_ATTRIBUTES) {
         snprintf(err, err_sz, "ROM not found:\n%s", rom_path);
         return -1;
     }
+    const me_console *c = me_console_at(*console);
+    if (!c) {
+        *console = me_console_for_rom(rom_path, candidates);
+        if (*console == ME_ROM_AMBIGUOUS) return ME_ROM_AMBIGUOUS;
+        c = me_console_at(*console);
+        if (!c) {
+            snprintf(err, err_sz, "No core is assigned to this file type:\n%s", rom_path);
+            return -1;
+        }
+    }
     char dll[MAX_PATH];
     me_settings_lock();   /* the UI thread writes the console picks */
-    int found = me_rom_core_for(&g_settings, rom_path, dll, sizeof(dll)) == 0;
+    me_console_core_dll(&g_settings, c, dll, sizeof(dll));
     me_settings_unlock();
-    if (!found) {
-        snprintf(err, err_sz, "No core is assigned to this file type:\n%s", rom_path);
-        return -1;
-    }
+    printf("[load] %s game, core %s\n", c->name, dll);
     snprintf(core_path, core_path_sz, "%scores\\%s", g_exedir, dll);
     if (GetFileAttributesA(core_path) == INVALID_FILE_ATTRIBUTES) {
         snprintf(err, err_sz, "Core %s not found.\nUse Cores > Download Cores, or place it in %scores\\",
@@ -1699,10 +1710,13 @@ static int init_vulkan(me_session *s) {
 }
 
 /* Load core + ROM, build the presenter/audio around its AV info, and create
-   the window if this is the first game. Returns 0 on success; on failure the
-   session is closed again and -1 is returned. */
-static int session_open(me_session *s, const char *core_path_in, const char *rom_path_in) {
+   the window if this is the first game. `console` is the ROM's (rom_cores.h
+   index, or -1 if unknown). Returns 0 on success; on failure the session is
+   closed again and -1 is returned. */
+static int session_open(me_session *s, const char *core_path_in, const char *rom_path_in,
+                        int console) {
     memset(s, 0, sizeof(*s));
+    s->console = console;
     /* Own the paths: cores may keep game.path, and callers pass scratch
        buffers. Absolute, because the working directory can change under us
        (the Open ROM dialog) before a hard reset or power-on reuses them. */
@@ -1753,7 +1767,7 @@ static int session_open(me_session *s, const char *core_path_in, const char *rom
             me_layout_unknown(&l);   /* the core's input descriptors may narrow it */
         set_input_layout(&l);
     }
-    g_console = me_console_for_rom(rom_path);
+    g_console = console;
 
     fprintf(stderr, "[load] set_environment\n"); fflush(stderr);
     core->retro_set_environment(me_environment_cb);
@@ -2362,6 +2376,7 @@ static void session_run_frame(me_session *s) {
 /* The game Console > Power On brings back after Power Off. */
 static char g_last_core[MAX_PATH];
 static char g_last_rom[MAX_PATH];
+static int  g_last_console = -1;
 static int  g_powered_off = 0;
 
 static void publish_status(const me_session *s) {
@@ -2400,11 +2415,12 @@ static const char *path_basename(const char *path) {
 }
 
 /* session_open plus the bookkeeping every way of starting a game shares. */
-static int open_game(me_session *s, const char *core_path, const char *rom_path) {
-    int rc = session_open(s, core_path, rom_path);
+static int open_game(me_session *s, const char *core_path, const char *rom_path, int console) {
+    int rc = session_open(s, core_path, rom_path, console);
     if (rc == 0) {
         snprintf(g_last_core, sizeof(g_last_core), "%s", s->core_path);
         snprintf(g_last_rom,  sizeof(g_last_rom),  "%s", s->rom_path);
+        g_last_console = s->console;
         g_powered_off = 0;
         me_ui_notify_loaded(s->rom_path);
     } else {
@@ -2416,12 +2432,13 @@ static int open_game(me_session *s, const char *core_path, const char *rom_path)
 }
 
 /* Close and reopen the running game (hard reset) or the powered-off one. */
-static void restart_game(me_session *s, const char *core_path_in, const char *rom_path_in) {
+static void restart_game(me_session *s, const char *core_path_in, const char *rom_path_in,
+                         int console) {
     char core_path[MAX_PATH], rom_path[MAX_PATH];
     snprintf(core_path, sizeof(core_path), "%s", core_path_in);
     snprintf(rom_path,  sizeof(rom_path),  "%s", rom_path_in);
     if (s->active) session_close(s);
-    open_game(s, core_path, rom_path);
+    open_game(s, core_path, rom_path, console);
 }
 
 static void set_frame_gen(me_session *s, int on) {
@@ -2460,21 +2477,31 @@ static void run_command(me_session *s, const me_cmd *c) {
     switch (c->type) {
         case ME_CMD_LOAD_ROM: {
             char core_path[MAX_PATH], err[MAX_PATH * 2];
+            int console = c->arg - 1;
+            me_console_set candidates;
             printf("[load] %s\n", c->path);
-            if (resolve_rom_core(c->path, core_path, sizeof(core_path), err, sizeof(err)) != 0) {
-                /* The current game (if any) keeps running untouched. */
+            /* The current game (if any) keeps running untouched until the
+               new one is ready to open, or for good if it can't be. */
+            int rc = resolve_rom_core(c->path, &console, &candidates,
+                                      core_path, sizeof(core_path), err, sizeof(err));
+            if (rc == ME_ROM_AMBIGUOUS) {
+                printf("[load] several consoles use this file type; asking which\n");
+                me_ui_pick_console(c->path, candidates);
+                return;
+            }
+            if (rc != 0) {
                 fprintf(stderr, "[load] %s\n", err);
                 me_ui_notify_error("%s", err);
                 return;
             }
             if (s->active) session_close(s);
-            open_game(s, core_path, c->path);
+            open_game(s, core_path, c->path, console);
             return;
         }
         case ME_CMD_HARD_RESET:
             if (!s->active) return;
             printf("[console] hard reset\n");
-            restart_game(s, s->core_path, s->rom_path);
+            restart_game(s, s->core_path, s->rom_path, s->console);
             return;
         case ME_CMD_SOFT_RESET:
             if (s->active && s->core->retro_reset) {
@@ -2490,7 +2517,7 @@ static void run_command(me_session *s, const me_cmd *c) {
                 publish_status(s);
             } else if (g_powered_off && g_last_rom[0]) {
                 printf("[console] power on\n");
-                restart_game(s, g_last_core, g_last_rom);
+                restart_game(s, g_last_core, g_last_rom, g_last_console);
             }
             return;
         case ME_CMD_FRAME_GEN:
@@ -2502,6 +2529,27 @@ static void run_command(me_session *s, const me_cmd *c) {
             publish_status(s);
             return;
     }
+}
+
+/* The console of a ROM opened with a core named on the command line: when
+   its header doesn't settle it, the one candidate that core is listed for.
+   -1 if none or several. */
+static int console_for_core(const char *rom_path, const char *core_path) {
+    me_console_set candidates;
+    int console = me_console_for_rom(rom_path, &candidates);
+    if (console != ME_ROM_AMBIGUOUS) return console;
+    console = -1;
+    for (int i = 0; i < me_console_count(); i++) {
+        if (!(candidates >> i & 1)) continue;
+        char dll[MAX_PATH];
+        for (int k = 0; me_console_candidate(me_console_at(i), k, dll, sizeof(dll)); k++) {
+            if (_stricmp(dll, path_basename(core_path)) != 0) continue;
+            if (console >= 0) return -1;
+            console = i;
+            break;
+        }
+    }
+    return console;
 }
 
 int main(int argc, char **argv) {
@@ -2663,22 +2711,32 @@ int main(int argc, char **argv) {
         }
     }
 
-    /* 0 args: empty window. 1 arg: ROM, core from the extension table.
-       2 args: explicit core + ROM. */
-    char table_core_path[MAX_PATH];
+    /* 0 args: empty window. 1 arg: ROM, core from the console table (an
+       empty window asking for its console, when its type is shared and the
+       header doesn't say). 2 args: explicit core + ROM. */
+    char table_core_path[MAX_PATH], pick_path[MAX_PATH] = "";
     const char *core_path = NULL;
     const char *rom_path  = NULL;
+    int console = -1;
+    me_console_set candidates = 0;
     if (npos == 2) {
         core_path = positional[0];
         rom_path  = positional[1];
+        console   = console_for_core(rom_path, core_path);
     } else if (npos == 1) {
         char err[MAX_PATH * 2];
-        rom_path = positional[0];
-        if (resolve_rom_core(rom_path, table_core_path, sizeof(table_core_path), err, sizeof(err)) != 0) {
+        int rc = resolve_rom_core(positional[0], &console, &candidates,
+                                  table_core_path, sizeof(table_core_path), err, sizeof(err));
+        if (rc == ME_ROM_AMBIGUOUS) {
+            if (!GetFullPathNameA(positional[0], sizeof(pick_path), pick_path, NULL))
+                snprintf(pick_path, sizeof(pick_path), "%s", positional[0]);
+        } else if (rc != 0) {
             fprintf(stderr, "[rom] %s\n", err);
             return 1;
+        } else {
+            rom_path  = positional[0];
+            core_path = table_core_path;
         }
-        core_path = table_core_path;
     }
 
     /* ---- Step B1: Load Lossless.dll + extract shaders --------------------- */
@@ -2727,11 +2785,16 @@ int main(int argc, char **argv) {
     memset(&session, 0, sizeof(session));
     int exit_code = 0;
     if (rom_path) {
-        if (open_game(&session, core_path, rom_path) != 0) exit_code = 1;
+        if (open_game(&session, core_path, rom_path, console) != 0) exit_code = 1;
     } else if (create_main_window(640, 480) == 0) {
         me_platform_set_idle(g_hwnd, 1);
         publish_status(&session);
-        printf("[main] no game loaded; use File > Open ROM or drop a ROM onto the window\n");
+        if (pick_path[0]) {
+            printf("[main] several consoles use this file type; asking which\n");
+            me_ui_pick_console(pick_path, candidates);
+        } else {
+            printf("[main] no game loaded; use File > Open ROM or drop a ROM onto the window\n");
+        }
     } else {
         exit_code = 1;
     }
