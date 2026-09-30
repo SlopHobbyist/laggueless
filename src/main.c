@@ -102,8 +102,8 @@ static me_lsfg_shaders  *g_lsfg_shaders  = NULL; /* loaded shader table */
 static int           g_latency_log = 0;
 static LARGE_INTEGER g_poll_qpc = {0};
 
-/* Aspect mode: 0 = 1:1 (square pixels), 1 = 4:3, 2 = 16:9. F1 cycles. */
-static int g_aspect_mode = 0;
+/* Aspect mode (g_settings.aspect): 0 = 1:1 (square pixels), 1 = 4:3,
+   2 = 16:9. F1 cycles; View > Aspect Ratio picks one. */
 static const char *g_aspect_names[3] = { "1:1", "4:3", "16:9" };
 static const int g_aspect_x[3] = { 1, 4, 16 };
 static const int g_aspect_y[3] = { 1, 3,  9 };
@@ -1405,11 +1405,12 @@ static void present(HWND hwnd) {
     /* Integer-scale inside the client area: square pixels, or the current
        target aspect. */
     i32 rx, ry;
-    if (g_aspect_mode == 0)
+    int aspect = (unsigned)g_settings.aspect <= 2 ? (int)g_settings.aspect : 0;
+    if (aspect == 0)
         rx = ry = me_iscale_ratio(cw, ch, (i32)sw, (i32)sh);
     else
         me_iscale_ratios(cw, ch, (i32)sw, (i32)sh,
-                         g_aspect_x[g_aspect_mode], g_aspect_y[g_aspect_mode], &rx, &ry);
+                         g_aspect_x[aspect], g_aspect_y[aspect], &rx, &ry);
     int dw = (int)sw * rx;
     int dh = (int)sh * ry;
     if (dw > cw) dw = cw;
@@ -2418,8 +2419,8 @@ static void handle_hotkeys(void) {
     if (fire[ME_HK_TOGGLE_FULLSCREEN]) me_platform_toggle_fullscreen(g_hwnd);
     if (fire[ME_HK_EXIT_FULLSCREEN])   me_platform_exit_fullscreen(g_hwnd);
     if (fire[ME_HK_CYCLE_ASPECT]) {
-        g_aspect_mode = (g_aspect_mode + 1) % 3;
-        printf("[aspect] %s\n", g_aspect_names[g_aspect_mode]);
+        g_settings.aspect = (me_aspect_mode)(((int)g_settings.aspect + 1) % 3);
+        printf("[aspect] %s\n", g_aspect_names[g_settings.aspect]);
     }
     if (fire[ME_HK_QUIT])       me_platform_request_quit();
     if (fire[ME_HK_HARD_RESET]) me_cmd_post(ME_CMD_HARD_RESET, 0, NULL);
@@ -2979,7 +2980,6 @@ int main(int argc, char **argv) {
     g_latency_log   = g_settings.latency_log;
     g_force_vulkan  = g_settings.force_vulkan;
     g_no_vsync      = g_settings.vk_no_vsync;
-    g_aspect_mode   = (int)g_settings.aspect;
     g_env_trace     = g_settings.env_trace;
 
     /* Vulkan options come from three sources, lowest → highest priority:

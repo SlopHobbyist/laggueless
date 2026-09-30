@@ -42,6 +42,9 @@ enum {
     IDM_SCREEN_TOP = 170,     /* View > Screen, in me_screens order from here */
     IDM_SCREEN_BOTTOM,
     IDM_SCREEN_BOTH,
+    IDM_ASPECT_1_1 = 180,     /* View > Aspect Ratio, in me_aspect_mode order */
+    IDM_ASPECT_4_3,
+    IDM_ASPECT_16_9,
     IDM_RECENT_FIRST = 200,   /* .. IDM_RECENT_FIRST + ME_RECENT_MAX - 1 */
     IDM_RECENT_CLEAR = 200 + ME_RECENT_MAX,
 };
@@ -49,7 +52,7 @@ enum {
 /* Most adapters a console has (the Mega Drive's two). */
 #define ME_ADAPTERS_MAX 4
 static HMENU g_recent_menu, g_console_menu, g_controls_menu, g_view_menu, g_backend_menu,
-             g_screen_menu;
+             g_screen_menu, g_aspect_menu;
 
 HMENU me_ui_create_menu(void) {
     HMENU bar = CreateMenu();
@@ -88,7 +91,12 @@ HMENU me_ui_create_menu(void) {
     AppendMenuA(g_screen_menu, MF_STRING, IDM_SCREEN_TOP,    "&Top Screen");
     AppendMenuA(g_screen_menu, MF_STRING, IDM_SCREEN_BOTTOM, "&Bottom Screen");
     AppendMenuA(g_screen_menu, MF_STRING, IDM_SCREEN_BOTH,   "B&oth");
+    g_aspect_menu = CreatePopupMenu();
+    AppendMenuA(g_aspect_menu, MF_STRING, IDM_ASPECT_1_1,  "&1:1 (Square Pixels)");
+    AppendMenuA(g_aspect_menu, MF_STRING, IDM_ASPECT_4_3,  "&4:3");
+    AppendMenuA(g_aspect_menu, MF_STRING, IDM_ASPECT_16_9, "1&6:9");
     AppendMenuA(g_view_menu, MF_STRING, IDM_FULLSCREEN, "Toggle &Full Screen");
+    AppendMenuA(g_view_menu, MF_POPUP, (UINT_PTR)g_aspect_menu, "&Aspect Ratio");
     AppendMenuA(g_view_menu, MF_POPUP, (UINT_PTR)g_screen_menu, "&Screen");
     AppendMenuA(g_view_menu, MF_STRING, IDM_FRAME_GEN,  "Frame &Gen");
     AppendMenuA(g_view_menu, MF_POPUP, (UINT_PTR)g_backend_menu, "&Rendering Backend (requires restart)");
@@ -200,6 +208,10 @@ static const UINT k_screen_ids[] = {
     [ME_SCREENS_BOTH] = IDM_SCREEN_BOTH, [ME_SCREENS_TOP] = IDM_SCREEN_TOP,
     [ME_SCREENS_BOTTOM] = IDM_SCREEN_BOTTOM,
 };
+
+static void patch_aspect(me_settings *s, const void *ctx) {
+    s->aspect = *(const me_aspect_mode *)ctx;
+}
 
 static void patch_show_cursor(me_settings *s, const void *ctx) {
     s->show_cursor_fullscreen = *(const int *)ctx;
@@ -528,6 +540,10 @@ static void refresh_menu(HMENU m) {
         for (int i = 0; i < 3; i++) EnableMenuItem(m, k_screen_ids[i], MF_BYCOMMAND | on);
         CheckMenuRadioItem(m, IDM_SCREEN_TOP, IDM_SCREEN_BOTH,
                            k_screen_ids[(unsigned)s->screens <= 2 ? s->screens : 0], MF_BYCOMMAND);
+    } else if (m == g_aspect_menu) {
+        /* Also changed by F1, so it shows the live value. */
+        unsigned a = (unsigned)s->aspect <= 2 ? (unsigned)s->aspect : 0;
+        CheckMenuRadioItem(m, IDM_ASPECT_1_1, IDM_ASPECT_16_9, IDM_ASPECT_1_1 + a, MF_BYCOMMAND);
     } else if (m == g_backend_menu) {
         static const UINT ids[] = { 0, IDM_BACKEND_VULKAN, IDM_BACKEND_GDI, IDM_BACKEND_D3D11 };
         backend_choice b = backend_of(s);
@@ -619,6 +635,15 @@ static void on_command(HWND h, UINT id) {
                          : id == IDM_SCREEN_BOTTOM ? ME_SCREENS_BOTTOM : ME_SCREENS_BOTH;
             s->screens = v;
             me_ui_persist(patch_screens, &v);
+            break;
+        }
+        case IDM_ASPECT_1_1:
+        case IDM_ASPECT_4_3:
+        case IDM_ASPECT_16_9: {
+            /* The emulation thread reads it at the next present. */
+            me_aspect_mode v = (me_aspect_mode)(id - IDM_ASPECT_1_1);
+            s->aspect = v;
+            me_ui_persist(patch_aspect, &v);
             break;
         }
         case IDM_BACKEND_VULKAN:
