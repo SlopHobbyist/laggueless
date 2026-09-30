@@ -358,6 +358,7 @@ void me_settings_defaults(me_settings *out) {
     out->vk_exclusive_fullscreen = 1;
     out->match_display_hz = 1;
     out->thread_affinity  = 1;
+    out->fan_server       = ME_FAN_SERVER_KAERU;   /* melonDS DS's own default */
     out->exclusive_mode   = 0;
     out->low_latency      = 1;
     out->match_strict     = 1;  /* competition-safe by default */
@@ -525,6 +526,25 @@ me_screens me_screens_both_toggled(const me_settings *s) {
     return s->single_screen == ME_SCREENS_BOTTOM ? ME_SCREENS_BOTTOM : ME_SCREENS_TOP;
 }
 
+static const me_fan_server_info g_fan_servers[ME_FAN_SERVER_COUNT] = {
+    [ME_FAN_SERVER_OFF]     = { "off",     "Off",         NULL },
+    [ME_FAN_SERVER_WIIMMFI] = { "wiimmfi", "Wiimmfi",     "95.217.77.181" },
+    [ME_FAN_SERVER_WIILINK] = { "wiilink", "WiiLink WFC", "167.235.229.36" },
+    [ME_FAN_SERVER_ALTWFC]  = { "altwfc",  "AltWFC",      "172.104.88.237" },
+    [ME_FAN_SERVER_KAERU]   = { "kaeru",   "Kaeru WFC",   "178.62.43.212" },
+};
+
+const me_fan_server_info *me_fan_server_info_of(me_fan_server v) {
+    return &g_fan_servers[(unsigned)v < ME_FAN_SERVER_COUNT ? v : ME_FAN_SERVER_OFF];
+}
+
+static me_fan_server parse_fan_server(const char *s, me_fan_server defv) {
+    if (!s) return defv;
+    for (int i = 0; i < ME_FAN_SERVER_COUNT; i++)
+        if (_stricmp(s, g_fan_servers[i].id) == 0) return (me_fan_server)i;
+    return defv;
+}
+
 static me_aspect_mode parse_aspect(const char *s, me_aspect_mode defv) {
     if (!s) return defv;
     if (strcmp(s, "1:1") == 0)  return ME_ASPECT_1_1;
@@ -634,6 +654,12 @@ static void load_document(yaml_document_t *doc, yaml_node_t *root, me_settings *
     yaml_node_t *sys = map_get(doc, root, "system");
     if (sys) {
         out->thread_affinity = scalar_bool(map_get(doc, sys, "thread_affinity"), out->thread_affinity);
+    }
+
+    /* multiplayer */
+    yaml_node_t *mp = map_get(doc, root, "multiplayer");
+    if (mp) {
+        out->fan_server = parse_fan_server(scalar_str(map_get(doc, mp, "fan_server")), out->fan_server);
     }
 
     /* run-ahead */

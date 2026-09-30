@@ -114,6 +114,27 @@ typedef enum {
     ME_SCREENS_BOTTOM = 2,
 } me_screens;
 
+/* Multiplayer > Fan Server: the community server that stands in for the
+   shut-down Nintendo Wi-Fi Connection, reached by pointing the emulated DS's
+   DNS at it. OFF leaves the firmware's own DNS. */
+typedef enum {
+    ME_FAN_SERVER_OFF = 0,
+    ME_FAN_SERVER_WIIMMFI,
+    ME_FAN_SERVER_WIILINK,
+    ME_FAN_SERVER_ALTWFC,
+    ME_FAN_SERVER_KAERU,
+    ME_FAN_SERVER_COUNT
+} me_fan_server;
+
+typedef struct {
+    const char *id;     /* settings.yaml value ("wiimmfi") */
+    const char *name;   /* menu text ("Wiimmfi") */
+    const char *dns;    /* its DNS server, NULL for OFF */
+} me_fan_server_info;
+
+/* ME_FAN_SERVER_OFF's for anything out of range. */
+const me_fan_server_info *me_fan_server_info_of(me_fan_server v);
+
 typedef struct {
     /* video */
     int fullscreen_on_launch;
@@ -148,6 +169,9 @@ typedef struct {
     /* thread affinity: pin emulation and audio threads to isolated cores.
        Reduces context-switch jitter on hybrid CPUs (Alder Lake+, Ryzen). */
     int thread_affinity; /* 0 = off, 1 = auto-detect P-cores, else leave OS default */
+
+    /* multiplayer */
+    me_fan_server fan_server;
 
     /* run-ahead: number of frames to simulate ahead each iteration. 0 disables.
        Reduces visible input latency by displaying a future frame. Each ghost

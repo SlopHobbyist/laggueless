@@ -93,6 +93,13 @@ system:
                             # can't be detected (homogeneous CPU, pre-Win10).
                             # CLI equivalent: --thread-affinity
 
+multiplayer:
+  fan_server: kaeru      # off | wiimmfi | wiilink | altwfc | kaeru
+                         # Community server that replaces Nintendo Wi-Fi
+                         # Connection for DS games online (Multiplayer >
+                         # Fan Server). Sets the emulated DS's DNS; needs the
+                         # melonDS DS core. Applies when a game loads.
+
 # Run-ahead: reduces input latency by running the core extra frames ahead each
 # iteration and displaying the future frame. The displayed frame is what the
 # game would render N frames from "now", so reactions to your input appear

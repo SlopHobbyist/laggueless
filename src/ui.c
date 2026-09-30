@@ -47,6 +47,8 @@ enum {
     IDM_ASPECT_1_1 = 180,     /* View > Aspect Ratio, in me_aspect_mode order */
     IDM_ASPECT_4_3,
     IDM_ASPECT_16_9,
+    IDM_FAN_SERVER_FIRST = 190, /* Multiplayer > Fan Server, in me_fan_server order */
+    IDM_FAN_SERVER_NOTE = IDM_FAN_SERVER_FIRST + ME_FAN_SERVER_COUNT,
     IDM_RECENT_FIRST = 200,   /* .. IDM_RECENT_FIRST + ME_RECENT_MAX - 1 */
     IDM_RECENT_CLEAR = 200 + ME_RECENT_MAX,
 };
@@ -54,7 +56,7 @@ enum {
 /* Most adapters a console has (the Mega Drive's two). */
 #define ME_ADAPTERS_MAX 4
 static HMENU g_file_menu, g_recent_menu, g_console_menu, g_controls_menu, g_view_menu, g_backend_menu,
-             g_screen_menu, g_aspect_menu;
+             g_screen_menu, g_aspect_menu, g_fan_server_menu;
 
 HMENU me_ui_create_menu(void) {
     HMENU bar = CreateMenu();
@@ -76,6 +78,16 @@ HMENU me_ui_create_menu(void) {
     /* Players and the adapter checkboxes are filled in when it opens. */
     g_controls_menu = CreatePopupMenu();
     AppendMenuA(bar, MF_POPUP, (UINT_PTR)g_controls_menu, "C&ontrols");
+
+    HMENU multiplayer = CreatePopupMenu();
+    g_fan_server_menu = CreatePopupMenu();
+    for (int i = 0; i < ME_FAN_SERVER_COUNT; i++)
+        AppendMenuA(g_fan_server_menu, MF_STRING, IDM_FAN_SERVER_FIRST + i,
+                    me_fan_server_info_of((me_fan_server)i)->name);
+    AppendMenuA(g_fan_server_menu, MF_SEPARATOR, 0, NULL);
+    AppendMenuA(g_fan_server_menu, MF_STRING | MF_GRAYED, IDM_FAN_SERVER_NOTE, "");
+    AppendMenuA(multiplayer, MF_POPUP, (UINT_PTR)g_fan_server_menu, "&Fan Server");
+    AppendMenuA(bar, MF_POPUP, (UINT_PTR)multiplayer, "&Multiplayer");
 
     HMENU cores = CreatePopupMenu();
     AppendMenuA(cores, MF_STRING, IDM_DOWNLOAD_CORES, "&Download Cores...");
@@ -216,6 +228,10 @@ static const UINT k_screen_ids[] = {
 
 static void patch_aspect(me_settings *s, const void *ctx) {
     s->aspect = *(const me_aspect_mode *)ctx;
+}
+
+static void patch_fan_server(me_settings *s, const void *ctx) {
+    s->fan_server = *(const me_fan_server *)ctx;
 }
 
 static void patch_show_cursor(me_settings *s, const void *ctx) {
@@ -610,6 +626,17 @@ static void refresh_menu(HMENU m) {
         /* Also changed by F1, so it shows the live value. */
         unsigned a = (unsigned)s->aspect <= 2 ? (unsigned)s->aspect : 0;
         CheckMenuRadioItem(m, IDM_ASPECT_1_1, IDM_ASPECT_16_9, IDM_ASPECT_1_1 + a, MF_BYCOMMAND);
+    } else if (m == g_fan_server_menu) {
+        /* DS online play through the core's DNS: a DS game on a core without
+           the option can't use it; otherwise it's kept for the next load. */
+        unsigned v = (unsigned)s->fan_server < ME_FAN_SERVER_COUNT ? (unsigned)s->fan_server : 0;
+        CheckMenuRadioItem(m, IDM_FAN_SERVER_FIRST, IDM_FAN_SERVER_FIRST + ME_FAN_SERVER_COUNT - 1,
+                           IDM_FAN_SERVER_FIRST + v, MF_BYCOMMAND);
+        const me_console *c = me_console_at(st.console);
+        int ds = c && strcmp(c->id, "nds") == 0;
+        set_item_text(m, IDM_FAN_SERVER_NOTE,
+                      ds && !st.fan_server_usable ? "DS online needs the melonDS DS core"
+                                                  : "Applies at next game load or Hard Reset");
     } else if (m == g_backend_menu) {
         static const UINT ids[] = { 0, IDM_BACKEND_VULKAN, IDM_BACKEND_GDI, IDM_BACKEND_D3D11 };
         backend_choice b = backend_of(s);
@@ -656,6 +683,13 @@ static void on_command(HWND h, UINT id) {
     me_settings *s = me_app_settings();
     if (id >= IDM_ADAPTER_FIRST && id < IDM_ADAPTER_FIRST + ME_ADAPTERS_MAX) {
         toggle_adapter((int)(id - IDM_ADAPTER_FIRST));
+        return;
+    }
+    if (id >= IDM_FAN_SERVER_FIRST && id < IDM_FAN_SERVER_FIRST + ME_FAN_SERVER_COUNT) {
+        /* The emulation thread hands it to the core when a game loads. */
+        me_fan_server v = (me_fan_server)(id - IDM_FAN_SERVER_FIRST);
+        s->fan_server = v;
+        me_ui_persist(patch_fan_server, &v);
         return;
     }
     if (id >= IDM_RECENT_FIRST && id < IDM_RECENT_FIRST + ME_RECENT_MAX) {

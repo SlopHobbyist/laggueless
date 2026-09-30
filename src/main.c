@@ -318,6 +318,8 @@ static void me_log_close_all(void) {
     }
 }
 
+static me_settings g_settings;
+
 /* Core options storage. SET_VARIABLES hands us a { key, "Desc; v1|v2|v3" }
    array terminated by { NULL, NULL }. At SET time we walk it once, strdup
    each default ("v1") into a parallel array. GET_VARIABLE then returns the
@@ -394,6 +396,38 @@ static const char *me_var_default_for(const char *key) {
     return NULL;
 }
 
+/* Core options that set the emulated console's DNS, which Multiplayer > Fan
+   Server fills with its server's. Cores read them when they build the
+   console, so a change applies at the next load or Hard Reset. `off` is the
+   value that leaves the firmware's own DNS. */
+static const struct { const char *key, *off; } k_dns_vars[] = {
+    { "melonds_firmware_wfc_dns", "default" },   /* melonDS DS: any IPv4 address */
+};
+
+static const char *me_dns_var_value(const char *key) {
+    for (size_t i = 0; i < sizeof(k_dns_vars) / sizeof(k_dns_vars[0]); i++) {
+        if (strcmp(k_dns_vars[i].key, key) != 0) continue;
+        const char *dns = me_fan_server_info_of(g_settings.fan_server)->dns;
+        return dns ? dns : k_dns_vars[i].off;
+    }
+    return NULL;
+}
+
+/* Does the loaded core take a Fan Server? */
+static int me_core_has_dns_var(void) {
+    for (size_t i = 0; i < sizeof(k_dns_vars) / sizeof(k_dns_vars[0]); i++)
+        if (me_var_default_for(k_dns_vars[i].key)) return 1;
+    return 0;
+}
+
+/* GET_VARIABLE: the core's default, or ours where we set it. */
+static const char *me_var_value(const char *key) {
+    const char *def = me_var_default_for(key);
+    if (!def) return NULL;   /* not one of the core's options */
+    const char *dns = me_dns_var_value(key);
+    return dns ? dns : def;
+}
+
 /* Each player's controller in the running game (consoles.h). Inputs outside
    `live` never reach the core: many cores put turbo buttons, macros and
    disk/coin actions on RetroPad buttons their console doesn't have, and a
@@ -403,8 +437,6 @@ static const char *me_var_default_for(const char *key) {
    picked different controllers (a Classic Controller, a Wii Remote...). */
 static me_input_layout g_in_layout[ME_MAX_PLAYERS];
 static char            g_core_name[64];   /* library_name, for the dialogs */
-
-static me_settings g_settings;
 
 static void set_player_layout(int p, const me_input_layout *l) {
     g_in_layout[p] = *l;
@@ -669,7 +701,7 @@ static bool me_environment_cb(unsigned cmd, void *data) {
         case RETRO_ENVIRONMENT_GET_VARIABLE: {
             struct retro_variable *v = (struct retro_variable *)data;
             if (!v) return false;
-            v->value = me_var_default_for(v->key);
+            v->value = me_var_value(v->key);
             return v->value != NULL;
         }
         case RETRO_ENVIRONMENT_SET_VARIABLES: {     /* 16 */
@@ -2747,6 +2779,7 @@ static void publish_status(const me_session *s) {
             if (g_adapter == &c->adapters[i]) st.adapter = i;
         }
         st.controllers_usable = controllers_usable(s->core, c);
+        st.fan_server_usable = me_core_has_dns_var();
         for (int p = 0; p < ME_MAX_PLAYERS; p++)
             if (g_controller[p]) st.controller[p] = (int)(g_controller[p] - me_console_controllers(c));
     }
