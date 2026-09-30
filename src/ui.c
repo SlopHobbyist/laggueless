@@ -51,13 +51,13 @@ enum {
 
 /* Most adapters a console has (the Mega Drive's two). */
 #define ME_ADAPTERS_MAX 4
-static HMENU g_recent_menu, g_console_menu, g_controls_menu, g_view_menu, g_backend_menu,
+static HMENU g_file_menu, g_recent_menu, g_console_menu, g_controls_menu, g_view_menu, g_backend_menu,
              g_screen_menu, g_aspect_menu;
 
 HMENU me_ui_create_menu(void) {
     HMENU bar = CreateMenu();
 
-    HMENU file = CreatePopupMenu();
+    HMENU file = g_file_menu = CreatePopupMenu();
     g_recent_menu = CreatePopupMenu();
     AppendMenuA(file, MF_STRING, IDM_OPEN, "&Open ROM...");
     AppendMenuA(file, MF_POPUP, (UINT_PTR)g_recent_menu, "Open &Recent");
@@ -393,6 +393,16 @@ static void set_item_text(HMENU m, UINT id, const char *text) {
     SetMenuItemInfoA(m, id, FALSE, &mi);
 }
 
+/* A submenu's item has no command id to look it up by. */
+static void set_popup_text(HMENU m, HMENU sub, const char *text) {
+    for (int i = 0, n = GetMenuItemCount(m); i < n; i++) {
+        if (GetSubMenu(m, i) != sub) continue;
+        MENUITEMINFOA mi = { .cbSize = sizeof(mi), .fMask = MIIM_STRING, .dwTypeData = (char *)text };
+        SetMenuItemInfoA(m, (UINT)i, TRUE, &mi);
+        return;
+    }
+}
+
 /* Menu text treats '&' as a mnemonic marker; double it to show it literally. */
 static void escape_amp(const char *in, char *out, size_t out_sz) {
     size_t n = 0;
@@ -401,6 +411,46 @@ static void escape_amp(const char *in, char *out, size_t out_sz) {
         out[n++] = *in;
     }
     out[n] = '\0';
+}
+
+/* "label<tab>F11, Alt+Return": the item with what hotkey `hk` is bound to
+   right now (only the devices Hotkeys > input has on), in the accelerator
+   column. Just the label when it's unbound. */
+static void hotkey_label(const char *label, me_hotkey_id hk, char *out, size_t out_sz) {
+    const me_settings *s = me_app_settings();
+    char keys[160] = "";
+    size_t len = 0;
+    if (s->hk_source != ME_SRC_CONTROLLER) {
+        const me_kb_bindings *kb = &s->hk[hk];
+        for (int i = 0; i < kb->count; i++) {
+            char one[64];
+            me_kb_binding_str(&kb->b[i], one, sizeof(one));
+            if (!one[0]) continue;
+            int n = snprintf(keys + len, sizeof(keys) - len, "%s%s", len ? ", " : "", one);
+            if (n < 0 || (size_t)n >= sizeof(keys) - len) break;
+            len += (size_t)n;
+        }
+    }
+    if (s->hk_source != ME_SRC_KEYBOARD) {
+        const me_xi_bindings *xi = &s->hk_xi[hk];
+        for (int i = 0; i < xi->count; i++) {
+            char one[128];
+            me_xi_chord_str(xi->b[i].buttons, one, sizeof(one));
+            if (!one[0]) continue;
+            int n = snprintf(keys + len, sizeof(keys) - len, "%s%s", len ? ", " : "", one);
+            if (n < 0 || (size_t)n >= sizeof(keys) - len) break;
+            len += (size_t)n;
+        }
+    }
+    char esc[sizeof(keys) * 2];
+    escape_amp(keys, esc, sizeof(esc));
+    snprintf(out, out_sz, esc[0] ? "%s	%s" : "%s", label, esc);
+}
+
+static void set_hotkey_item(HMENU m, UINT id, const char *label, me_hotkey_id hk) {
+    char text[512];
+    hotkey_label(label, hk, text, sizeof(text));
+    set_item_text(m, id, text);
 }
 
 static void rebuild_recent_menu(void) {
@@ -511,18 +561,25 @@ static void refresh_menu(HMENU m) {
     me_status_get(&st);
     const me_settings *s = me_app_settings();
 
-    if (m == g_recent_menu) {
+    if (m == g_file_menu) {
+        set_hotkey_item(m, IDM_EXIT, "E&xit", ME_HK_QUIT);
+    } else if (m == g_recent_menu) {
         rebuild_recent_menu();
     } else if (m == g_controls_menu) {
         rebuild_controls_menu(&st);
     } else if (m == g_console_menu) {
         UINT running = st.game_running ? MF_ENABLED : MF_GRAYED;
+        set_hotkey_item(m, IDM_HARD_RESET, "&Hard Reset", ME_HK_HARD_RESET);
         EnableMenuItem(m, IDM_HARD_RESET, MF_BYCOMMAND | running);
         EnableMenuItem(m, IDM_SOFT_RESET, MF_BYCOMMAND | running);
         set_item_text(m, IDM_POWER, st.game_running ? "&Power Off" : "&Power On");
         EnableMenuItem(m, IDM_POWER, MF_BYCOMMAND |
                        ((st.game_running || st.can_power_on) ? MF_ENABLED : MF_GRAYED));
     } else if (m == g_view_menu) {
+        char text[512];
+        hotkey_label("&Aspect Ratio", ME_HK_CYCLE_ASPECT, text, sizeof(text));
+        set_popup_text(m, g_aspect_menu, text);
+        set_hotkey_item(m, IDM_FULLSCREEN, "Toggle &Full Screen", ME_HK_TOGGLE_FULLSCREEN);
         CheckMenuItem(m, IDM_FULLSCREEN, MF_BYCOMMAND |
                       (me_platform_is_fullscreen() ? MF_CHECKED : MF_UNCHECKED));
         set_item_text(m, IDM_FRAME_GEN, !st.frame_gen_supported ? "Frame &Gen\tnot in this build"
