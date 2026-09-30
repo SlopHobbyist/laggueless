@@ -128,7 +128,58 @@ static int hk_xi_pressed(const me_xi_bindings *b, int player, int *prev) {
     return fired;
 }
 
-/* ---- log callback --------------------------------------------------------- */
+/* ---- log callback ---------------------------------------------------------
+   Core messages are queued and written to stderr by a background thread.
+   Cores log from inside retro_run (Dolphin: a kilobyte-long warning per
+   shader compile, EFB warnings every frame), and each console write is an
+   IPC round-trip to the console host, charged to the frame being run. */
+#define ME_CORELOG_CAP (256 * 1024)
+static char             g_corelog_buf[ME_CORELOG_CAP];
+static size_t           g_corelog_len;
+static unsigned         g_corelog_dropped;
+static int              g_corelog_quit;
+static CRITICAL_SECTION g_corelog_lock;
+static HANDLE           g_corelog_event, g_corelog_thread;
+
+static DWORD WINAPI corelog_thread(LPVOID arg) {
+    (void)arg;
+    static char out[ME_CORELOG_CAP];
+    for (;;) {
+        WaitForSingleObject(g_corelog_event, INFINITE);
+        EnterCriticalSection(&g_corelog_lock);
+        size_t n = g_corelog_len;
+        memcpy(out, g_corelog_buf, n);
+        g_corelog_len = 0;
+        unsigned dropped = g_corelog_dropped;
+        g_corelog_dropped = 0;
+        int quit = g_corelog_quit;
+        LeaveCriticalSection(&g_corelog_lock);
+        if (n) fwrite(out, 1, n, stderr);
+        if (dropped) fprintf(stderr, "[core] (%u log messages dropped)\n", dropped);
+        fflush(stderr);
+        if (quit) return 0;
+    }
+}
+
+static void me_corelog_start(void) {
+    InitializeCriticalSection(&g_corelog_lock);
+    g_corelog_event = CreateEventA(NULL, FALSE, FALSE, NULL);
+    if (g_corelog_event)
+        g_corelog_thread = CreateThread(NULL, 0, corelog_thread, NULL, 0, NULL);
+}
+
+/* Drain what's queued and stop the writer; later messages go direct. */
+static void me_corelog_stop(void) {
+    if (!g_corelog_thread) return;
+    EnterCriticalSection(&g_corelog_lock);
+    g_corelog_quit = 1;
+    LeaveCriticalSection(&g_corelog_lock);
+    SetEvent(g_corelog_event);
+    WaitForSingleObject(g_corelog_thread, 2000);
+    CloseHandle(g_corelog_thread);
+    g_corelog_thread = NULL;
+}
+
 static void me_log_cb(enum retro_log_level level, const char *fmt, ...) {
     const char *tag = "?";
     switch (level) {
@@ -143,7 +194,20 @@ static void me_log_cb(enum retro_log_level level, const char *fmt, ...) {
     int n = vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
     if (n < 0) { fprintf(stderr, "[core:%s] (format error)\n", tag); return; }
-    fprintf(stderr, "[core:%s] %s", tag, buf);
+    char line[1040];
+    int len = snprintf(line, sizeof(line), "[core:%s] %s", tag, buf);
+    if (len < 0) return;
+    if (len >= (int)sizeof(line)) len = (int)sizeof(line) - 1;
+    if (!g_corelog_thread) { fwrite(line, 1, (size_t)len, stderr); return; }
+    EnterCriticalSection(&g_corelog_lock);
+    if (g_corelog_len + (size_t)len <= ME_CORELOG_CAP) {
+        memcpy(g_corelog_buf + g_corelog_len, line, (size_t)len);
+        g_corelog_len += (size_t)len;
+    } else {
+        g_corelog_dropped++;
+    }
+    LeaveCriticalSection(&g_corelog_lock);
+    SetEvent(g_corelog_event);
 }
 
 /* ---- hardware-rendering state --------------------------------------------
@@ -271,6 +335,12 @@ static const struct { const char *key, *value; } k_var_overrides[] = {
     { "melonds_touch_mode",  "Touch" },     /* melonDS (melonDS DS's auto already takes the pointer) */
     { "noods_touchCursor",   "disabled" },  /* NooDS */
     { "desmume_pointer_type", "touch" },    /* DeSmuME */
+    /* Dolphin: Sync (UberShaders). Its libretro GL context can't make shared
+       contexts, so shaders never compile in the background: the default
+       (Synchronous) and both Async modes compile every new specialized
+       shader inside retro_run, a ~70 ms hitch each. Ubershaders cover every
+       pipeline from a small set compiled up front and cached to disk. */
+    { "dolphin_shader_compilation_mode", "1" },
 };
 
 /* The override for `key` if `values` ("v1|v2|v3") lists it, else NULL. */
@@ -1724,6 +1794,7 @@ typedef struct me_session {
     size_t   pl_fill_before_min, pl_fill_before_max, pl_fill_before_sum;
     size_t   pl_fill_after_min,  pl_fill_after_max,  pl_fill_after_sum;
     unsigned pl_iters;
+    unsigned pl_resyncs;      /* stalls that re-based the pace schedule */
     LARGE_INTEGER pl_last_qpc, pl_window_start;
 
     /* Per-second rollup for --latency-log. Each iteration is split into
@@ -2515,6 +2586,17 @@ static void session_run_frame(me_session *s) {
         QueryPerformanceCounter(&now);
         double elapsed_ms = (double)(now.QuadPart - s->qstart.QuadPart) * 1000.0 / (double)qpf.QuadPart;
         double deadline_ms = frame_deadline_ms(s, s->frame_count);
+        /* A frame or more behind (a stall: shader compile, disc read, window
+           drag): the time is lost. Re-pace from now instead of running the
+           backlog of frames unthrottled, which plays the game visibly fast
+           until the schedule catches up. Sub-frame lateness keeps the
+           absolute schedule so the long-run rate stays exact. */
+        if (elapsed_ms - deadline_ms >= s->frame_period_ms) {
+            s->pace_base_ms    = elapsed_ms;
+            s->pace_base_frame = s->frame_count;
+            deadline_ms        = elapsed_ms;
+            s->pl_resyncs++;
+        }
         double wait_ms = deadline_ms - elapsed_ms;
         if (wait_ms > 1.5) Sleep((DWORD)(wait_ms - 1.0));
         while (1) {
@@ -2594,12 +2676,13 @@ static void session_run_frame(me_session *s) {
         double window_ms = (double)(now.QuadPart - s->pl_window_start.QuadPart) * 1000.0 / (double)qpf.QuadPart;
         if (window_ms >= 1000.0 && s->pl_iters > 0) {
             me_log(ME_LOG_PACE,
-                   "[pace] %ufps gap min/avg/max=%.1f/%.1f/%.1f ms fill_before(min/avg/max)=%zu/%zu/%zu fill_after=%zu/%zu/%zu bias=%+.4f%%\n",
+                   "[pace] %ufps gap min/avg/max=%.1f/%.1f/%.1f ms fill_before(min/avg/max)=%zu/%zu/%zu fill_after=%zu/%zu/%zu bias=%+.4f%% resyncs=%u\n",
                    s->pl_iters,
                    s->pl_gap_min, s->pl_gap_sum / s->pl_iters, s->pl_gap_max,
                    s->pl_fill_before_min, s->pl_fill_before_sum / s->pl_iters, s->pl_fill_before_max,
                    s->pl_fill_after_min,  s->pl_fill_after_sum  / s->pl_iters, s->pl_fill_after_max,
-                   g_resamp_ratio_bias * 100.0);
+                   g_resamp_ratio_bias * 100.0, s->pl_resyncs);
+            s->pl_resyncs = 0;
             s->pl_gap_min = 1e9; s->pl_gap_max = 0; s->pl_gap_sum = 0;
             s->pl_fill_before_min = (size_t)-1; s->pl_fill_before_max = 0; s->pl_fill_before_sum = 0;
             s->pl_fill_after_min  = (size_t)-1; s->pl_fill_after_max  = 0; s->pl_fill_after_sum  = 0;
@@ -3080,6 +3163,7 @@ int main(int argc, char **argv) {
     /* Windows' default Sleep granularity is ~15.6 ms; frame pacing needs
        1 ms resolution. */
     timeBeginPeriod(1);
+    me_corelog_start();
 
     me_session session;
     memset(&session, 0, sizeof(session));
@@ -3116,6 +3200,7 @@ int main(int argc, char **argv) {
     }
 
     if (session.active) session_close(&session);
+    me_corelog_stop();
     me_platform_destroy_window();
     timeEndPeriod(1);
     me_lsfg_free(g_lsfg_shaders); g_lsfg_shaders = NULL;
