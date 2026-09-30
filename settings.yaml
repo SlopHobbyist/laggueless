@@ -2,7 +2,12 @@
 
 video:
   fullscreen_on_launch: false
-  aspect: 1:1            # 1:1 | 4:3 | 16:9
+  aspect: auto           # auto | 1:1 | 4:3 | 16:9 (View > Aspect Ratio)
+                         # auto: the shape the core gives its picture (a
+                         # Wii game's 4:3 or 16:9, the SNES's 8:7 pixels)
+  wii_display: "16:9"    # 16:9 | 4:3 — the Wii's own TV setting (View > Wii
+                         # Display). Games read it when they boot, so it
+                         # applies at the next game load or Hard Reset.
   screens: both          # both | top | bottom — which DS screen(s) to show
                          # (View > Screen)
   force_gdi: false       # force GDI for all cores (overrides force_d3d11)

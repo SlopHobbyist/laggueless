@@ -3,6 +3,7 @@
 #include <string.h>
 #include <stdbool.h>
 #include <stdarg.h>
+#include <math.h>
 #include "platform_win32.h"
 #include <mmsystem.h>
 #include "integer_scaling.h"
@@ -83,6 +84,10 @@ static double g_av_fps = 0.0, g_av_rate = 0.0;
 static int    g_av_timing_changed = 0;
 static int    g_av_refused = 0;   /* a bigger frame refused (logged once) */
 static unsigned g_frame_w = 0, g_frame_h = 0;
+/* The shape (width / height) the core says its whole frame is shown at:
+   AV info at load, SET_GEOMETRY since (Dolphin switches between 4:3 and
+   16:9 as the game does). 0 or less: square pixels. */
+static float g_core_aspect = 0.0f;
 static unsigned long g_video_calls = 0;
 
 static HWND g_hwnd = NULL;
@@ -103,11 +108,11 @@ static me_lsfg_shaders  *g_lsfg_shaders  = NULL; /* loaded shader table */
 static int           g_latency_log = 0;
 static LARGE_INTEGER g_poll_qpc = {0};
 
-/* Aspect mode (g_settings.aspect): 0 = 1:1 (square pixels), 1 = 4:3,
-   2 = 16:9. F1 cycles; View > Aspect Ratio picks one. */
-static const char *g_aspect_names[3] = { "1:1", "4:3", "16:9" };
-static const int g_aspect_x[3] = { 1, 4, 16 };
-static const int g_aspect_y[3] = { 1, 3,  9 };
+/* Aspect mode (g_settings.aspect, me_aspect_mode order): F1 cycles; View >
+   Aspect Ratio picks one. Auto's shape comes from the core (g_core_aspect). */
+static const char *g_aspect_names[ME_ASPECT_COUNT] = { "auto", "1:1", "4:3", "16:9" };
+static const int g_aspect_x[ME_ASPECT_COUNT] = { 0, 1, 4, 16 };
+static const int g_aspect_y[ME_ASPECT_COUNT] = { 0, 1, 3,  9 };
 
 static int hk_pressed(const me_kb_bindings *b) {
     for (int i = 0; i < b->count; i++) {
@@ -448,6 +453,8 @@ static const char *me_var_value(const char *key) {
     const char *dns = me_dns_var_value(key);
     if (dns) return dns;
     if (g_wii_wfc.patched && strcmp(key, ME_DOLPHIN_CHEATS_VAR) == 0) return "enabled";
+    /* View > Wii Display: the Wii's TV setting, read when the game boots. */
+    if (strcmp(key, "dolphin_widescreen") == 0) return g_settings.wii_widescreen ? "enabled" : "disabled";
     return def;
 }
 
@@ -828,6 +835,7 @@ static bool me_environment_cb(unsigned cmd, void *data) {
             if (g_env_trace && g)
                 me_log(ME_LOG_ENV, "[env] SET_GEOMETRY %ux%u aspect=%.4f -> true\n",
                        g->base_width, g->base_height, g->aspect_ratio);
+            if (g) g_core_aspect = g->aspect_ratio;   /* View > Aspect Ratio > Auto */
             return true;
         }
         case RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO: {   /* 32 */
@@ -848,6 +856,7 @@ static bool me_environment_cb(unsigned cmd, void *data) {
                        g_back ? "(running)" : "(loading)", max_w, max_h,
                        av->timing.fps, av->timing.sample_rate, ok ? "true" : "false");
             if (!ok) g_av_refused = 1;
+            if (ok) g_core_aspect = av->geometry.aspect_ratio;
             if (retimed) {
                 g_av_fps  = av->timing.fps;
                 g_av_rate = av->timing.sample_rate;
@@ -1441,6 +1450,50 @@ static void view_source(unsigned fw, unsigned fh,
     if (which != ME_SCREENS_BOTH) find_screen(fw, fh, which == ME_SCREENS_BOTTOM, sx, sy, sw, sh);
 }
 
+/* How big the (sw x sh) part of the frame is drawn in a (cw x ch) client
+   area. Square pixels and the forced 4:3 / 16:9 scale by whole numbers, so
+   every source pixel is the same size. Auto shows the core's shape: by
+   whole numbers when its pixels are square, else exactly, since a frame
+   like the Wii's 640x528 has too few steps for whole numbers to come near
+   4:3 (2x2 in a 1080p window is still square). A frame bigger than the
+   window, or whole numbers that overshoot it, is fitted exactly too. */
+static void view_size(int cw, int ch, unsigned sw, unsigned sh, int *dw, int *dh) {
+    int aspect = (unsigned)g_settings.aspect < ME_ASPECT_COUNT ? (int)g_settings.aspect
+                                                               : ME_ASPECT_AUTO;
+    double want = (double)sw / sh;   /* the picture's width over its height */
+    int square = aspect == ME_ASPECT_1_1;
+    if (aspect == ME_ASPECT_AUTO) {
+        /* The core's shape is the whole frame's; a part of it (View >
+           Screen) keeps the frame's pixel shape. */
+        if (g_core_aspect > 0.0f && g_frame_w && g_frame_h)
+            want = g_core_aspect * ((double)sw / g_frame_w) / ((double)sh / g_frame_h);
+        square = fabs(want * sh / sw - 1.0) < 0.01;
+    } else if (!square) {
+        want = (double)g_aspect_x[aspect] / g_aspect_y[aspect];
+    }
+
+    if ((int)sw <= cw && (int)sh <= ch && (square || aspect != ME_ASPECT_AUTO)) {
+        i32 rx, ry;
+        if (square)
+            rx = ry = me_iscale_ratio(cw, ch, (i32)sw, (i32)sh);
+        else
+            me_iscale_ratios(cw, ch, (i32)sw, (i32)sh,
+                             g_aspect_x[aspect], g_aspect_y[aspect], &rx, &ry);
+        *dw = (int)sw * rx;
+        *dh = (int)sh * ry;
+        if (*dw <= cw && *dh <= ch) return;
+    }
+    if (cw < ch * want) {
+        *dw = cw;
+        *dh = (int)(cw / want + 0.5);
+    } else {
+        *dh = ch;
+        *dw = (int)(ch * want + 0.5);
+    }
+    if (*dw < 1) *dw = 1;
+    if (*dh < 1) *dh = 1;
+}
+
 static void present(HWND hwnd) {
     g_view.valid = 0;
     if (!g_back || g_frame_w == 0 || g_frame_h == 0) return;
@@ -1458,19 +1511,8 @@ static void present(HWND hwnd) {
         view_source(g_frame_w, g_frame_h, &sx, &sy, &sw, &sh);
     const u32 *src = g_back + (size_t)sy * g_back_max_w + sx;
 
-    /* Integer-scale inside the client area: square pixels, or the current
-       target aspect. */
-    i32 rx, ry;
-    int aspect = (unsigned)g_settings.aspect <= 2 ? (int)g_settings.aspect : 0;
-    if (aspect == 0)
-        rx = ry = me_iscale_ratio(cw, ch, (i32)sw, (i32)sh);
-    else
-        me_iscale_ratios(cw, ch, (i32)sw, (i32)sh,
-                         g_aspect_x[aspect], g_aspect_y[aspect], &rx, &ry);
-    int dw = (int)sw * rx;
-    int dh = (int)sh * ry;
-    if (dw > cw) dw = cw;
-    if (dh > ch) dh = ch;
+    int dw, dh;
+    view_size(cw, ch, sw, sh, &dw, &dh);
     int dx = (cw - dw) / 2;
     int dy = (ch - dh) / 2;
 
@@ -1883,6 +1925,7 @@ static void session_reset_globals(void) {
     g_av_fps = g_av_rate = 0.0;
     g_av_timing_changed = g_av_refused = 0;
     g_frame_w = g_frame_h = 0;
+    g_core_aspect = 0.0f;
     g_video_calls = 0;
     g_use_d3d11 = 0;
     memset(&g_hw_render, 0, sizeof(g_hw_render));
@@ -2296,6 +2339,7 @@ static int session_open(me_session *s, const char *core_path_in, const char *rom
     }
     g_frame_w = av.geometry.base_width;
     g_frame_h = av.geometry.base_height;
+    g_core_aspect = av.geometry.aspect_ratio;
     s->base_w = av.geometry.base_width;
     s->base_h = av.geometry.base_height;
 
@@ -2479,7 +2523,7 @@ static void handle_hotkeys(void) {
     if (fire[ME_HK_TOGGLE_FULLSCREEN]) me_platform_toggle_fullscreen(g_hwnd);
     if (fire[ME_HK_EXIT_FULLSCREEN])   me_platform_exit_fullscreen(g_hwnd);
     if (fire[ME_HK_CYCLE_ASPECT]) {
-        g_settings.aspect = (me_aspect_mode)(((int)g_settings.aspect + 1) % 3);
+        g_settings.aspect = (me_aspect_mode)(((int)g_settings.aspect + 1) % ME_ASPECT_COUNT);
         printf("[aspect] %s\n", g_aspect_names[g_settings.aspect]);
     }
     if (fire[ME_HK_QUIT])       me_platform_request_quit();
@@ -3155,7 +3199,7 @@ int main(int argc, char **argv) {
                 "file onto the window also loads it, replacing the current game.\n"
                 "\n"
                 "default hotkeys (change them in Controls > Hotkeys):\n"
-                "  F1      cycle aspect ratio (1:1 / 4:3 / 16:9)\n"
+                "  F1      cycle aspect ratio (auto / 1:1 / 4:3 / 16:9)\n"
                 "  F11     toggle fullscreen\n"
                 "  Ctrl+R  hard reset\n"
                 "\n"

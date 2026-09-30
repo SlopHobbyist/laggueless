@@ -44,9 +44,13 @@ enum {
     IDM_SCREEN_BOTH,
     IDM_SCREEN_SWAP,          /* the Swap Screens and Both Screens hotkeys */
     IDM_SCREEN_BOTH_TOGGLE,
-    IDM_ASPECT_1_1 = 180,     /* View > Aspect Ratio, in me_aspect_mode order */
+    IDM_ASPECT_AUTO = 180,    /* View > Aspect Ratio, in me_aspect_mode order */
+    IDM_ASPECT_1_1,
     IDM_ASPECT_4_3,
     IDM_ASPECT_16_9,
+    IDM_WII_DISPLAY_WIDE = 185, /* View > Wii Display */
+    IDM_WII_DISPLAY_STANDARD,
+    IDM_WII_DISPLAY_NOTE,
     IDM_FAN_SERVER_FIRST = 190, /* Multiplayer > Fan Server, in me_fan_server order */
     IDM_FAN_SERVER_NOTE = IDM_FAN_SERVER_FIRST + ME_FAN_SERVER_COUNT,
     IDM_MULTIPLAYER_NONE,
@@ -61,7 +65,7 @@ enum {
 /* Most adapters a console has (the Mega Drive's two). */
 #define ME_ADAPTERS_MAX 4
 static HMENU g_file_menu, g_recent_menu, g_console_menu, g_controls_menu, g_view_menu, g_backend_menu,
-             g_screen_menu, g_aspect_menu, g_multiplayer_menu, g_fan_server_menu, g_wii_fan_server_menu;
+             g_screen_menu, g_aspect_menu, g_wii_display_menu, g_multiplayer_menu, g_fan_server_menu, g_wii_fan_server_menu;
 
 HMENU me_ui_create_menu(void) {
     HMENU bar = CreateMenu();
@@ -104,12 +108,20 @@ HMENU me_ui_create_menu(void) {
     AppendMenuA(g_screen_menu, MF_STRING, IDM_SCREEN_SWAP,        "&Swap Screens");
     AppendMenuA(g_screen_menu, MF_STRING, IDM_SCREEN_BOTH_TOGGLE, "Both Scr&eens");
     g_aspect_menu = CreatePopupMenu();
+    AppendMenuA(g_aspect_menu, MF_STRING, IDM_ASPECT_AUTO, "&Auto (Game's Own)");
     AppendMenuA(g_aspect_menu, MF_STRING, IDM_ASPECT_1_1,  "&1:1 (Square Pixels)");
     AppendMenuA(g_aspect_menu, MF_STRING, IDM_ASPECT_4_3,  "&4:3");
     AppendMenuA(g_aspect_menu, MF_STRING, IDM_ASPECT_16_9, "1&6:9");
     AppendMenuA(g_view_menu, MF_STRING, IDM_FULLSCREEN, "Toggle &Full Screen");
     AppendMenuA(g_view_menu, MF_POPUP, (UINT_PTR)g_aspect_menu, "&Aspect Ratio");
     AppendMenuA(g_view_menu, MF_POPUP, (UINT_PTR)g_screen_menu, "&Screen");
+    g_wii_display_menu = CreatePopupMenu();
+    AppendMenuA(g_wii_display_menu, MF_STRING, IDM_WII_DISPLAY_WIDE,     "&16:9 (Widescreen)");
+    AppendMenuA(g_wii_display_menu, MF_STRING, IDM_WII_DISPLAY_STANDARD, "&4:3 (Standard)");
+    AppendMenuA(g_wii_display_menu, MF_SEPARATOR, 0, NULL);
+    AppendMenuA(g_wii_display_menu, MF_STRING | MF_GRAYED, IDM_WII_DISPLAY_NOTE,
+                "Applies at next game load or Hard Reset");
+    AppendMenuA(g_view_menu, MF_POPUP, (UINT_PTR)g_wii_display_menu, "&Wii Display");
     AppendMenuA(g_view_menu, MF_STRING, IDM_FRAME_GEN,  "Frame &Gen");
     AppendMenuA(g_view_menu, MF_POPUP, (UINT_PTR)g_backend_menu, "&Rendering Backend (requires restart)");
     AppendMenuA(bar, MF_POPUP, (UINT_PTR)g_view_menu, "&View");
@@ -235,6 +247,10 @@ static const UINT k_screen_ids[] = {
 
 static void patch_aspect(me_settings *s, const void *ctx) {
     s->aspect = *(const me_aspect_mode *)ctx;
+}
+
+static void patch_wii_widescreen(me_settings *s, const void *ctx) {
+    s->wii_widescreen = *(const int *)ctx;
 }
 
 static void patch_fan_server(me_settings *s, const void *ctx) {
@@ -675,8 +691,16 @@ static void refresh_menu(HMENU m) {
                            k_screen_ids[(unsigned)s->screens <= 2 ? s->screens : 0], MF_BYCOMMAND);
     } else if (m == g_aspect_menu) {
         /* Also changed by F1, so it shows the live value. */
-        unsigned a = (unsigned)s->aspect <= 2 ? (unsigned)s->aspect : 0;
-        CheckMenuRadioItem(m, IDM_ASPECT_1_1, IDM_ASPECT_16_9, IDM_ASPECT_1_1 + a, MF_BYCOMMAND);
+        unsigned a = (unsigned)s->aspect < ME_ASPECT_COUNT ? (unsigned)s->aspect : 0;
+        CheckMenuRadioItem(m, IDM_ASPECT_AUTO, IDM_ASPECT_16_9, IDM_ASPECT_AUTO + a, MF_BYCOMMAND);
+    } else if (m == g_wii_display_menu) {
+        /* Only Wii games read it; with no game the pick is kept for the next. */
+        UINT on = (!st.game_running || st.fan_servers == ME_FAN_SERVERS_WII) ? MF_ENABLED : MF_GRAYED;
+        EnableMenuItem(m, IDM_WII_DISPLAY_WIDE, MF_BYCOMMAND | on);
+        EnableMenuItem(m, IDM_WII_DISPLAY_STANDARD, MF_BYCOMMAND | on);
+        CheckMenuRadioItem(m, IDM_WII_DISPLAY_WIDE, IDM_WII_DISPLAY_STANDARD,
+                           s->wii_widescreen ? IDM_WII_DISPLAY_WIDE : IDM_WII_DISPLAY_STANDARD,
+                           MF_BYCOMMAND);
     } else if (m == g_fan_server_menu) {
         unsigned v = (unsigned)s->fan_server < ME_FAN_SERVER_COUNT ? (unsigned)s->fan_server : 0;
         CheckMenuRadioItem(m, IDM_FAN_SERVER_FIRST, IDM_FAN_SERVER_FIRST + ME_FAN_SERVER_COUNT - 1,
@@ -795,13 +819,22 @@ static void on_command(HWND h, UINT id) {
             me_ui_persist(patch_screens, &v);
             break;
         }
+        case IDM_ASPECT_AUTO:
         case IDM_ASPECT_1_1:
         case IDM_ASPECT_4_3:
         case IDM_ASPECT_16_9: {
             /* The emulation thread reads it at the next present. */
-            me_aspect_mode v = (me_aspect_mode)(id - IDM_ASPECT_1_1);
+            me_aspect_mode v = (me_aspect_mode)(id - IDM_ASPECT_AUTO);
             s->aspect = v;
             me_ui_persist(patch_aspect, &v);
+            break;
+        }
+        case IDM_WII_DISPLAY_WIDE:
+        case IDM_WII_DISPLAY_STANDARD: {
+            /* Handed to the core when the next game boots. */
+            int v = id == IDM_WII_DISPLAY_WIDE;
+            s->wii_widescreen = v;
+            me_ui_persist(patch_wii_widescreen, &v);
             break;
         }
         case IDM_BACKEND_VULKAN:

@@ -351,7 +351,8 @@ static int clamp_slot(int v) {
 /* ---- defaults ------------------------------------------------------------- */
 void me_settings_defaults(me_settings *out) {
     memset(out, 0, sizeof(*out));
-    out->aspect = ME_ASPECT_1_1;
+    out->aspect = ME_ASPECT_AUTO;
+    out->wii_widescreen = 1;   /* Dolphin's default, and most Wiis' */
     out->single_screen = ME_SCREENS_TOP;
     out->force_vulkan     = 1;
     out->vk_no_vsync      = 1;
@@ -550,11 +551,21 @@ static me_fan_server parse_fan_server(const char *s, me_fan_server defv) {
     return defv;
 }
 
+/* settings.yaml's names for me_aspect_mode, in its order. */
+static const char *const g_aspect_names[ME_ASPECT_COUNT] = { "auto", "1:1", "4:3", "16:9" };
+
 static me_aspect_mode parse_aspect(const char *s, me_aspect_mode defv) {
     if (!s) return defv;
-    if (strcmp(s, "1:1") == 0)  return ME_ASPECT_1_1;
-    if (strcmp(s, "4:3") == 0)  return ME_ASPECT_4_3;
-    if (strcmp(s, "16:9") == 0) return ME_ASPECT_16_9;
+    for (int i = 0; i < ME_ASPECT_COUNT; i++)
+        if (_stricmp(s, g_aspect_names[i]) == 0) return (me_aspect_mode)i;
+    return defv;
+}
+
+/* View > Wii Display: "16:9" or "4:3". */
+static int parse_wii_display(const char *s, int defv) {
+    if (!s) return defv;
+    if (strcmp(s, "16:9") == 0) return 1;
+    if (strcmp(s, "4:3") == 0)  return 0;
     return defv;
 }
 
@@ -622,6 +633,8 @@ static void load_document(yaml_document_t *doc, yaml_node_t *root, me_settings *
         out->fullscreen_on_launch = scalar_bool(map_get(doc, video, "fullscreen_on_launch"),
                                                 out->fullscreen_on_launch);
         out->aspect      = parse_aspect(scalar_str(map_get(doc, video, "aspect")), out->aspect);
+        out->wii_widescreen = parse_wii_display(scalar_str(map_get(doc, video, "wii_display")),
+                                                out->wii_widescreen);
         out->screens     = parse_screens(scalar_str(map_get(doc, video, "screens")), out->screens);
         if (out->screens != ME_SCREENS_BOTH) out->single_screen = out->screens;
         out->force_gdi   = scalar_bool(map_get(doc, video, "force_gdi"),   out->force_gdi);
@@ -971,7 +984,6 @@ int me_settings_save(const char *path, const me_settings *s) {
         return -1;
     }
 
-    static const char *const aspect_names[] = { "1:1", "4:3", "16:9" };
     fprintf(f,
         "# laggueless settings.\n"
         "# laggueless rewrites this file when settings are changed from its menus.\n"
@@ -979,7 +991,9 @@ int me_settings_save(const char *path, const me_settings *s) {
         "\n");
     fprintf(f, "video:\n");
     fprintf(f, "  fullscreen_on_launch: %s\n", yn(s->fullscreen_on_launch));
-    fprintf(f, "  aspect: \"%s\"\n", aspect_names[(int)s->aspect <= 2 ? (int)s->aspect : 0]);
+    fprintf(f, "  aspect: \"%s\"\n",
+            g_aspect_names[(unsigned)s->aspect < ME_ASPECT_COUNT ? (int)s->aspect : 0]);
+    fprintf(f, "  wii_display: \"%s\"\n", s->wii_widescreen ? "16:9" : "4:3");
     fprintf(f, "  screens: %s\n", g_screens_names[(unsigned)s->screens <= 2 ? (int)s->screens : 0]);
     fprintf(f, "  force_gdi: %s\n", yn(s->force_gdi));
     fprintf(f, "  force_d3d11: %s\n", yn(s->force_d3d11));

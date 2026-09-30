@@ -101,10 +101,14 @@ typedef enum {
    The oldest is forgotten past this: about 4 KB of settings.yaml at most. */
 #define ME_CONSOLE_PICKS_MAX 100
 
+/* View > Aspect Ratio. Auto is the shape the core says its picture has
+   (a Wii game's 4:3 or 16:9, a SNES's 8:7 pixels); the others force one. */
 typedef enum {
-    ME_ASPECT_1_1 = 0,
-    ME_ASPECT_4_3 = 1,
-    ME_ASPECT_16_9 = 2,
+    ME_ASPECT_AUTO = 0,
+    ME_ASPECT_1_1  = 1,
+    ME_ASPECT_4_3  = 2,
+    ME_ASPECT_16_9 = 3,
+    ME_ASPECT_COUNT
 } me_aspect_mode;
 
 /* Which screens of a two-screen console (DS) to show: View > Screen. */
@@ -144,6 +148,9 @@ typedef struct {
     /* video */
     int fullscreen_on_launch;
     me_aspect_mode aspect;
+    /* The Wii's own TV setting (View > Wii Display): 1 = 16:9, 0 = 4:3.
+       Games read it at boot and draw that shape. */
+    int wii_widescreen;
     me_screens screens;
     /* The one screen (top or bottom) shown last, which Both Screens goes
        back to. Not saved: it starts as `screens` when that's one screen,
