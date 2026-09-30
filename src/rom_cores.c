@@ -32,6 +32,22 @@ static const me_adapter k_pce_adapters[] = {
     { NULL }
 };
 
+/* What a Wii game can be played with. Dolphin offers them on Wii games only
+   (a GameCube game gets just the GameCube controller), and on its own plugs
+   in an upright Wii Remote, which games played sideways (Mario Kart Wii,
+   New Super Mario Bros. Wii) turn a quarter-turn. Its "WiiMote + Classic
+   Controller" comes before the Pro, which the name also matches. The
+   MotionPlus remotes are left out: a gamepad has no gyro to drive them. */
+static const me_controller k_wii_controllers[] = {
+    { "gamecube",        "GameCube Controller",    "gamecube controller",              "gamecube" },
+    { "classic",         "Classic Controller",     "wiimote + classic controller",     "wii_classic" },
+    { "classic_pro",     "Classic Controller Pro", "wiimote + classic controller pro", "wii_classic_pro" },
+    { "nunchuk",         "Wii Remote + Nunchuk",   "wiimote + nunchuk",                "wii_nunchuk" },
+    { "remote_sideways", "Wii Remote (sideways)",  "wiimote (sideways)",               "wii_sideways" },
+    { "remote",          "Wii Remote (upright)",   "wiimote (upright)",                "wii_remote" },
+    { NULL }
+};
+
 /* Every extension is in exactly one console's `exts`; ones several consoles
    share are in the one most games in that format are for (.bin the Mega
    Drive, .cue the PlayStation, .iso the PSP, .rom the MSX) and in the others'
@@ -567,6 +583,19 @@ const me_adapter *me_console_adapter(const me_console *c, const char *id) {
     for (const me_adapter *a = c->adapters; a->id; a++)
         if (_stricmp(a->id, id) == 0) return a;
     return NULL;
+}
+
+/* Only the GameCube / Wii console has a choice (its Wii games). */
+const me_controller *me_console_controllers(const me_console *c) {
+    return c && strcmp(c->id, "gamecube") == 0 ? k_wii_controllers : NULL;
+}
+
+int me_console_controller(const me_console *c, const char *id) {
+    const me_controller *list = me_console_controllers(c);
+    if (!list) return -1;
+    for (int i = 0; id && list[i].id; i++)
+        if (_stricmp(list[i].id, id) == 0) return i;
+    return 0;
 }
 
 int me_console_candidate(const me_console *c, int i, char *dll, size_t dll_sz) {

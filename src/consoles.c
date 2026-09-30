@@ -113,11 +113,101 @@ static const pad_default k_n64_defaults[] = {
     DEFAULTS_END
 };
 /* Dolphin names the RetroPad's buttons after the GameCube's (RetroPad A is
-   GameCube A...) and lists them itself. The big A in the middle goes on
-   Xbox A, B left of it on X, X right of it on B, Y above on Y. */
+   GameCube A...). The stick clicks press L and R lightly, as the analog
+   triggers can (a light R sprays on the move in Super Mario Sunshine); its
+   Triforce arcade Test and Coin buttons are advanced. The big A in the
+   middle goes on Xbox A, B left of it on X, X right of it on B, Y above on
+   Y. */
+static const row k_gamecube_rows[] = {
+    DPAD, { ME_IN_A, "A" }, { ME_IN_B, "B" }, { ME_IN_X, "X" }, { ME_IN_Y, "Y" },
+    { ME_IN_LT, "L" }, { ME_IN_RT, "R" }, { ME_IN_RB, "Z" }, { ME_IN_START, "Start" },
+    { ME_IN_LSTICK, "L (light press)" }, { ME_IN_RSTICK, "R (light press)" },
+    { ME_IN_LSTICK_UP,   "Control Stick Up" },   { ME_IN_LSTICK_DOWN,  "Control Stick Down" },
+    { ME_IN_LSTICK_LEFT, "Control Stick Left" }, { ME_IN_LSTICK_RIGHT, "Control Stick Right" },
+    { ME_IN_RSTICK_UP,   "C-Stick Up" },   { ME_IN_RSTICK_DOWN,  "C-Stick Down" },
+    { ME_IN_RSTICK_LEFT, "C-Stick Left" }, { ME_IN_RSTICK_RIGHT, "C-Stick Right" }, END
+};
 static const pad_default k_gamecube_defaults[] = {
     { ME_IN_A, { ME_XI_A }, 0 }, { ME_IN_B, { ME_XI_X }, 0 },
     { ME_IN_X, { ME_XI_B }, 0 }, { ME_IN_Y, { ME_XI_Y }, 0 }, DEFAULTS_END
+};
+
+/* The Wii's controllers as Dolphin lays them on the RetroPad (rom_cores.c
+   lists them). A Wii Remote's tilt is the left stick and its pointer the
+   right stick. Dolphin also turns a remote sideways or upright on L3 (its
+   default hotkeys), so L3 is never passed. */
+#define WII_TILT \
+    { ME_IN_LSTICK_UP,   "Tilt Forward" }, { ME_IN_LSTICK_DOWN,  "Tilt Backward" }, \
+    { ME_IN_LSTICK_LEFT, "Tilt Left" },    { ME_IN_LSTICK_RIGHT, "Tilt Right" }
+#define WII_POINTER \
+    { ME_IN_RSTICK_UP,   "Pointer Up" },   { ME_IN_RSTICK_DOWN,  "Pointer Down" }, \
+    { ME_IN_RSTICK_LEFT, "Pointer Left" }, { ME_IN_RSTICK_RIGHT, "Pointer Right" }
+static const row k_wii_remote_rows[] = {
+    DPAD, { ME_IN_A, "A" }, { ME_IN_B, "B" }, { ME_IN_X, "1" }, { ME_IN_Y, "2" },
+    { ME_IN_START, "+" }, { ME_IN_BACK, "-" }, { ME_IN_RSTICK, "Home" }, { ME_IN_RT, "Shake" },
+    WII_TILT, WII_POINTER, END
+};
+/* A on Xbox A, the B trigger underneath on the right trigger (or RB), 1 and
+   2 on X and Y, a shake on B. */
+static const pad_default k_wii_remote_defaults[] = {
+    { ME_IN_A, { ME_XI_A }, 0 }, { ME_IN_B, { ME_XI_RT, ME_XI_RB }, 0 },
+    { ME_IN_X, { ME_XI_X }, 0 }, { ME_IN_Y, { ME_XI_Y }, 0 }, { ME_IN_RT, { ME_XI_B }, 0 },
+    DEFAULTS_END
+};
+/* Held like an NES pad: Dolphin turns the D-pad with it, and 1 and 2 are
+   the face buttons. */
+static const row k_wii_sideways_rows[] = {
+    DPAD, { ME_IN_B, "1" }, { ME_IN_A, "2" }, { ME_IN_X, "A" }, { ME_IN_Y, "B" },
+    { ME_IN_START, "+" }, { ME_IN_BACK, "-" }, { ME_IN_RSTICK, "Home" }, { ME_IN_RT, "Shake" },
+    WII_TILT, WII_POINTER, END
+};
+/* 2 (Mario Kart's accelerator, New Super Mario Bros.' jump) on Xbox A and 1
+   left of it on X; A on Y, the B trigger on the right trigger (or RB), a
+   shake on B. */
+static const pad_default k_wii_sideways_defaults[] = {
+    { ME_IN_A, { ME_XI_A }, 0 }, { ME_IN_B, { ME_XI_X }, 0 },
+    { ME_IN_X, { ME_XI_Y }, 0 }, { ME_IN_Y, { ME_XI_RT, ME_XI_RB }, 0 }, { ME_IN_RT, { ME_XI_B }, 0 },
+    DEFAULTS_END
+};
+static const row k_wii_nunchuk_rows[] = {
+    DPAD, { ME_IN_A, "A" }, { ME_IN_B, "B" }, { ME_IN_X, "C" }, { ME_IN_Y, "Z" },
+    { ME_IN_RB, "+" }, { ME_IN_LB, "-" }, { ME_IN_START, "1" }, { ME_IN_BACK, "2" },
+    { ME_IN_RSTICK, "Home" }, { ME_IN_RT, "Shake Wii Remote" }, { ME_IN_LT, "Shake Nunchuk" },
+    { ME_IN_LSTICK_UP,   "Nunchuk Stick Up" },   { ME_IN_LSTICK_DOWN,  "Nunchuk Stick Down" },
+    { ME_IN_LSTICK_LEFT, "Nunchuk Stick Left" }, { ME_IN_LSTICK_RIGHT, "Nunchuk Stick Right" },
+    WII_POINTER, END
+};
+/* The remote in the right hand (A on Xbox A, B trigger on the right
+   trigger, a shake on B), the Nunchuk in the left (Z trigger on the left
+   trigger, C on LB); + and - on Start and Back, 1 and 2 on X and Y, a
+   Nunchuk shake on RB. */
+static const pad_default k_wii_nunchuk_defaults[] = {
+    { ME_IN_A, { ME_XI_A }, 0 },  { ME_IN_B, { ME_XI_RT }, 0 },
+    { ME_IN_X, { ME_XI_LB }, 0 }, { ME_IN_Y, { ME_XI_LT }, 0 },
+    { ME_IN_RB, { ME_XI_START }, VK_RETURN }, { ME_IN_LB, { ME_XI_BACK }, VK_RSHIFT },
+    { ME_IN_START, { ME_XI_X }, 'Q' }, { ME_IN_BACK, { ME_XI_Y }, 'W' },
+    { ME_IN_RT, { ME_XI_B }, 0 }, { ME_IN_LT, { ME_XI_RB }, 0 },
+    DEFAULTS_END
+};
+/* The Classic Controller is laid out like the RetroPad (and a SNES pad), so
+   universal fits it. L and R are its analog triggers, ZL and ZR the
+   buttons above them; the Pro has them the other way up. */
+#define WII_CLASSIC_STICKS \
+    { ME_IN_LSTICK_UP,   "Left Stick Up" },    { ME_IN_LSTICK_DOWN,  "Left Stick Down" }, \
+    { ME_IN_LSTICK_LEFT, "Left Stick Left" },  { ME_IN_LSTICK_RIGHT, "Left Stick Right" }, \
+    { ME_IN_RSTICK_UP,   "Right Stick Up" },   { ME_IN_RSTICK_DOWN,  "Right Stick Down" }, \
+    { ME_IN_RSTICK_LEFT, "Right Stick Left" }, { ME_IN_RSTICK_RIGHT, "Right Stick Right" }
+static const row k_wii_classic_rows[] = {
+    DPAD, { ME_IN_A, "A" }, { ME_IN_B, "B" }, { ME_IN_X, "X" }, { ME_IN_Y, "Y" },
+    { ME_IN_LT, "L" }, { ME_IN_RT, "R" }, { ME_IN_LB, "ZL" }, { ME_IN_RB, "ZR" },
+    { ME_IN_START, "+" }, { ME_IN_BACK, "-" }, { ME_IN_RSTICK, "Home" },
+    WII_CLASSIC_STICKS, END
+};
+static const row k_wii_classic_pro_rows[] = {
+    DPAD, { ME_IN_A, "A" }, { ME_IN_B, "B" }, { ME_IN_X, "X" }, { ME_IN_Y, "Y" },
+    { ME_IN_LB, "L" }, { ME_IN_RB, "R" }, { ME_IN_LT, "ZL" }, { ME_IN_RT, "ZR" },
+    { ME_IN_START, "+" }, { ME_IN_BACK, "-" }, { ME_IN_RSTICK, "Home" },
+    WII_CLASSIC_STICKS, END
 };
 
 /* Sega. Genesis Plus GX, PicoDrive and ClownMDEmu share one 6-button
@@ -252,7 +342,28 @@ static const console k_gbc      = { "gbc",      "Game Boy Color",    k_nes_rows,
 static const console k_gba      = { "gba",      "Game Boy Advance",  k_gba_rows,      k_two_buttons };
 static const console k_nds      = { "nds",      "Nintendo DS",       k_snes_rows,     NULL };
 static const console k_n64      = { "n64",      "Nintendo 64",       k_n64_rows,      k_n64_defaults };
-static const console k_gamecube = { "gamecube", "GameCube",          NULL,            k_gamecube_defaults };
+static const console k_gamecube = { "gamecube", "GameCube",          k_gamecube_rows, k_gamecube_defaults };
+static const console k_wii_remote   = { "wii_remote",   "Wii Remote",            k_wii_remote_rows,
+                                        k_wii_remote_defaults };
+static const console k_wii_sideways = { "wii_sideways", "Wii Remote (sideways)", k_wii_sideways_rows,
+                                        k_wii_sideways_defaults };
+static const console k_wii_nunchuk  = { "wii_nunchuk",  "Wii Remote + Nunchuk",  k_wii_nunchuk_rows,
+                                        k_wii_nunchuk_defaults };
+static const console k_wii_classic  = { "wii_classic",  "Classic Controller",    k_wii_classic_rows, NULL };
+static const console k_wii_classic_pro = { "wii_classic_pro", "Classic Controller Pro",
+                                           k_wii_classic_pro_rows, NULL };
+
+/* The controllers a player can pick for a console's games (rom_cores.h
+   me_controller), by key, and whose games the dialogs say their maps are
+   for. */
+static const struct {
+    const console *c;
+    const char    *games;
+} k_controllers[] = {
+    { &k_gamecube, "GameCube / Wii" },
+    { &k_wii_remote, "Wii" }, { &k_wii_sideways, "Wii" }, { &k_wii_nunchuk, "Wii" },
+    { &k_wii_classic, "Wii" }, { &k_wii_classic_pro, "Wii" },
+};
 static const console k_vb       = { "vb",       "Virtual Boy",       k_vb_rows,       k_vb_defaults };
 static const console k_pokemini = { "pokemini", "Pokemon Mini",      k_pokemini_rows, k_two_buttons };
 static const console k_md       = { "md",       "Mega Drive / Genesis", k_md_rows,    NULL };
@@ -412,6 +523,23 @@ static void set_defaults(me_input_layout *l, const pad_default *d) {
     }
 }
 
+/* Give `out` (every input, so far) console `c`'s key, defaults and, if it
+   lists them, its rows. `games`: whose games the dialogs say the map is
+   for, NULL for `c`'s. Returns 1 for a curated layout. */
+static int apply_console(const console *c, const char *games, me_input_layout *out) {
+    snprintf(out->key, sizeof(out->key), "%s", c->key);
+    snprintf(out->console, sizeof(out->console), "%s", games ? games : c->name);
+    set_defaults(out, c->defaults);
+    if (!c->rows) return 0;
+    out->curated = 1;
+    snprintf(out->name, sizeof(out->name), "%s", c->name);
+    out->n = 0;
+    out->live = out->advanced = 0;
+    memset(out->labels, 0, sizeof(out->labels));
+    for (const row *r = c->rows; r->label; r++) add_row(out, r->id, r->label, 0);
+    return 1;
+}
+
 int me_layout_for_game(const char *library_name, const char *rom_path,
                        const char *console_id, const char *console_name, int stick,
                        me_input_layout *out) {
@@ -424,19 +552,17 @@ int me_layout_for_game(const char *library_name, const char *rom_path,
     for (size_t i = 0; i < sizeof(k_rules) / sizeof(k_rules[0]); i++) {
         if (k_rules[i].cores && !in_list(k_rules[i].cores, lib, 1)) continue;
         if (k_rules[i].exts  && !in_list(k_rules[i].exts,  ext, 0)) continue;
-        const console *c = k_rules[i].c;
-        if (!c) return 0;
-        snprintf(out->key, sizeof(out->key), "%s", c->key);
-        snprintf(out->console, sizeof(out->console), "%s", c->name);
-        set_defaults(out, c->defaults);
-        if (!c->rows) return 0;
-        out->curated = 1;
-        snprintf(out->name, sizeof(out->name), "%s", c->name);
-        out->n = 0;
-        out->live = out->advanced = 0;
-        memset(out->labels, 0, sizeof(out->labels));
-        for (const row *r = c->rows; r->label; r++) add_row(out, r->id, r->label, 0);
-        return 1;
+        return k_rules[i].c ? apply_console(k_rules[i].c, NULL, out) : 0;
+    }
+    return 0;
+}
+
+int me_layout_for_controller(const char *key, int stick, me_input_layout *out) {
+    for (size_t i = 0; key && i < sizeof(k_controllers) / sizeof(k_controllers[0]); i++) {
+        if (_stricmp(k_controllers[i].c->key, key) != 0) continue;
+        me_layout_unknown(out);
+        out->stick = stick;
+        return apply_console(k_controllers[i].c, k_controllers[i].games, out);
     }
     return 0;
 }

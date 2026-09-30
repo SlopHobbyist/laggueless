@@ -26,6 +26,8 @@ typedef enum {
     ME_CMD_FRAME_GEN,   /* arg: 1 = on, 0 = off */
     ME_CMD_ADAPTER,     /* the running console's adapter changed in the live
                            settings; plug it into the core */
+    ME_CMD_CONTROLLER,  /* the running console's controller changed in the
+                           live settings; plug it into every port */
 } me_cmd_type;
 
 #define ME_LOAD_ASK (-1)
@@ -78,6 +80,9 @@ typedef struct {
     int      console;
     unsigned adapters_usable;
     int      adapter;
+    /* The same for the console's controllers (-1 = the core's own). */
+    unsigned controllers_usable;
+    int      controller;
 } me_app_status;
 
 void me_status_set(const me_app_status *s);

@@ -753,6 +753,18 @@ static void load_document(yaml_document_t *doc, yaml_node_t *root, me_settings *
         }
     }
 
+    /* console -> controller its games are played with */
+    yaml_node_t *cn = map_get(doc, root, "console_controllers");
+    if (cn && cn->type == YAML_MAPPING_NODE) {
+        out->console_controllers_n = 0;
+        for (yaml_node_pair_t *p = cn->data.mapping.pairs.start;
+             p < cn->data.mapping.pairs.top; p++) {
+            const char *console = scalar_str(doc_get(doc, p->key));
+            const char *controller = scalar_str(doc_get(doc, p->value));
+            if (console && *console) me_settings_set_console_controller(out, console, controller);
+        }
+    }
+
     /* recent ROMs */
     yaml_node_t *recent = map_get(doc, root, "recent");
     if (recent && recent->type == YAML_SEQUENCE_NODE) {
@@ -1019,6 +1031,17 @@ int me_settings_save(const char *path, const me_settings *s) {
         fputc('\n', f);
     }
 
+    fprintf(f, "\nconsole_controllers:");
+    if (s->console_controllers_n == 0) fprintf(f, " {}");
+    fputc('\n', f);
+    for (int i = 0; i < s->console_controllers_n; i++) {
+        fprintf(f, "  ");
+        write_quoted(f, s->console_controllers[i].console);
+        fprintf(f, ": ");
+        write_quoted(f, s->console_controllers[i].controller);
+        fputc('\n', f);
+    }
+
     fprintf(f, "\nrecent:");
     if (s->recent_n == 0) fprintf(f, " []");
     fputc('\n', f);
@@ -1262,4 +1285,34 @@ void me_settings_set_console_adapter(me_settings *s, const char *console, const 
         snprintf(s->console_adapters[i].console, sizeof(s->console_adapters[i].console), "%s", console);
     }
     snprintf(s->console_adapters[i].adapter, sizeof(s->console_adapters[i].adapter), "%s", adapter);
+}
+
+static int console_controller_index(const me_settings *s, const char *console) {
+    for (int i = 0; i < s->console_controllers_n; i++)
+        if (iequals(s->console_controllers[i].console, console)) return i;
+    return -1;
+}
+
+const char *me_settings_console_controller(const me_settings *s, const char *console) {
+    int i = console_controller_index(s, console);
+    return i >= 0 ? s->console_controllers[i].controller : NULL;
+}
+
+void me_settings_set_console_controller(me_settings *s, const char *console, const char *controller) {
+    int i = console_controller_index(s, console);
+    if (!controller || !*controller) {
+        if (i < 0) return;
+        memmove(&s->console_controllers[i], &s->console_controllers[i + 1],
+                (size_t)(s->console_controllers_n - i - 1) * sizeof(s->console_controllers[0]));
+        s->console_controllers_n--;
+        return;
+    }
+    if (i < 0) {
+        if (s->console_controllers_n >= ME_CONSOLE_CORES_MAX) return;
+        i = s->console_controllers_n++;
+        snprintf(s->console_controllers[i].console, sizeof(s->console_controllers[i].console), "%s",
+                 console);
+    }
+    snprintf(s->console_controllers[i].controller, sizeof(s->console_controllers[i].controller), "%s",
+             controller);
 }

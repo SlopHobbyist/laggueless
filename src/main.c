@@ -385,13 +385,18 @@ static int desc_matches(const char *desc, const char *names) {
     return 0;
 }
 
-/* The core's device for adapter `a` on `port`, or 0 (RETRO_DEVICE_NONE)
-   if it has none. */
-static unsigned adapter_device(const me_adapter *a, int port) {
+/* The core's first device on `port` named any of `names` (as desc_matches),
+   or 0 (RETRO_DEVICE_NONE) if it has none. */
+static unsigned core_device(const char *names, int port) {
     if (port >= ME_CI_PORTS) return 0;
     for (int t = 0; t < g_ci_n[port]; t++)
-        if (desc_matches(g_ci[port][t].desc, a->devices)) return g_ci[port][t].id;
+        if (desc_matches(g_ci[port][t].desc, names)) return g_ci[port][t].id;
     return 0;
+}
+
+/* The core's device for adapter `a` on `port`, or 0 if it has none. */
+static unsigned adapter_device(const me_adapter *a, int port) {
+    return core_device(a->devices, port);
 }
 
 static int adapter_usable(const me_core *core, const me_adapter *a) {
@@ -402,14 +407,78 @@ static int adapter_usable(const me_core *core, const me_adapter *a) {
     return 1;
 }
 
-/* Plug a gamepad into each port the core described, as RetroArch does once a
-   game is loaded: some cores (Dolphin) set a port's controller up only when
-   told what's in it, and never read input otherwise. Cores that describe no
-   ports keep their own defaults. The adapter, if any, goes in after. */
+/* The controller in every port (rom_cores.h me_controller: the Wii's
+   Classic Controller...), or NULL for a gamepad. Emulation thread only. */
+static const me_controller *g_controller;
+
+static int controller_usable(const me_core *core, const me_controller *ctl) {
+    return core && core->retro_set_controller_port_device && core_device(ctl->devices, 0);
+}
+
+/* Bit per controller in console `c`'s list the core can use. */
+static unsigned controllers_usable(const me_core *core, const me_console *c) {
+    const me_controller *list = me_console_controllers(c);
+    unsigned bits = 0;
+    for (int i = 0; list && list[i].id && i < 32; i++)
+        if (controller_usable(core, &list[i])) bits |= 1u << i;
+    return bits;
+}
+
+/* The controller the settings pick for the running console, or NULL when
+   the core offers no choice (Dolphin running a GameCube game has only the
+   GameCube controller). A pick the core lacks falls back to the first it
+   has. */
+static const me_controller *pick_controller(const me_core *core) {
+    const me_console *c = me_console_at(g_console);
+    unsigned usable = controllers_usable(core, c);
+    if ((usable & (usable - 1)) == 0) return NULL;   /* fewer than two */
+    me_settings_lock();
+    int i = me_console_controller(c, me_settings_console_controller(&g_settings, c->id));    me_settings_unlock();
+    if (!(usable >> i & 1u))
+        for (i = 0; !(usable >> i & 1u); i++) {}
+    return &me_console_controllers(c)[i];
+}
+
+/* What port `p` gets while no adapter has it. */
+static unsigned port_device(int p) {
+    unsigned d = g_controller ? core_device(g_controller->devices, p) : 0;
+    return d ? d : RETRO_DEVICE_JOYPAD;
+}
+
+/* The controller's own buttons, in place of the console's. */
+static void set_controller_layout(void) {
+    const me_console *c = me_console_at(g_console);
+    me_input_layout l;
+    if (g_controller &&
+        me_layout_for_controller(g_controller->layout, c && (c->flags & ME_CONSOLE_ANALOG), &l)) {
+        set_input_layout(&l);
+        printf("[input] %s in every port (%d inputs)\n", g_controller->name, l.n);
+    }
+}
+
+/* Plug a gamepad (or the controller picked for the console) into each port
+   the core described, as RetroArch does once a game is loaded: some cores
+   (Dolphin) set a port's controller up only when told what's in it, and
+   never read input otherwise. Cores that describe no ports keep their own
+   defaults. The adapter, if any, goes in after. */
 static void plug_gamepads(me_core *core) {
     if (!core->retro_set_controller_port_device) return;
+    g_controller = pick_controller(core);
     for (int p = 0; p < g_ci_ports && p < ME_MAX_PLAYERS; p++)
-        core->retro_set_controller_port_device((unsigned)p, RETRO_DEVICE_JOYPAD);
+        core->retro_set_controller_port_device((unsigned)p, port_device(p));
+    set_controller_layout();
+}
+
+/* Plug in the controller the settings pick now, if it changed. Games notice
+   a controller swapped in or out as they would on the console. */
+static void apply_controller(me_core *core) {
+    const me_controller *was = g_controller;
+    g_controller = pick_controller(core);
+    if (g_controller == was) return;
+    for (int p = 0; p < g_ci_ports && p < ME_MAX_PLAYERS; p++)
+        if (!(g_adapter_ports >> p & 1u))
+            core->retro_set_controller_port_device((unsigned)p, port_device(p));
+    set_controller_layout();
 }
 
 /* Plug in (or unplug) the console's adapter as the settings say, and give
@@ -431,11 +500,11 @@ static void apply_adapter(me_core *core) {
     if (a != g_adapter) {
         for (int p = 0; p < 32; p++) {
             unsigned bit = 1u << p;
-            /* Ports the adapter leaves go back to the core's default device. */
+            /* Ports the adapter leaves get what the others have. */
             if (want & bit)
                 core->retro_set_controller_port_device((unsigned)p, adapter_device(a, p));
             else if (g_adapter_ports & bit)
-                core->retro_set_controller_port_device((unsigned)p, RETRO_DEVICE_JOYPAD);
+                core->retro_set_controller_port_device((unsigned)p, port_device(p));
         }
         g_adapter_ports = want;
         g_adapter = a;
@@ -1694,6 +1763,7 @@ static void session_reset_globals(void) {
     g_players = ME_MAX_PLAYERS;
     g_adapter = NULL;
     g_adapter_ports = 0;
+    g_controller = NULL;
     g_core_index = -1;
     memset(g_pad, 0, sizeof(g_pad));
     memset(g_analog, 0, sizeof(g_analog));
@@ -2554,6 +2624,7 @@ static void publish_status(const me_session *s) {
     st.players = ME_MAX_PLAYERS;
     st.console = -1;
     st.adapter = -1;
+    st.controller = -1;
     const me_console *c = s->active ? me_console_at(g_console) : NULL;
     if (c) {
         st.players = g_players;
@@ -2562,6 +2633,8 @@ static void publish_status(const me_session *s) {
             if (adapter_usable(s->core, &c->adapters[i])) st.adapters_usable |= 1u << i;
             if (g_adapter == &c->adapters[i]) st.adapter = i;
         }
+        st.controllers_usable = controllers_usable(s->core, c);
+        if (g_controller) st.controller = (int)(g_controller - me_console_controllers(c));
     }
     me_status_set(&st);
 }
@@ -2733,6 +2806,11 @@ static void run_command(me_session *s, const me_cmd *c) {
         case ME_CMD_ADAPTER:
             if (!s->active) return;
             apply_adapter(s->core);
+            publish_status(s);
+            return;
+        case ME_CMD_CONTROLLER:
+            if (!s->active) return;
+            apply_controller(s->core);
             publish_status(s);
             return;
     }

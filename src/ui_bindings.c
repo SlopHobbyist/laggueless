@@ -399,8 +399,11 @@ static void save(bind_dlg *d) {
 /* ---- dialog procedure ----------------------------------------------------- */
 static void create_controls(HWND dlg, bind_dlg *d) {
     char scope[240], shown[120] = "";
+    /* "the NES controller", but "the Classic Controller", "the Wii Remote". */
     if (!d->is_hotkeys && d->layout.curated)
-        snprintf(shown, sizeof(shown), " Showing the %s controller.", d->layout.name);
+        snprintf(shown, sizeof(shown), " Showing the %s%s.", d->layout.name,
+                 strstr(d->layout.name, "Controller") || strstr(d->layout.name, "Remote") ? ""
+                                                                                           : " controller");
     else if (!d->is_hotkeys && d->layout.name[0])
         snprintf(shown, sizeof(shown), " Showing the buttons %s uses.", d->layout.name);
     if (d->is_hotkeys)

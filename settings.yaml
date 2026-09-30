@@ -469,7 +469,10 @@ cores:
 # built-in defaults, and `lstick_as_dpad: true/false` per player where you
 # changed it for the console. Keys are console ids (nes, snes, n64, psx,
 # md...), some with a suffix for a core that lays the pad out its own way
-# (md_blastem, lynx_beetle). A core with use_universal: false above overrides this too.
+# (md_blastem, lynx_beetle), and the Wii's controllers have their own
+# (wii_classic, wii_classic_pro, wii_nunchuk, wii_sideways, wii_remote; a
+# GameCube controller on the Wii uses gamecube's). A core with
+# use_universal: false above overrides this too.
 console_controls: {}
 
 # Which core each console's games open in. Cores > Set Cores edits this.
@@ -483,6 +486,13 @@ console_cores: {}
 #   nes: four_score    snes: multitap    md: team_player or ea_4_way_play
 #   pce: turbotap      sgx: turbotap
 console_adapters: {}
+
+# What a console's games are played with, where it has a choice. Only Wii
+# games have one; they use a GameCube controller unless listed here. Controls
+# > Controller (while a Wii game is running) edits it. The Wii's choices
+# (under `gamecube`, the GameCube / Wii console):
+#   gamecube  classic  classic_pro  nunchuk  remote_sideways  remote
+console_controllers: {}
 
 # File > Open Recent (most recent first). Filled in as you play.
 recent: []

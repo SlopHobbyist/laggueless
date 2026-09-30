@@ -230,6 +230,15 @@ typedef struct {
     } console_adapters[ME_CONSOLE_CORES_MAX];
     int console_adapters_n;
 
+    /* Controls > Controller: what a console's games are played with (the
+       Wii's: GameCube controller, Classic Controller, Wii Remote...), by
+       controller id (rom_cores.h). Consoles not listed use their first. */
+    struct me_console_controller {
+        char console[32];
+        char controller[32];
+    } console_controllers[ME_CONSOLE_CORES_MAX];
+    int console_controllers_n;
+
     /* Recently played ROMs, most recent first, no duplicates. */
     char recent[ME_RECENT_MAX][260];
     int  recent_n;
@@ -314,6 +323,12 @@ const char *me_settings_console_adapter(const me_settings *s, const char *consol
 
 /* Plug an adapter in for a console; NULL or "" unplugs it. */
 void me_settings_set_console_adapter(me_settings *s, const char *console, const char *adapter);
+
+/* The controller id picked for a console id, or NULL for its first. */
+const char *me_settings_console_controller(const me_settings *s, const char *console);
+
+/* Pick a console's controller; NULL or "" goes back to its first. */
+void me_settings_set_console_controller(me_settings *s, const char *console, const char *controller);
 
 /* The console id picked for a ROM fingerprint, or NULL. */
 const char *me_settings_console_pick(const me_settings *s, const char *rom);

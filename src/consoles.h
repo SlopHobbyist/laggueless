@@ -63,6 +63,12 @@ int  me_layout_for_game(const char *library_name, const char *rom_path,
                         const char *console_id, const char *console_name, int stick,
                         me_input_layout *out);
 
+/* Layout for the controller a player picked for a console's games
+   (rom_cores.h me_controller), by its `layout` key; `stick` as above.
+   Returns 1 with a curated layout, or 0 (and `out` untouched) for a key
+   consoles.c doesn't have. */
+int  me_layout_for_controller(const char *key, int stick, me_input_layout *out);
+
 /* Layout from RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS (port 0 only), for
    cores with no curated layout. `core_name` is shown in the dialogs. The
    console key and defaults already in `out` are kept. */

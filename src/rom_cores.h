@@ -26,6 +26,16 @@ typedef struct {
                              adapter is always there, or set up in core options). */
 } me_adapter;
 
+/* A controller the console's games can be played with in place of its own
+   (the Wii's Classic Controller, a GameCube controller...), picked in
+   Controls > Controller. Every port gets it. */
+typedef struct {
+    const char *id;       /* settings.yaml value ("classic"); NULL ends a list */
+    const char *name;     /* Controls menu ("Classic Controller") */
+    const char *devices;  /* as me_adapter's; a core with none can't use it */
+    const char *layout;   /* its controller's key in consoles.c ("wii_classic") */
+} me_controller;
+
 typedef struct {
     const char *id;     /* settings.yaml key ("nes") */
     const char *name;   /* shown in Cores > Set Cores ("NES / Famicom") */
@@ -83,6 +93,14 @@ int me_rom_fingerprint(const char *rom_path, char *out, size_t out_sz);
 
 /* The console's adapter with this id, or NULL. */
 const me_adapter *me_console_adapter(const me_console *c, const char *id);
+
+/* The controllers the console's games can be played with: NULL, or a list
+   ended by a NULL id whose first is the default. */
+const me_controller *me_console_controllers(const me_console *c);
+
+/* Index in the console's controller list of the one with this id, or 0
+   (the default) if none has it. -1 if the console has no list. */
+int me_console_controller(const me_console *c, const char *id);
 
 /* The console's `i`th candidate core as a DLL filename. Returns 0 past the
    last one. */
