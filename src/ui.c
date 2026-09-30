@@ -42,6 +42,8 @@ enum {
     IDM_SCREEN_TOP = 170,     /* View > Screen, in me_screens order from here */
     IDM_SCREEN_BOTTOM,
     IDM_SCREEN_BOTH,
+    IDM_SCREEN_SWAP,          /* the Swap Screens and Both Screens hotkeys */
+    IDM_SCREEN_BOTH_TOGGLE,
     IDM_ASPECT_1_1 = 180,     /* View > Aspect Ratio, in me_aspect_mode order */
     IDM_ASPECT_4_3,
     IDM_ASPECT_16_9,
@@ -91,6 +93,9 @@ HMENU me_ui_create_menu(void) {
     AppendMenuA(g_screen_menu, MF_STRING, IDM_SCREEN_TOP,    "&Top Screen");
     AppendMenuA(g_screen_menu, MF_STRING, IDM_SCREEN_BOTTOM, "&Bottom Screen");
     AppendMenuA(g_screen_menu, MF_STRING, IDM_SCREEN_BOTH,   "B&oth");
+    AppendMenuA(g_screen_menu, MF_SEPARATOR, 0, NULL);
+    AppendMenuA(g_screen_menu, MF_STRING, IDM_SCREEN_SWAP,        "&Swap Screens");
+    AppendMenuA(g_screen_menu, MF_STRING, IDM_SCREEN_BOTH_TOGGLE, "Both Scr&eens");
     g_aspect_menu = CreatePopupMenu();
     AppendMenuA(g_aspect_menu, MF_STRING, IDM_ASPECT_1_1,  "&1:1 (Square Pixels)");
     AppendMenuA(g_aspect_menu, MF_STRING, IDM_ASPECT_4_3,  "&4:3");
@@ -595,6 +600,10 @@ static void refresh_menu(HMENU m) {
         const me_console *c = me_console_at(st.console);
         UINT on = (!st.game_running || (c && (c->flags & ME_CONSOLE_TWO_SCREENS))) ? MF_ENABLED : MF_GRAYED;
         for (int i = 0; i < 3; i++) EnableMenuItem(m, k_screen_ids[i], MF_BYCOMMAND | on);
+        set_hotkey_item(m, IDM_SCREEN_SWAP, "&Swap Screens", ME_HK_SWAP_SCREENS);
+        set_hotkey_item(m, IDM_SCREEN_BOTH_TOGGLE, "Both Scr&eens", ME_HK_TOGGLE_BOTH_SCREENS);
+        EnableMenuItem(m, IDM_SCREEN_SWAP, MF_BYCOMMAND | on);
+        EnableMenuItem(m, IDM_SCREEN_BOTH_TOGGLE, MF_BYCOMMAND | on);
         CheckMenuRadioItem(m, IDM_SCREEN_TOP, IDM_SCREEN_BOTH,
                            k_screen_ids[(unsigned)s->screens <= 2 ? s->screens : 0], MF_BYCOMMAND);
     } else if (m == g_aspect_menu) {
@@ -686,11 +695,16 @@ static void on_command(HWND h, UINT id) {
         case IDM_FRAME_GEN:  me_cmd_post(ME_CMD_FRAME_GEN, !s->lsfg_enabled, NULL); break;
         case IDM_SCREEN_TOP:
         case IDM_SCREEN_BOTTOM:
-        case IDM_SCREEN_BOTH: {
+        case IDM_SCREEN_BOTH:
+        case IDM_SCREEN_SWAP:
+        case IDM_SCREEN_BOTH_TOGGLE: {
             /* The emulation thread reads it at the next present. */
             me_screens v = id == IDM_SCREEN_TOP    ? ME_SCREENS_TOP
-                         : id == IDM_SCREEN_BOTTOM ? ME_SCREENS_BOTTOM : ME_SCREENS_BOTH;
-            s->screens = v;
+                         : id == IDM_SCREEN_BOTTOM ? ME_SCREENS_BOTTOM
+                         : id == IDM_SCREEN_SWAP   ? me_screens_swapped(s)
+                         : id == IDM_SCREEN_BOTH_TOGGLE ? me_screens_both_toggled(s)
+                                                   : ME_SCREENS_BOTH;
+            me_settings_set_screens(s, v);
             me_ui_persist(patch_screens, &v);
             break;
         }

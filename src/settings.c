@@ -319,6 +319,8 @@ static const struct { const char *name; const char *label; } g_hotkey_names[ME_H
     [ME_HK_EXIT_FULLSCREEN]   = { "exit_fullscreen",    "Exit Fullscreen"    },
     [ME_HK_QUIT]              = { "quit",               "Quit"               },
     [ME_HK_HARD_RESET]        = { "hard_reset",         "Hard Reset"         },
+    [ME_HK_SWAP_SCREENS]      = { "swap_screens",       "Swap Screens"       },
+    [ME_HK_TOGGLE_BOTH_SCREENS] = { "both_screens",     "Both Screens"       },
 };
 
 const char *me_hotkey_label(me_hotkey_id id) {
@@ -350,6 +352,7 @@ static int clamp_slot(int v) {
 void me_settings_defaults(me_settings *out) {
     memset(out, 0, sizeof(*out));
     out->aspect = ME_ASPECT_1_1;
+    out->single_screen = ME_SCREENS_TOP;
     out->force_vulkan     = 1;
     out->vk_no_vsync      = 1;
     out->vk_exclusive_fullscreen = 1;
@@ -504,6 +507,24 @@ static me_screens parse_screens(const char *s, me_screens defv) {
     return defv;
 }
 
+void me_settings_set_screens(me_settings *s, me_screens v) {
+    s->screens = v;
+    if (v == ME_SCREENS_TOP || v == ME_SCREENS_BOTTOM) s->single_screen = v;
+}
+
+static me_screens other_screen(me_screens v) {
+    return v == ME_SCREENS_BOTTOM ? ME_SCREENS_TOP : ME_SCREENS_BOTTOM;
+}
+
+me_screens me_screens_swapped(const me_settings *s) {
+    return other_screen(s->screens == ME_SCREENS_BOTH ? s->single_screen : s->screens);
+}
+
+me_screens me_screens_both_toggled(const me_settings *s) {
+    if (s->screens != ME_SCREENS_BOTH) return ME_SCREENS_BOTH;
+    return s->single_screen == ME_SCREENS_BOTTOM ? ME_SCREENS_BOTTOM : ME_SCREENS_TOP;
+}
+
 static me_aspect_mode parse_aspect(const char *s, me_aspect_mode defv) {
     if (!s) return defv;
     if (strcmp(s, "1:1") == 0)  return ME_ASPECT_1_1;
@@ -577,6 +598,7 @@ static void load_document(yaml_document_t *doc, yaml_node_t *root, me_settings *
                                                 out->fullscreen_on_launch);
         out->aspect      = parse_aspect(scalar_str(map_get(doc, video, "aspect")), out->aspect);
         out->screens     = parse_screens(scalar_str(map_get(doc, video, "screens")), out->screens);
+        if (out->screens != ME_SCREENS_BOTH) out->single_screen = out->screens;
         out->force_gdi   = scalar_bool(map_get(doc, video, "force_gdi"),   out->force_gdi);
         out->force_d3d11 = scalar_bool(map_get(doc, video, "force_d3d11"), out->force_d3d11);
         out->force_vulkan = scalar_bool(map_get(doc, video, "force_vulkan"), out->force_vulkan);

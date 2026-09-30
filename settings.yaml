@@ -134,6 +134,14 @@ hotkeys:
   hard_reset:
     keyboard:   Ctrl+R
     controller: None
+  # DS / 3DS (View > Screen). Swap Screens flips between the top and bottom
+  # screen alone; Both Screens flips between both and the last one alone.
+  swap_screens:
+    keyboard:   []
+    controller: None
+  both_screens:
+    keyboard:   []
+    controller: None
 
 # Controls
 # ---------

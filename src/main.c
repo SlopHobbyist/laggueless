@@ -2424,6 +2424,20 @@ static void handle_hotkeys(void) {
     }
     if (fire[ME_HK_QUIT])       me_platform_request_quit();
     if (fire[ME_HK_HARD_RESET]) me_cmd_post(ME_CMD_HARD_RESET, 0, NULL);
+    if (fire[ME_HK_SWAP_SCREENS] || fire[ME_HK_TOGGLE_BOTH_SCREENS]) {
+        /* Like View > Screen: only two-screen consoles have a choice, and
+           with no game the pick is kept for the next one. Not saved, like
+           F1's aspect. */
+        const me_console *c = me_console_at(g_console);
+        if (!c || (c->flags & ME_CONSOLE_TWO_SCREENS)) {
+            if (fire[ME_HK_SWAP_SCREENS])
+                me_settings_set_screens(&g_settings, me_screens_swapped(&g_settings));
+            if (fire[ME_HK_TOGGLE_BOTH_SCREENS])
+                me_settings_set_screens(&g_settings, me_screens_both_toggled(&g_settings));
+            printf("[screens] %s\n", g_settings.screens == ME_SCREENS_TOP    ? "top"
+                                   : g_settings.screens == ME_SCREENS_BOTTOM ? "bottom" : "both");
+        }
+    }
 }
 
 /* When frame `n` is due, in ms after qstart. */

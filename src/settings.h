@@ -86,6 +86,8 @@ typedef enum {
     ME_HK_EXIT_FULLSCREEN,
     ME_HK_QUIT,
     ME_HK_HARD_RESET,
+    ME_HK_SWAP_SCREENS,        /* two-screen consoles: top <-> bottom */
+    ME_HK_TOGGLE_BOTH_SCREENS, /* two-screen consoles: both <-> single_screen */
     ME_HK_COUNT
 } me_hotkey_id;
 
@@ -117,6 +119,10 @@ typedef struct {
     int fullscreen_on_launch;
     me_aspect_mode aspect;
     me_screens screens;
+    /* The one screen (top or bottom) shown last, which Both Screens goes
+       back to. Not saved: it starts as `screens` when that's one screen,
+       else top. me_settings_set_screens keeps it. */
+    me_screens single_screen;
     int force_gdi;
     int force_d3d11;
     int force_vulkan;       /* use the Vulkan present path */
@@ -340,6 +346,16 @@ const char *me_settings_console_pick(const me_settings *s, const char *rom);
 /* Remember `console` for a ROM fingerprint, as the most recent pick (the
    oldest goes past ME_CONSOLE_PICKS_MAX); NULL or "" forgets it. */
 void me_settings_set_console_pick(me_settings *s, const char *rom, const char *console);
+
+/* View > Screen: show `v`, remembering it as single_screen when it's one
+   screen. */
+void me_settings_set_screens(me_settings *s, me_screens v);
+/* What the Swap Screens hotkey shows next: the other screen, or from both,
+   the one that isn't single_screen. */
+me_screens me_screens_swapped(const me_settings *s);
+/* What the Both Screens hotkey shows next: both, or from both,
+   single_screen. */
+me_screens me_screens_both_toggled(const me_settings *s);
 
 /* Display names for the binding dialogs. */
 const char *me_input_label(me_input_id id);
