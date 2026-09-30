@@ -25,6 +25,14 @@ You can grab the latest version on the [Releases Page](https://github.com/SlopHo
 
 `NES` `SNES` `Game Boy` `Game Boy Color` `Game Boy Advance` `DS` `3DS` `N64` `GameCube` `Wii` `Virtual Boy` `Pokemon Mini` `Genesis` `32X` `Master System` `Game Gear` `SG-1000` `Dreamcast` `TurboGrafx-16`, `SuperGrafx` `PS1` `PSP` `Atari 2600` `Atari 5200` `Atari 7800` `Atari Lynx` `Atari Jaguar` `Neo Geo Pocket` `Neo Geo Pocket Color` `WonderSwan` `WonderSwan Color` `ColecoVision` `Intellivision` `Vectrex` `MSX`
 
+### Firmware
+*Some consoles require additional firmware files in order for them to boot.*
+*These do not come with Laggueless.*
+
+PlayStation: `scph5501.bin`
+ColecoVision: `colecovision.rom`
+Intellivision: `exec.bin` and `grom.bin`
+
 ## Speedrunning
 Laggueless deliberately **does not** support the following, so it can be used in many speedrun leaderboards and competitions.
 Obviously check with your organizers first before using.
