@@ -40,6 +40,7 @@ enum {
     IDC_LSTICK_DPAD,
     IDC_RUMBLE,
     IDC_PLAYS_WITH,
+    IDC_SLOT_TYPE,
 };
 
 #define CAPTURE_TIMER     1
@@ -86,7 +87,7 @@ typedef struct {
     unsigned cap_xi_chord;        /* hotkeys: buttons pressed so far */
     unsigned last_vk;             /* last key captured (to ignore its Esc) */
 
-    HWND list, hint, slot_combo, adv_check, ctl_combo;
+    HWND list, hint, type_combo, slot_combo, adv_check, ctl_combo;
 } bind_dlg;
 
 /* ---- list contents -------------------------------------------------------- */
@@ -143,6 +144,12 @@ static void build_rows(bind_dlg *d) {
     }
 }
 
+/* The type combo's pick and the number combo's, from d->slot. */
+static void select_slot(bind_dlg *d) {
+    SendMessageA(d->type_combo, CB_SETCURSEL, (WPARAM)(d->slot / ME_PAD_PER_TYPE), 0);
+    SendMessageA(d->slot_combo, CB_SETCURSEL, (WPARAM)(d->slot % ME_PAD_PER_TYPE), 0);
+}
+
 static void refresh_all(HWND dlg, bind_dlg *d) {
     if (!d->is_hotkeys) build_rows(d);
     SendMessageA(d->list, LVM_DELETEALLITEMS, 0, 0);
@@ -159,7 +166,7 @@ static void refresh_all(HWND dlg, bind_dlg *d) {
     CheckRadioButton(dlg, IDC_SRC_BOTH, IDC_SRC_CONTROLLER,
                      d->source == ME_SRC_KEYBOARD   ? IDC_SRC_KEYBOARD
                    : d->source == ME_SRC_CONTROLLER ? IDC_SRC_CONTROLLER : IDC_SRC_BOTH);
-    SendMessageA(d->slot_combo, CB_SETCURSEL, (WPARAM)d->slot, 0);
+    select_slot(d);
 }
 
 static void set_hint(bind_dlg *d, const char *text) {
@@ -175,18 +182,20 @@ static void idle_hint(bind_dlg *d) {
         : "Click a binding to change it; right-click to clear it.");
 }
 
-/* "Controller 2 (Pro Controller)", "Controller 3 (not connected)" etc.
-   Probing an empty slot is slow-ish, which is fine here on the UI thread. */
+/* The chosen type's pads: "1 (Pro Controller)", "2 (not connected)" etc.
+   Probing an empty XInput slot is slow-ish, which is fine here on the UI
+   thread. */
 static void fill_slot_combo(bind_dlg *d) {
     SendMessageA(d->slot_combo, CB_RESETCONTENT, 0, 0);
-    for (int i = 0; i < ME_XI_SLOTS; i++) {
+    int first = ME_PAD_SLOT(d->slot / ME_PAD_PER_TYPE, 0);
+    for (int n = 0; n < ME_PAD_PER_TYPE; n++) {
         char name[64], label[96];
-        int connected = me_xinput_name(i, name, sizeof(name));
-        snprintf(label, sizeof(label), "Controller %d (%s)", i + 1,
+        int connected = me_xinput_name(first + n, name, sizeof(name));
+        snprintf(label, sizeof(label), "%d (%s)", n + 1,
                  connected ? name : "not connected");
         SendMessageA(d->slot_combo, CB_ADDSTRING, 0, (LPARAM)label);
     }
-    SendMessageA(d->slot_combo, CB_SETCURSEL, (WPARAM)d->slot, 0);
+    select_slot(d);
 }
 
 /* ---- capture -------------------------------------------------------------- */
@@ -233,9 +242,10 @@ static void begin_capture(HWND dlg, bind_dlg *d, int row, int col) {
         int connected = 0;
         me_xinput_read(d->slot, &connected);
         set_cell(d->list, row, col, "Press a button...");
-        snprintf(label, sizeof(label), "%s %s on Controller %d.%s Click the cell again to cancel.",
+        snprintf(label, sizeof(label), "%s %s on %s controller %d.%s Click the cell again to cancel.",
                  d->is_hotkeys ? "Press the button(s) for" : "Press a button for", name,
-                 d->slot + 1, connected ? "" : " (not connected)");
+                 me_pad_type_label(d->slot / ME_PAD_PER_TYPE), d->slot % ME_PAD_PER_TYPE + 1,
+                 connected ? "" : " (not connected)");
     }
     set_hint(d, label);
     /* Keep Space/Enter away from the buttons while capturing. */
@@ -484,11 +494,17 @@ static void create_controls(HWND dlg, bind_dlg *d) {
     me_ui_add_control(dlg, "BUTTON", "Controller only", BS_AUTORADIOBUTTON, 233, 22, 80, 11, IDC_SRC_CONTROLLER);
 
     me_ui_add_control(dlg, "STATIC", "Controller:", SS_LEFT, 7, 40, 40, 10, 0);
-    d->slot_combo = me_ui_add_control(dlg, "COMBOBOX", "", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP | WS_GROUP,
-                                50, 38, 130, 120, IDC_SLOT);
+    /* Type, then which of that type's pads, so a pad plugged in later is
+       easy to tell apart from the rest. */
+    d->type_combo = me_ui_add_control(dlg, "COMBOBOX", "", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP | WS_GROUP,
+                                      50, 38, 58, 80, IDC_SLOT_TYPE);
+    for (int t = 0; t < ME_PAD_TYPES; t++)
+        SendMessageA(d->type_combo, CB_ADDSTRING, 0, (LPARAM)me_pad_type_label(t));
+    d->slot_combo = me_ui_add_control(dlg, "COMBOBOX", "", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP,
+                                111, 38, 100, 80, IDC_SLOT);
     /* Pad names can be long ("Nintendo Switch Pro Controller"): the list
        opens wider than the box. */
-    RECT drop = { 0, 0, 250, 0 };
+    RECT drop = { 0, 0, 200, 0 };
     MapDialogRect(dlg, &drop);
     SendMessageA(d->slot_combo, CB_SETDROPPEDWIDTH, (WPARAM)drop.right, 0);
     fill_slot_combo(d);
@@ -498,7 +514,7 @@ static void create_controls(HWND dlg, bind_dlg *d) {
     if (!d->is_hotkeys) {
         /* Greyed out when the running core offers nothing extra. */
         d->adv_check = me_ui_add_control(dlg, "BUTTON", "Show advanced inputs",
-                                   BS_AUTOCHECKBOX | WS_TABSTOP | WS_GROUP, 193, 39, 120, 11, IDC_ADVANCED);
+                                   BS_AUTOCHECKBOX | WS_TABSTOP | WS_GROUP, 216, 39, 97, 11, IDC_ADVANCED);
         EnableWindow(d->adv_check, d->layout.advanced != 0);
         if (d->ctls) {
             me_ui_add_control(dlg, "STATIC", "Plays with:", SS_LEFT, 7, 55, 42, 10, 0);
@@ -597,7 +613,19 @@ static INT_PTR CALLBACK bind_dlg_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) 
                     if (HIWORD(wp) == CBN_DROPDOWN) fill_slot_combo(d);
                     else if (HIWORD(wp) == CBN_SELCHANGE) {
                         LRESULT sel = SendMessageA(d->slot_combo, CB_GETCURSEL, 0, 0);
-                        if (sel >= 0 && sel < ME_XI_SLOTS) d->slot = (int)sel;
+                        if (sel >= 0 && sel < ME_PAD_PER_TYPE)
+                            d->slot = ME_PAD_SLOT(d->slot / ME_PAD_PER_TYPE, (int)sel);
+                    }
+                    return TRUE;
+                case IDC_SLOT_TYPE:
+                    if (HIWORD(wp) == CBN_SELCHANGE) {
+                        LRESULT sel = SendMessageA(d->type_combo, CB_GETCURSEL, 0, 0);
+                        if (sel >= 0 && sel < ME_PAD_TYPES) {
+                            /* A capture waiting on the old pad would bind the wrong one. */
+                            if (d->cap_col == COL_CONTROLLER) end_capture(dlg, d);
+                            d->slot = ME_PAD_SLOT((int)sel, d->slot % ME_PAD_PER_TYPE);
+                            fill_slot_combo(d);
+                        }
                     }
                     return TRUE;
                 case IDC_ADVANCED:

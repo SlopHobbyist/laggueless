@@ -492,6 +492,17 @@ static int scalar_int(yaml_node_t *n, int defv) {
     return (int)v;
 }
 
+/* A controller slot from its type (`type_key`: xinput, dinput...) and 0-based
+   number within the type (`num_key`); either missing keeps that part of
+   `defv`. Files from before types have only the number, which was XInput's. */
+static int parse_slot(yaml_document_t *d, yaml_node_t *m, const char *num_key,
+                      const char *type_key, int defv) {
+    int type = me_pad_type_parse(scalar_str(map_get(d, m, type_key)), defv / ME_PAD_PER_TYPE);
+    int n = scalar_int(map_get(d, m, num_key), defv % ME_PAD_PER_TYPE);
+    n = n < 0 ? 0 : (n >= ME_PAD_PER_TYPE ? ME_PAD_PER_TYPE - 1 : n);
+    return ME_PAD_SLOT(type, n);
+}
+
 static float scalar_float(yaml_node_t *n, float defv) {
     const char *s = scalar_str(n);
     if (!s) return defv;
@@ -707,7 +718,7 @@ static void load_document(yaml_document_t *doc, yaml_node_t *root, me_settings *
     yaml_node_t *hk = map_get(doc, root, "hotkeys");
     if (hk) {
         out->hk_source   = parse_source(scalar_str(map_get(doc, hk, "input")), out->hk_source);
-        out->hk_xi_index = clamp_slot(scalar_int(map_get(doc, hk, "controller_index"), out->hk_xi_index));
+        out->hk_xi_index = parse_slot(doc, hk, "controller_index", "controller_type", out->hk_xi_index);
         for (int i = 0; i < ME_HK_COUNT; i++)
             parse_hotkey(doc, hk, g_hotkey_names[i].name, &out->hk[i], &out->hk_xi[i]);
         /* Older files call hard_reset "reset". */
@@ -728,8 +739,10 @@ static void load_document(yaml_document_t *doc, yaml_node_t *root, me_settings *
         for (int pl = 0; pl < ME_MAX_PLAYERS; pl++) {
             snprintf(key, sizeof(key), "player%d_input", pl + 1);
             out->input_source[pl] = parse_source(scalar_str(map_get(doc, controls, key)), out->input_source[pl]);
+            char type_key[40];
             snprintf(key, sizeof(key), "player%d_controller", pl + 1);
-            out->xi_index[pl] = scalar_int(map_get(doc, controls, key), out->xi_index[pl]);
+            snprintf(type_key, sizeof(type_key), "player%d_controller_type", pl + 1);
+            out->xi_index[pl] = parse_slot(doc, controls, key, type_key, out->xi_index[pl]);
             snprintf(key, sizeof(key), "player%d_lstick_as_dpad", pl + 1);
             out->lstick_as_dpad[pl] = scalar_bool(map_get(doc, controls, key), out->lstick_as_dpad[pl]);
             snprintf(key, sizeof(key), "player%d_rumble", pl + 1);
@@ -1034,7 +1047,8 @@ int me_settings_save(const char *path, const me_settings *s) {
 
     fprintf(f, "\nhotkeys:\n");
     fprintf(f, "  input: %s\n", source_name(s->hk_source));
-    fprintf(f, "  controller_index: %d\n", s->hk_xi_index);
+    fprintf(f, "  controller_type: %s\n", me_pad_type_key(s->hk_xi_index / ME_PAD_PER_TYPE));
+    fprintf(f, "  controller_index: %d\n", s->hk_xi_index % ME_PAD_PER_TYPE);
     for (int i = 0; i < ME_HK_COUNT; i++) {
         fprintf(f, "  %s:\n    keyboard:   ", g_hotkey_names[i].name);
         write_kb_list(f, &s->hk[i]);
@@ -1046,7 +1060,8 @@ int me_settings_save(const char *path, const me_settings *s) {
     fprintf(f, "\ncontrols:\n");
     for (int pl = 0; pl < ME_MAX_PLAYERS; pl++) {
         fprintf(f, "  player%d_input: %s\n", pl + 1, source_name(s->input_source[pl]));
-        fprintf(f, "  player%d_controller: %d\n", pl + 1, s->xi_index[pl]);
+        fprintf(f, "  player%d_controller_type: %s\n", pl + 1, me_pad_type_key(s->xi_index[pl] / ME_PAD_PER_TYPE));
+        fprintf(f, "  player%d_controller: %d\n", pl + 1, s->xi_index[pl] % ME_PAD_PER_TYPE);
         fprintf(f, "  player%d_lstick_as_dpad: %s\n", pl + 1, yn(s->lstick_as_dpad[pl]));
         fprintf(f, "  player%d_rumble: %s\n", pl + 1, yn(s->rumble[pl]));
     }

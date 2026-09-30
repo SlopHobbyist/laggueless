@@ -73,10 +73,42 @@ static struct {
                                                         uint16_t high, uint32_t duration_ms);
     const char         *(__cdecl *GameControllerName)(SDL_GameController *gc);
     void                (__cdecl *GameControllerSetPlayerIndex)(SDL_GameController *gc, int index);
+    int                 (__cdecl *GameControllerTypeForIndex)(int device_index);
+    int                 (__cdecl *GameControllerHasRumble)(SDL_GameController *gc);
+    uint16_t            (__cdecl *GameControllerGetVendor)(SDL_GameController *gc);
+    uint16_t            (__cdecl *GameControllerGetProduct)(SDL_GameController *gc);
 } g_sdl;
 
+/* SDL_GameControllerType values. */
+enum {
+    ME_SDL_TYPE_PS3 = 3, ME_SDL_TYPE_PS4 = 4, ME_SDL_TYPE_SWITCH_PRO = 5, ME_SDL_TYPE_PS5 = 7,
+    ME_SDL_TYPE_JOYCON_LEFT = 11, ME_SDL_TYPE_JOYCON_RIGHT = 12, ME_SDL_TYPE_JOYCON_PAIR = 13,
+};
+
+/* ---- pad types ------------------------------------------------------------ */
+static const struct { const char *label, *key; } g_pad_types[ME_PAD_TYPES] = {
+    [ME_PAD_XINPUT]      = { "XInput",      "xinput" },
+    [ME_PAD_DINPUT]      = { "DirectInput", "dinput" },
+    [ME_PAD_PLAYSTATION] = { "PlayStation", "playstation" },
+    [ME_PAD_SWITCH]      = { "Switch",      "switch" },
+};
+
+const char *me_pad_type_label(int type) {
+    return type >= 0 && type < ME_PAD_TYPES ? g_pad_types[type].label : "";
+}
+
+const char *me_pad_type_key(int type) {
+    return type >= 0 && type < ME_PAD_TYPES ? g_pad_types[type].key : "";
+}
+
+int me_pad_type_parse(const char *key, int defv) {
+    for (int t = 0; key && t < ME_PAD_TYPES; t++)
+        if (!_stricmp(key, g_pad_types[t].key)) return t;
+    return defv;
+}
+
 /* ---- module state --------------------------------------------------------- */
-#define ME_XI_XINPUT_SLOTS 4  /* slots XInput can fill */
+#define ME_XI_XINPUT_SLOTS ME_PAD_PER_TYPE  /* slots XInput fills: its user indices */
 
 static PFN_XInputGetState g_xi_GetState = NULL;
 static PFN_XInputSetState g_xi_SetState = NULL;
@@ -168,6 +200,10 @@ static int sdl_load(void) {
         { (void **)&g_sdl.GameControllerRumble,            "SDL_GameControllerRumble" },
         { (void **)&g_sdl.GameControllerName,              "SDL_GameControllerName" },
         { (void **)&g_sdl.GameControllerSetPlayerIndex,    "SDL_GameControllerSetPlayerIndex" },
+        { (void **)&g_sdl.GameControllerTypeForIndex,      "SDL_GameControllerTypeForIndex" },
+        { (void **)&g_sdl.GameControllerHasRumble,         "SDL_GameControllerHasRumble" },
+        { (void **)&g_sdl.GameControllerGetVendor,         "SDL_GameControllerGetVendor" },
+        { (void **)&g_sdl.GameControllerGetProduct,        "SDL_GameControllerGetProduct" },
     };
     for (size_t i = 0; i < sizeof(fns) / sizeof(fns[0]); i++) {
         /* SDL_JoystickPathForIndex is SDL 2.24+; without it XInput pads
@@ -229,35 +265,49 @@ static int sdl_slot_of(SDL_JoystickID id) {
     return -1;
 }
 
-/* The lowest slot with neither an SDL pad nor an XInput pad in it. Probing
-   XInput here is slow, but only happens when a pad is plugged in. */
-static int sdl_free_slot(void) {
-    for (int s = 0; s < ME_XI_SLOTS; s++) {
-        ME_XINPUT_GAMEPAD gp;
-        if (g_sdl_pad[s]) continue;
-        if (s < ME_XI_XINPUT_SLOTS && (g_xi_connected[s] || xi_get(s, &gp))) continue;
-        return s;
+/* Which of our types SDL's controller type falls under. */
+static me_pad_type sdl_pad_type(int device_index) {
+    switch (g_sdl.GameControllerTypeForIndex(device_index)) {
+        case ME_SDL_TYPE_PS3: case ME_SDL_TYPE_PS4: case ME_SDL_TYPE_PS5:
+            return ME_PAD_PLAYSTATION;
+        case ME_SDL_TYPE_SWITCH_PRO: case ME_SDL_TYPE_JOYCON_LEFT:
+        case ME_SDL_TYPE_JOYCON_RIGHT: case ME_SDL_TYPE_JOYCON_PAIR:
+            return ME_PAD_SWITCH;
+        default:
+            return ME_PAD_DINPUT;
     }
+}
+
+/* The slot of `type`'s lowest free number, or -1. */
+static int sdl_free_slot(me_pad_type type) {
+    for (int n = 0; n < ME_PAD_PER_TYPE; n++)
+        if (!g_sdl_pad[ME_PAD_SLOT(type, n)]) return ME_PAD_SLOT(type, n);
     return -1;
 }
 
 /* Give each newly plugged-in, non-XInput pad a slot. Lock held. */
 static void sdl_scan(void) {
-    int n = g_sdl.NumJoysticks();
-    for (int i = 0; i < n; i++) {
+    int count = g_sdl.NumJoysticks();
+    for (int i = 0; i < count; i++) {
         SDL_JoystickID id = g_sdl.JoystickGetDeviceInstanceID(i);
         if (id < 0 || sdl_slot_of(id) >= 0 || !g_sdl.IsGameController(i)) continue;
         const char *path = g_sdl.JoystickPathForIndex(i);
         if (path && (!strncmp(path, "XInput#", 7) || strstr(path, "IG_"))) continue;
-        int s = sdl_free_slot();
-        if (s < 0) return;
+        me_pad_type type = sdl_pad_type(i);
+        int s = sdl_free_slot(type);
+        if (s < 0) continue;
         SDL_GameController *gc = g_sdl.GameControllerOpen(i);
         if (!gc) continue;
         g_sdl_pad[s] = gc;
         g_sdl_id[s] = id;
-        g_sdl.GameControllerSetPlayerIndex(gc, s);   /* player LEDs */
+        int n = s - ME_PAD_SLOT(type, 0);
+        g_sdl.GameControllerSetPlayerIndex(gc, n);   /* player LEDs */
         const char *name = g_sdl.GameControllerName(gc);
-        printf("[pad] %s connected as controller %d\n", name ? name : "controller", s + 1);
+        /* The IDs say what the pad claims to be: an 8BitDo in Android mode
+           is a DualShock 4 (054c:05c4) as far as anyone can tell. */
+        printf("[pad] %s (%04x:%04x) connected as %s controller %d\n", name ? name : "controller",
+               g_sdl.GameControllerGetVendor(gc), g_sdl.GameControllerGetProduct(gc),
+               me_pad_type_label(type), n + 1);
     }
 }
 
@@ -268,7 +318,8 @@ static void sdl_update(int scan) {
         if (!g_sdl_pad[s] || g_sdl.GameControllerGetAttached(g_sdl_pad[s])) continue;
         g_sdl.GameControllerClose(g_sdl_pad[s]);
         g_sdl_pad[s] = NULL;
-        printf("[pad] controller %d disconnected\n", s + 1);
+        printf("[pad] %s controller %d disconnected\n",
+               me_pad_type_label(s / ME_PAD_PER_TYPE), s % ME_PAD_PER_TYPE + 1);
     }
     if (scan) sdl_scan();
 }
@@ -311,7 +362,7 @@ static void sdl_state(SDL_GameController *gc, ME_XINPUT_GAMEPAD *gp) {
 /* The SDL pad in `slot`, if there is one. `scan` also looks for pads
    plugged in since the last scan, which may land in `slot`. */
 static int sdl_read(int slot, ME_XINPUT_GAMEPAD *gp, int scan) {
-    if (!g_sdl_ok) return 0;
+    if (!g_sdl_ok || slot < ME_XI_XINPUT_SLOTS) return 0;
     EnterCriticalSection(&g_sdl_lock);
     if (g_sdl_pad[slot] || scan) sdl_update(scan);
     int got = g_sdl_pad[slot] != NULL;
@@ -368,8 +419,9 @@ void me_xinput_poll(int player_index) {
     if (!got) {
         if (!g_xi_connected[player_index] &&
             (LONG)(GetTickCount() - g_xi_next_probe[player_index]) < 0) return;
-        /* Nothing on XInput: a newly plugged-in pad may take the slot. */
-        got = xi_get(player_index, &gp) || sdl_read(player_index, &gp, 1);
+        /* An SDL slot with no pad: one plugged in since may have taken it. */
+        got = player_index < ME_XI_XINPUT_SLOTS ? xi_get(player_index, &gp)
+                                                : sdl_read(player_index, &gp, 1);
     }
     if (got) {
         g_xi_connected[player_index] = 1;
@@ -416,15 +468,16 @@ void me_xinput_rumble(int slot, uint16_t strong, uint16_t weak) {
     if (slot < 0 || slot >= ME_XI_SLOTS) return;
     LONG v = (LONG)(((uint32_t)strong << 16) | weak);
     if (InterlockedExchange(&sent[slot], v) == v) return;
-    if (g_sdl_ok) {
+    if (slot >= ME_XI_XINPUT_SLOTS) {
+        if (!g_sdl_ok) return;
         EnterCriticalSection(&g_sdl_lock);
-        SDL_GameController *gc = g_sdl_pad[slot];
-        /* Duration 0: until the next change, as with XInput. */
-        if (gc) g_sdl.GameControllerRumble(gc, strong, weak, 0);
+        /* Duration 0: until the next change, as with XInput. Pads with no
+           rumble (8BitDo in D-input mode) ignore it. */
+        if (g_sdl_pad[slot]) g_sdl.GameControllerRumble(g_sdl_pad[slot], strong, weak, 0);
         LeaveCriticalSection(&g_sdl_lock);
-        if (gc) return;
+        return;
     }
-    if (!g_xi_SetState || slot >= ME_XI_XINPUT_SLOTS) return;
+    if (!g_xi_SetState) return;
     ME_XINPUT_VIBRATION vib = { strong, weak };
     g_xi_SetState((DWORD)slot, &vib);
 }
@@ -441,17 +494,21 @@ unsigned me_xinput_read(int slot, int *connected) {
 int me_xinput_name(int slot, char *out, size_t out_sz) {
     if (out_sz) out[0] = '\0';
     if (g_xi_loaded == 0 || slot < 0 || slot >= ME_XI_SLOTS) return 0;
-    if (g_sdl_ok) {
-        EnterCriticalSection(&g_sdl_lock);
-        sdl_update(1);
-        SDL_GameController *gc = g_sdl_pad[slot];
-        const char *name = gc ? g_sdl.GameControllerName(gc) : NULL;
-        if (gc) snprintf(out, out_sz, "%s", name ? name : "controller");
-        LeaveCriticalSection(&g_sdl_lock);
-        if (gc) return 1;
+    if (slot < ME_XI_XINPUT_SLOTS) {
+        ME_XINPUT_GAMEPAD gp;
+        if (!xi_get(slot, &gp)) return 0;
+        snprintf(out, out_sz, "connected");
+        return 1;
     }
-    ME_XINPUT_GAMEPAD gp;
-    if (!xi_get(slot, &gp)) return 0;
-    snprintf(out, out_sz, "XInput");
-    return 1;
+    if (!g_sdl_ok) return 0;
+    EnterCriticalSection(&g_sdl_lock);
+    sdl_update(1);
+    SDL_GameController *gc = g_sdl_pad[slot];
+    if (gc) {
+        const char *name = g_sdl.GameControllerName(gc);
+        snprintf(out, out_sz, "%s%s", name ? name : "controller",
+                 g_sdl.GameControllerHasRumble(gc) ? "" : ", no rumble");
+    }
+    LeaveCriticalSection(&g_sdl_lock);
+    return gc != NULL;
 }

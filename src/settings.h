@@ -201,9 +201,10 @@ typedef struct {
     me_kb_bindings  hk[ME_HK_COUNT];
     me_xi_bindings  hk_xi[ME_HK_COUNT];
     me_input_source hk_source;
-    int             hk_xi_index;   /* controller slot 0..7 that triggers hotkeys */
+    int             hk_xi_index;   /* controller slot that triggers hotkeys (xinput_pad.h) */
 
-    /* Per player: devices in use and controller slot (0..7, xinput_pad.h). */
+    /* Per player: devices in use and controller slot (xinput_pad.h: type *
+       ME_PAD_PER_TYPE + number). */
     me_input_source input_source[ME_MAX_PLAYERS];
     int             xi_index[ME_MAX_PLAYERS];
     /* On consoles whose controller has no analog stick, the player's left

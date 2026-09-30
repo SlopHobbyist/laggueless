@@ -135,9 +135,11 @@ log:
 hotkeys:
   # Each hotkey can have both a keyboard binding and a controller binding.
   # `input` picks which are active: both | keyboard | controller.
-  # Controller hotkeys come from the pad in slot `controller_index` (0..7).
+  # Controller hotkeys come from the pad `controller_type` (see controls)
+  # number `controller_index` (0..3).
   # A controller chord like Back+Start means "hold all of these".
   input: both
+  controller_type: xinput
   controller_index: 0
   cycle_aspect_ratio:
     keyboard:   F1
@@ -179,10 +181,12 @@ hotkeys:
 #
 # Every input has separate `keyboard:` and `controller:` bindings.
 # `playerN_input` picks which are active: both | keyboard | controller.
-# `playerN_controller` is the slot (0..7) that player's pad is in: Controls >
-#   Player N lists them as Controller 1..8. XInput pads sit in their XInput
-#   slot (0..3); any other pad (DirectInput, Switch, PlayStation... needs
-#   SDL2.dll next to the exe) takes the lowest slot with no pad in it.
+# `playerN_controller_type` and `playerN_controller` pick that player's pad:
+#   its type (xinput | dinput | playstation | switch) and its number within
+#   the type (0..3; Controller 1..4 in Controls > Player N). XInput pads have
+#   XInput's numbers; any other pad (needs SDL2.dll next to the exe) takes
+#   the lowest free number of its type when plugged in. dinput is also where
+#   pads of no other type go; an 8BitDo in Android mode is a playstation pad.
 # `playerN_lstick_as_dpad`: on consoles with no analog stick (NES, SNES,
 #   Genesis...), that player's left stick also works the D-pad. Consoles with
 #   one (N64, GameCube, Dreamcast, PlayStation, PSP, 3DS, 5200, Vectrex) use
@@ -213,18 +217,22 @@ hotkeys:
 #   RStickUp, RStickDown, RStickLeft, RStickRight.
 controls:
   player1_input: both
+  player1_controller_type: xinput
   player1_controller: 0
   player1_lstick_as_dpad: true
   player1_rumble: true
   player2_input: both
+  player2_controller_type: xinput
   player2_controller: 1
   player2_lstick_as_dpad: true
   player2_rumble: true
   player3_input: both
+  player3_controller_type: xinput
   player3_controller: 2
   player3_lstick_as_dpad: true
   player3_rumble: true
   player4_input: both
+  player4_controller_type: xinput
   player4_controller: 3
   player4_lstick_as_dpad: true
   player4_rumble: true

@@ -4,12 +4,28 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* Controller slots ("Controller 1..8"), all read in the Xbox layout below.
-   Slots 0..3 are XInput's user indices. Other pads (DirectInput, Switch Pro,
-   PlayStation, 8BitDo in D/Android/Switch mode...) come through SDL2.dll,
-   when it's next to the exe: each takes the lowest slot with no XInput pad
-   in it and keeps it until unplugged. Their buttons are positional, so the
-   bottom face button is A whatever it's labelled. */
+/* Controller slots, all read in the Xbox layout below. Each type of pad has
+   its own Controller 1..4; slot = type * ME_PAD_PER_TYPE + number - 1.
+   XInput's are its user indices. The others come through SDL2.dll, when it's
+   next to the exe: a pad takes the lowest free number of its type and keeps
+   it until unplugged. Their buttons are positional, so the bottom face
+   button is A whatever it's labelled. */
+typedef enum {
+    ME_PAD_XINPUT,        /* Xbox and XInput-mode pads */
+    ME_PAD_DINPUT,        /* DirectInput, and anything else SDL knows */
+    ME_PAD_PLAYSTATION,   /* DualShock 3/4, DualSense (8BitDo "Android" mode is a DualShock 4) */
+    ME_PAD_SWITCH,        /* Switch Pro, Joy-Cons */
+    ME_PAD_TYPES
+} me_pad_type;
+
+#define ME_PAD_PER_TYPE 4
+#define ME_PAD_SLOT(type, n) ((type) * ME_PAD_PER_TYPE + (n))
+
+/* "XInput", "DirectInput"... for the UI; "xinput", "dinput"... for
+   settings.yaml. me_pad_type_parse maps the latter back, else `defv`. */
+const char *me_pad_type_label(int type);
+const char *me_pad_type_key(int type);
+int         me_pad_type_parse(const char *key, int defv);
 
 /* XInput button bitmasks (XINPUT_GAMEPAD_* values). */
 #define ME_XI_DPAD_UP        0x0001
@@ -41,7 +57,7 @@
 #define ME_XI_RSTICK_LEFT    0x01000000u
 #define ME_XI_RSTICK_RIGHT   0x02000000u
 
-#define ME_XI_SLOTS 8  /* XInput user indices 0..3, then other pads */
+#define ME_XI_SLOTS (ME_PAD_TYPES * ME_PAD_PER_TYPE)
 
 /* Axis IDs for me_xinput_axis(). */
 typedef enum {
@@ -84,8 +100,9 @@ void me_xinput_rumble(int slot, uint16_t strong, uint16_t weak);
    emulation thread keeps polling. */
 unsigned me_xinput_read(int slot, int *connected);
 
-/* The pad in `slot` for the UI: its name ("XInput" for XInput pads) into
-   `out`. Returns 1 if a pad is there. Any thread. */
+/* The pad in `slot` for the UI, into `out`: its name, plus ", no rumble" if
+   it can't ("connected" for XInput pads, which have no names). Returns 1 if
+   a pad is there. Any thread. */
 int  me_xinput_name(int slot, char *out, size_t out_sz);
 
 #endif
