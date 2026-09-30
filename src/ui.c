@@ -521,7 +521,7 @@ static void refresh_menu(HMENU m) {
         CheckMenuItem(m, IDM_FRAME_GEN, MF_BYCOMMAND |
                       (s->lsfg_enabled ? MF_CHECKED : MF_UNCHECKED));
     } else if (m == g_screen_menu) {
-        /* Only two-screen consoles (DS) have a choice; the pick is kept for
+        /* Only two-screen consoles (DS, 3DS) have a choice; the pick is kept for
            the next one. */
         const me_console *c = me_console_at(st.console);
         UINT on = (!st.game_running || (c && (c->flags & ME_CONSOLE_TWO_SCREENS))) ? MF_ENABLED : MF_GRAYED;

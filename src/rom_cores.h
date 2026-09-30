@@ -54,8 +54,9 @@ typedef struct {
 } me_console;
 
 enum {
-    /* Two 4:3 screens the cores draw into one frame, top screen first (DS):
-       View > Screen can show just one. */
+    /* Two screens the cores draw into one frame, top screen first (DS,
+       3DS): View > Screen can show just one. Both are 4:3 unless
+       ME_CONSOLE_WIDE_TOP. */
     ME_CONSOLE_TWO_SCREENS = 1u << 0,
     /* A touch screen: the mouse reaches the core as RETRO_DEVICE_POINTER
        and RETRO_DEVICE_MOUSE. */
@@ -63,6 +64,8 @@ enum {
     /* The controller has an analog stick: the left stick is that stick,
        not the D-pad, unless the player switches it (consoles.h). */
     ME_CONSOLE_ANALOG      = 1u << 2,
+    /* The top screen is 5:3 (3DS: 400x240 over a 320x240 bottom screen). */
+    ME_CONSOLE_WIDE_TOP    = 1u << 3,
 };
 
 int               me_console_count(void);

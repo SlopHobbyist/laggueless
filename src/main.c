@@ -1176,24 +1176,28 @@ static void poll_player(int p) {
 }
 
 /* Where one screen of a two-screen console is in the core's (fw x fh)
-   frame. Cores draw its 4:3 screens top screen first, one above the other
-   (maybe with a gap between) or side by side. Returns 0 and leaves the rect
-   alone for other consoles and layouts (hybrid, rotated). */
+   frame. Cores draw its screens, the same height, top screen first: one
+   above the other (maybe with a gap between, a narrower bottom screen
+   centered) or side by side. The DS's are both 4:3; the 3DS's top screen
+   is 5:3. Returns 0 and leaves the rect alone for other consoles and
+   layouts (hybrid, large screen, rotated). */
 static int find_screen(unsigned fw, unsigned fh, int bottom,
                        unsigned *x, unsigned *y, unsigned *w, unsigned *h) {
     const me_console *c = me_console_at(g_console);
     if (!c || !(c->flags & ME_CONSOLE_TWO_SCREENS)) return 0;
-    if ((fw * 3) % 4 == 0 && fw * 3 / 4 * 2 <= fh) {          /* stacked */
-        *x = 0;
-        *w = fw;
-        *h = fw * 3 / 4;
+    unsigned tn = (c->flags & ME_CONSOLE_WIDE_TOP) ? 5 : 4;  /* top screen tn:3 */
+    if ((fw * 3) % tn == 0 && fw * 3 / tn * 2 <= fh) {        /* stacked */
+        *h = fw * 3 / tn;
+        *w = bottom ? *h * 4 / 3 : fw;
+        *x = (fw - *w) / 2;
         *y = bottom ? fh - *h : 0;
         return 1;
     }
-    if ((fh * 4) % 3 == 0 && fh * 4 / 3 * 2 <= fw) {          /* side by side */
+    if ((fh * tn) % 3 == 0 && (fh * 4) % 3 == 0 &&
+        fh * tn / 3 + fh * 4 / 3 <= fw) {                      /* side by side */
         *y = 0;
         *h = fh;
-        *w = fh * 4 / 3;
+        *w = fh * (bottom ? 4 : tn) / 3;
         *x = bottom ? fw - *w : 0;
         return 1;
     }
