@@ -42,16 +42,12 @@ enum {
     IDM_SCREEN_TOP = 170,     /* View > Screen, in me_screens order from here */
     IDM_SCREEN_BOTTOM,
     IDM_SCREEN_BOTH,
-    IDM_CONTROLLER_FIRST = 180,  /* .. + ME_CONTROLLERS_MAX - 1 */
     IDM_RECENT_FIRST = 200,   /* .. IDM_RECENT_FIRST + ME_RECENT_MAX - 1 */
     IDM_RECENT_CLEAR = 200 + ME_RECENT_MAX,
 };
 
 /* Most adapters a console has (the Mega Drive's two). */
 #define ME_ADAPTERS_MAX 4
-/* Most controllers a console has to pick from (the Wii's six). */
-#define ME_CONTROLLERS_MAX 8
-
 static HMENU g_recent_menu, g_console_menu, g_controls_menu, g_view_menu, g_backend_menu,
              g_screen_menu;
 
@@ -424,11 +420,10 @@ static void rebuild_recent_menu(void) {
     AppendMenuA(g_recent_menu, MF_STRING, IDM_RECENT_CLEAR, "Clear Recent");
 }
 
-/* Players 1-4, greyed past what the running game has; then the controllers
-   its console's games can be played with (only when the core offers a
-   choice: Wii games in Dolphin) and its multiplayer adapters as checkboxes
-   (only for a console that has them); then Hotkeys. Rebuilt each time it
-   opens. */
+/* Players 1-4, greyed past what the running game has, each with the
+   controller it plays with where the core offers a choice (Wii games in
+   Dolphin); then its console's multiplayer adapters as checkboxes (only for
+   a console that has them); then Hotkeys. Rebuilt each time it opens. */
 static void rebuild_controls_menu(const me_app_status *st) {
     HMENU m = g_controls_menu;
     while (GetMenuItemCount(m) > 0) DeleteMenu(m, 0, MF_BYPOSITION);
@@ -439,10 +434,13 @@ static void rebuild_controls_menu(const me_app_status *st) {
     for (int i = 0; adapters && adapters[i].id && !unlock; i++)
         if (st->adapters_usable & (1u << i)) unlock = adapters[i].name;
 
+    const me_controller *controllers = me_console_controllers(c);
     for (int p = 0; p < ME_MAX_PLAYERS; p++) {
         char label[96];
         int on = p < st->players;
-        if (on || !c)
+        if (on && controllers && st->controller[p] >= 0)
+            snprintf(label, sizeof(label), "Player &%d...\t%s", p + 1, controllers[st->controller[p]].name);
+        else if (on || !c)
             snprintf(label, sizeof(label), "Player &%d...", p + 1);
         else if (unlock)
             snprintf(label, sizeof(label), "Player %d\tneeds %s", p + 1, unlock);
@@ -450,25 +448,6 @@ static void rebuild_controls_menu(const me_app_status *st) {
             snprintf(label, sizeof(label), "Player %d\t%s: %d player%s", p + 1, c->name,
                      c->players, c->players == 1 ? "" : "s");
         AppendMenuA(m, MF_STRING | (on ? MF_ENABLED : MF_GRAYED), IDM_PLAYER1 + p, label);
-    }
-
-    const me_controller *controllers = me_console_controllers(c);
-    unsigned ctl_usable = st->controllers_usable;
-    if (controllers && (ctl_usable & (ctl_usable - 1))) {
-        /* Clearing the menu above destroyed the last one's submenu. */
-        HMENU sub = CreatePopupMenu();
-        int n = 0;
-        for (; controllers[n].id && n < ME_CONTROLLERS_MAX; n++) {
-            char label[96];
-            int ok = (ctl_usable >> n) & 1u;
-            snprintf(label, sizeof(label), "%s%s", controllers[n].name, ok ? "" : "\tnot in this core");
-            AppendMenuA(sub, MF_STRING | (ok ? MF_ENABLED : MF_GRAYED), IDM_CONTROLLER_FIRST + n, label);
-        }
-        if (st->controller >= 0 && st->controller < n)
-            CheckMenuRadioItem(sub, IDM_CONTROLLER_FIRST, IDM_CONTROLLER_FIRST + n - 1,
-                               IDM_CONTROLLER_FIRST + st->controller, MF_BYCOMMAND);
-        AppendMenuA(m, MF_SEPARATOR, 0, NULL);
-        AppendMenuA(m, MF_POPUP, (UINT_PTR)sub, "&Controller");
     }
 
     if (adapters && adapters[0].id) {
@@ -513,32 +492,6 @@ static void toggle_adapter(int i) {
     me_settings_unlock();
     me_ui_persist(patch_adapter, &a);
     me_cmd_post(ME_CMD_ADAPTER, 0, NULL);
-}
-
-typedef struct { char console[32]; char controller[32]; } controller_choice;
-
-static void patch_controller(me_settings *s, const void *ctx) {
-    const controller_choice *a = (const controller_choice *)ctx;
-    me_settings_set_console_controller(s, a->console, a->controller);
-}
-
-/* Play the running console's games with controller `i` (the first, its
-   default, isn't written down). The core gets it between frames. */
-static void pick_controller(int i) {
-    me_app_status st;
-    me_status_get(&st);
-    const me_console *c = me_console_at(st.console);
-    const me_controller *controllers = me_console_controllers(c);
-    if (!controllers) return;
-    for (int k = 0; k <= i; k++) if (!controllers[k].id) return;
-    controller_choice a;
-    snprintf(a.console, sizeof(a.console), "%s", c->id);
-    snprintf(a.controller, sizeof(a.controller), "%s", i == 0 ? "" : controllers[i].id);
-    me_settings_lock();
-    patch_controller(me_app_settings(), &a);
-    me_settings_unlock();
-    me_ui_persist(patch_controller, &a);
-    me_cmd_post(ME_CMD_CONTROLLER, 0, NULL);
 }
 
 static void refresh_menu(HMENU m) {
@@ -621,10 +574,6 @@ static void on_command(HWND h, UINT id) {
     me_settings *s = me_app_settings();
     if (id >= IDM_ADAPTER_FIRST && id < IDM_ADAPTER_FIRST + ME_ADAPTERS_MAX) {
         toggle_adapter((int)(id - IDM_ADAPTER_FIRST));
-        return;
-    }
-    if (id >= IDM_CONTROLLER_FIRST && id < IDM_CONTROLLER_FIRST + ME_CONTROLLERS_MAX) {
-        pick_controller((int)(id - IDM_CONTROLLER_FIRST));
         return;
     }
     if (id >= IDM_RECENT_FIRST && id < IDM_RECENT_FIRST + ME_RECENT_MAX) {

@@ -753,15 +753,21 @@ static void load_document(yaml_document_t *doc, yaml_node_t *root, me_settings *
         }
     }
 
-    /* console -> controller its games are played with */
+    /* console -> what each player plays its games with: player1..4, or one
+       id for everyone */
     yaml_node_t *cn = map_get(doc, root, "console_controllers");
     if (cn && cn->type == YAML_MAPPING_NODE) {
         out->console_controllers_n = 0;
         for (yaml_node_pair_t *p = cn->data.mapping.pairs.start;
              p < cn->data.mapping.pairs.top; p++) {
             const char *console = scalar_str(doc_get(doc, p->key));
-            const char *controller = scalar_str(doc_get(doc, p->value));
-            if (console && *console) me_settings_set_console_controller(out, console, controller);
+            yaml_node_t *v = doc_get(doc, p->value);
+            if (!console || !*console || !v) continue;
+            for (int pl = 0; pl < ME_MAX_PLAYERS; pl++) {
+                const char *controller = v->type == YAML_MAPPING_NODE
+                    ? scalar_str(map_get(doc, v, g_player_keys[pl])) : scalar_str(v);
+                me_settings_set_console_controller(out, console, pl, controller);
+            }
         }
     }
 
@@ -1037,9 +1043,13 @@ int me_settings_save(const char *path, const me_settings *s) {
     for (int i = 0; i < s->console_controllers_n; i++) {
         fprintf(f, "  ");
         write_quoted(f, s->console_controllers[i].console);
-        fprintf(f, ": ");
-        write_quoted(f, s->console_controllers[i].controller);
-        fputc('\n', f);
+        fprintf(f, ":\n");
+        for (int pl = 0; pl < ME_MAX_PLAYERS; pl++) {
+            if (!s->console_controllers[i].controller[pl][0]) continue;
+            fprintf(f, "    %s: ", g_player_keys[pl]);
+            write_quoted(f, s->console_controllers[i].controller[pl]);
+            fputc('\n', f);
+        }
     }
 
     fprintf(f, "\nrecent:");
@@ -1293,26 +1303,28 @@ static int console_controller_index(const me_settings *s, const char *console) {
     return -1;
 }
 
-const char *me_settings_console_controller(const me_settings *s, const char *console) {
+const char *me_settings_console_controller(const me_settings *s, const char *console, int player) {
     int i = console_controller_index(s, console);
-    return i >= 0 ? s->console_controllers[i].controller : NULL;
+    if (i < 0 || player < 0 || player >= ME_MAX_PLAYERS) return NULL;
+    const char *id = s->console_controllers[i].controller[player];
+    return *id ? id : NULL;
 }
 
-void me_settings_set_console_controller(me_settings *s, const char *console, const char *controller) {
+void me_settings_set_console_controller(me_settings *s, const char *console, int player,
+                                        const char *controller) {
+    if (player < 0 || player >= ME_MAX_PLAYERS) return;
     int i = console_controller_index(s, console);
-    if (!controller || !*controller) {
-        if (i < 0) return;
-        memmove(&s->console_controllers[i], &s->console_controllers[i + 1],
-                (size_t)(s->console_controllers_n - i - 1) * sizeof(s->console_controllers[0]));
-        s->console_controllers_n--;
-        return;
-    }
     if (i < 0) {
-        if (s->console_controllers_n >= ME_CONSOLE_CORES_MAX) return;
+        if (!controller || !*controller || s->console_controllers_n >= ME_CONSOLE_CORES_MAX) return;
         i = s->console_controllers_n++;
+        memset(&s->console_controllers[i], 0, sizeof(s->console_controllers[i]));
         snprintf(s->console_controllers[i].console, sizeof(s->console_controllers[i].console), "%s",
                  console);
     }
-    snprintf(s->console_controllers[i].controller, sizeof(s->console_controllers[i].controller), "%s",
-             controller);
+    struct me_console_controller *e = &s->console_controllers[i];
+    snprintf(e->controller[player], sizeof(e->controller[player]), "%s", controller ? controller : "");
+    /* A console everyone plays with its first controller is dropped. */
+    for (int p = 0; p < ME_MAX_PLAYERS; p++) if (e->controller[p][0]) return;
+    memmove(e, e + 1, (size_t)(s->console_controllers_n - i - 1) * sizeof(*e));
+    s->console_controllers_n--;
 }

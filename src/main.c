@@ -324,20 +324,25 @@ static const char *me_var_default_for(const char *key) {
     return NULL;
 }
 
-/* The running game's controller (consoles.h). Inputs outside `live` never
-   reach the core: many cores put turbo buttons, macros and disk/coin
-   actions on RetroPad buttons their console doesn't have, and a leftover
-   binding must not trigger them. Chosen from the core's library_name and
-   the ROM in session_open; cores without a curated layout refine it through
-   SET_INPUT_DESCRIPTORS. */
-static me_input_layout g_in_layout;
+/* Each player's controller in the running game (consoles.h). Inputs outside
+   `live` never reach the core: many cores put turbo buttons, macros and
+   disk/coin actions on RetroPad buttons their console doesn't have, and a
+   leftover binding must not trigger them. Chosen from the core's
+   library_name and the ROM in session_open; cores without a curated layout
+   refine it through SET_INPUT_DESCRIPTORS. Players differ only where they
+   picked different controllers (a Classic Controller, a Wii Remote...). */
+static me_input_layout g_in_layout[ME_MAX_PLAYERS];
 static char            g_core_name[64];   /* library_name, for the dialogs */
 
 static me_settings g_settings;
 
+static void set_player_layout(int p, const me_input_layout *l) {
+    g_in_layout[p] = *l;
+    me_layout_publish(p, l);
+}
+
 static void set_input_layout(const me_input_layout *l) {
-    g_in_layout = *l;
-    me_layout_publish(l);
+    for (int p = 0; p < ME_MAX_PLAYERS; p++) set_player_layout(p, l);
 }
 
 /* The controller types the core offers per port (SET_CONTROLLER_INFO),
@@ -407,9 +412,9 @@ static int adapter_usable(const me_core *core, const me_adapter *a) {
     return 1;
 }
 
-/* The controller in every port (rom_cores.h me_controller: the Wii's
+/* The controller in each port (rom_cores.h me_controller: the Wii's
    Classic Controller...), or NULL for a gamepad. Emulation thread only. */
-static const me_controller *g_controller;
+static const me_controller *g_controller[ME_MAX_PLAYERS];
 
 static int controller_usable(const me_core *core, const me_controller *ctl) {
     return core && core->retro_set_controller_port_device && core_device(ctl->devices, 0);
@@ -424,16 +429,17 @@ static unsigned controllers_usable(const me_core *core, const me_console *c) {
     return bits;
 }
 
-/* The controller the settings pick for the running console, or NULL when
-   the core offers no choice (Dolphin running a GameCube game has only the
-   GameCube controller). A pick the core lacks falls back to the first it
-   has. */
-static const me_controller *pick_controller(const me_core *core) {
+/* The controller the settings pick for player `p` of the running console,
+   or NULL when the core offers no choice (Dolphin running a GameCube game
+   has only the GameCube controller). A pick the core lacks falls back to
+   the first it has. */
+static const me_controller *pick_controller(const me_core *core, int p) {
     const me_console *c = me_console_at(g_console);
     unsigned usable = controllers_usable(core, c);
     if ((usable & (usable - 1)) == 0) return NULL;   /* fewer than two */
     me_settings_lock();
-    int i = me_console_controller(c, me_settings_console_controller(&g_settings, c->id));    me_settings_unlock();
+    int i = me_console_controller(c, me_settings_console_controller(&g_settings, c->id, p));
+    me_settings_unlock();
     if (!(usable >> i & 1u))
         for (i = 0; !(usable >> i & 1u); i++) {}
     return &me_console_controllers(c)[i];
@@ -441,44 +447,46 @@ static const me_controller *pick_controller(const me_core *core) {
 
 /* What port `p` gets while no adapter has it. */
 static unsigned port_device(int p) {
-    unsigned d = g_controller ? core_device(g_controller->devices, p) : 0;
+    unsigned d = p < ME_MAX_PLAYERS && g_controller[p] ? core_device(g_controller[p]->devices, p) : 0;
     return d ? d : RETRO_DEVICE_JOYPAD;
 }
 
-/* The controller's own buttons, in place of the console's. */
-static void set_controller_layout(void) {
+/* Player `p`'s controller's own buttons, in place of the console's. */
+static void set_controller_layout(int p) {
     const me_console *c = me_console_at(g_console);
     me_input_layout l;
-    if (g_controller &&
-        me_layout_for_controller(g_controller->layout, c && (c->flags & ME_CONSOLE_ANALOG), &l)) {
-        set_input_layout(&l);
-        printf("[input] %s in every port (%d inputs)\n", g_controller->name, l.n);
+    if (g_controller[p] &&
+        me_layout_for_controller(g_controller[p]->layout, c && (c->flags & ME_CONSOLE_ANALOG), &l)) {
+        set_player_layout(p, &l);
+        printf("[input] player %d: %s (%d inputs)\n", p + 1, g_controller[p]->name, l.n);
     }
 }
 
-/* Plug a gamepad (or the controller picked for the console) into each port
-   the core described, as RetroArch does once a game is loaded: some cores
-   (Dolphin) set a port's controller up only when told what's in it, and
-   never read input otherwise. Cores that describe no ports keep their own
-   defaults. The adapter, if any, goes in after. */
+/* Plug a gamepad (or the controller the player picked for the console)
+   into each port the core described, as RetroArch does once a game is
+   loaded: some cores (Dolphin) set a port's controller up only when told
+   what's in it, and never read input otherwise. Cores that describe no
+   ports keep their own defaults. The adapter, if any, goes in after. */
 static void plug_gamepads(me_core *core) {
     if (!core->retro_set_controller_port_device) return;
-    g_controller = pick_controller(core);
-    for (int p = 0; p < g_ci_ports && p < ME_MAX_PLAYERS; p++)
+    for (int p = 0; p < g_ci_ports && p < ME_MAX_PLAYERS; p++) {
+        g_controller[p] = pick_controller(core, p);
         core->retro_set_controller_port_device((unsigned)p, port_device(p));
-    set_controller_layout();
+        set_controller_layout(p);
+    }
 }
 
-/* Plug in the controller the settings pick now, if it changed. Games notice
-   a controller swapped in or out as they would on the console. */
-static void apply_controller(me_core *core) {
-    const me_controller *was = g_controller;
-    g_controller = pick_controller(core);
-    if (g_controller == was) return;
-    for (int p = 0; p < g_ci_ports && p < ME_MAX_PLAYERS; p++)
+/* Plug in the controllers the settings pick now, where they changed. Games
+   notice a controller swapped in or out as they would on the console. */
+static void apply_controllers(me_core *core) {
+    for (int p = 0; p < g_ci_ports && p < ME_MAX_PLAYERS; p++) {
+        const me_controller *was = g_controller[p];
+        g_controller[p] = pick_controller(core, p);
+        if (g_controller[p] == was) continue;
         if (!(g_adapter_ports >> p & 1u))
             core->retro_set_controller_port_device((unsigned)p, port_device(p));
-    set_controller_layout();
+        set_controller_layout(p);
+    }
 }
 
 /* Plug in (or unplug) the console's adapter as the settings say, and give
@@ -664,10 +672,12 @@ static bool me_environment_cb(unsigned cmd, void *data) {
                core's extras become its advanced inputs. */
             if (data) {
                 const struct retro_input_descriptor *d = (const struct retro_input_descriptor *)data;
-                me_input_layout l = g_in_layout;
-                if (l.curated) me_layout_set_advanced(&l, d);
-                else           me_layout_from_descriptors(g_core_name, d, &l);
-                set_input_layout(&l);
+                for (int p = 0; p < ME_MAX_PLAYERS; p++) {
+                    me_input_layout l = g_in_layout[p];
+                    if (l.curated) me_layout_set_advanced(&l, d);
+                    else           me_layout_from_descriptors(g_core_name, d, &l);
+                    set_player_layout(p, &l);
+                }
             }
             return true;
         case RETRO_ENVIRONMENT_GET_INPUT_DEVICE_CAPABILITIES: /* 24 */
@@ -967,7 +977,7 @@ static int vk_claimed_by_hotkey(unsigned vk) {
 /* Caller holds the settings lock. */
 static int input_down(const me_control_map *map, int player, me_input_id id) {
     /* Advanced inputs have their own bindings (settings.h). */
-    if (g_in_layout.advanced & (1u << id)) map = &g_settings.advanced[player];
+    if (g_in_layout[player].advanced & (1u << id)) map = &g_settings.advanced[player];
     me_input_source src = g_settings.input_source[player];
     if (src != ME_SRC_CONTROLLER) {
         const me_kb_bindings *bs = &map->keys[id];
@@ -987,24 +997,25 @@ static int input_down(const me_control_map *map, int player, me_input_id id) {
     return 0;
 }
 
-/* input_down for inputs the running console has; 0 for the rest. */
-static unsigned live_inputs(void) {
-    return g_in_layout.live | (g_settings.show_advanced_inputs ? g_in_layout.advanced : 0);
+/* input_down for inputs player `p`'s controller has; 0 for the rest. */
+static unsigned live_inputs(int p) {
+    return g_in_layout[p].live | (g_settings.show_advanced_inputs ? g_in_layout[p].advanced : 0);
 }
 
 static int live_down(const me_control_map *map, int p, me_input_id id) {
-    return (live_inputs() & (1u << id)) ? input_down(map, p, id) : 0;
+    return (live_inputs(p) & (1u << id)) ? input_down(map, p, id) : 0;
 }
 
 /* Caller holds the settings lock. */
 static void poll_player(int p) {
     int16_t *pad = g_pad[p];
     me_control_map map;
-    me_controls_effective(&g_settings, &g_in_layout, g_core_index, 1, p, &map);
+    const me_input_layout *lay = &g_in_layout[p];
+    me_controls_effective(&g_settings, lay, g_core_index, 1, p, &map);
     const me_control_map *m = &map;
     /* Left stick as D-pad (consoles.h): then that is all the left stick
        does, whatever else is bound to its directions. */
-    int stick_dpad = me_lstick_as_dpad(&g_settings, &g_in_layout, 1, p) &&
+    int stick_dpad = me_lstick_as_dpad(&g_settings, lay, 1, p) &&
                      g_settings.input_source[p] != ME_SRC_KEYBOARD;
     if (stick_dpad) {
         const unsigned lstick_dirs = ME_XI_LSTICK_UP | ME_XI_LSTICK_DOWN |
@@ -1025,7 +1036,7 @@ static void poll_player(int p) {
        pushed opposite ways still cancel to neutral. */
     if (stick_dpad) {
         int slot = g_settings.xi_index[p];
-        unsigned live = live_inputs();
+        unsigned live = live_inputs(p);
         if (live & (1u << ME_IN_DPAD_UP))    up    |= me_xinput_button(slot, ME_XI_LSTICK_UP);
         if (live & (1u << ME_IN_DPAD_DOWN))  down  |= me_xinput_button(slot, ME_XI_LSTICK_DOWN);
         if (live & (1u << ME_IN_DPAD_LEFT))  lf    |= me_xinput_button(slot, ME_XI_LSTICK_LEFT);
@@ -1067,8 +1078,8 @@ static void poll_player(int p) {
                             (1u << ME_IN_LSTICK_LEFT) | (1u << ME_IN_LSTICK_RIGHT);
     const unsigned rstick = (1u << ME_IN_RSTICK_UP) | (1u << ME_IN_RSTICK_DOWN) |
                             (1u << ME_IN_RSTICK_LEFT) | (1u << ME_IN_RSTICK_RIGHT);
-    int use_l = use_pad && !stick_dpad && (g_in_layout.live & lstick);
-    int use_r = use_pad && (g_in_layout.live & rstick);
+    int use_l = use_pad && !stick_dpad && (lay->live & lstick);
+    int use_r = use_pad && (lay->live & rstick);
     int16_t xi_lx = use_l ? me_xinput_axis(slot, ME_XI_AXIS_LX) : 0;
     int16_t xi_ly = use_l ? me_xinput_axis(slot, ME_XI_AXIS_LY) : 0;
     int16_t xi_rx = use_r ? me_xinput_axis(slot, ME_XI_AXIS_RX) : 0;
@@ -1755,7 +1766,7 @@ static void session_reset_globals(void) {
     g_resamp_n_l  = g_resamp_n_r  = 0;
     g_resamp_primed = 0;
     g_resamp_ratio_bias = g_resamp_p_bias = 0.0;
-    me_layout_unknown(&g_in_layout);
+    for (int p = 0; p < ME_MAX_PLAYERS; p++) me_layout_unknown(&g_in_layout[p]);
     g_core_name[0] = '\0';
     memset(g_ci_n, 0, sizeof(g_ci_n));
     g_ci_ports = 0;
@@ -1763,7 +1774,7 @@ static void session_reset_globals(void) {
     g_players = ME_MAX_PLAYERS;
     g_adapter = NULL;
     g_adapter_ports = 0;
-    g_controller = NULL;
+    memset(g_controller, 0, sizeof(g_controller));
     g_core_index = -1;
     memset(g_pad, 0, sizeof(g_pad));
     memset(g_analog, 0, sizeof(g_analog));
@@ -2624,7 +2635,7 @@ static void publish_status(const me_session *s) {
     st.players = ME_MAX_PLAYERS;
     st.console = -1;
     st.adapter = -1;
-    st.controller = -1;
+    for (int p = 0; p < ME_MAX_PLAYERS; p++) st.controller[p] = -1;
     const me_console *c = s->active ? me_console_at(g_console) : NULL;
     if (c) {
         st.players = g_players;
@@ -2634,7 +2645,8 @@ static void publish_status(const me_session *s) {
             if (g_adapter == &c->adapters[i]) st.adapter = i;
         }
         st.controllers_usable = controllers_usable(s->core, c);
-        if (g_controller) st.controller = (int)(g_controller - me_console_controllers(c));
+        for (int p = 0; p < ME_MAX_PLAYERS; p++)
+            if (g_controller[p]) st.controller[p] = (int)(g_controller[p] - me_console_controllers(c));
     }
     me_status_set(&st);
 }
@@ -2810,7 +2822,7 @@ static void run_command(me_session *s, const me_cmd *c) {
             return;
         case ME_CMD_CONTROLLER:
             if (!s->active) return;
-            apply_controller(s->core);
+            apply_controllers(s->core);
             publish_status(s);
             return;
     }

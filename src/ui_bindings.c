@@ -8,6 +8,9 @@
    which have their own bindings (settings.h).
    With a game running, changes go to its console's map (or the core's own
    map, if it has one); with none, or a console we don't know, to universal.
+   Where the core offers a choice of controllers (Wii games), "Plays with"
+   picks the player's; the list then shows that controller's buttons and
+   bindings, and Save plugs it in.
    Clicking a binding captures the next key / button; right-clicking clears it.
    Capture polls GetAsyncKeyState and XInput on a timer instead of reading
    WM_KEYDOWN, because the dialog manager eats Tab/Enter/Esc/arrows.
@@ -36,6 +39,7 @@ enum {
     IDC_ADVANCED,
     IDC_LSTICK_DPAD,
     IDC_RUMBLE,
+    IDC_PLAYS_WITH,
 };
 
 #define CAPTURE_TIMER     1
@@ -55,6 +59,16 @@ typedef struct {
     int ids[ME_IN_COUNT];    /* row → me_input_id / me_hotkey_id */
     me_input_layout layout;  /* player dialogs: which inputs, and their names */
 
+    /* Player dialogs where the core offers a choice of controllers: the
+       console's list (else NULL), which the core has (bit per entry), the
+       one plugged in and its layout, and the one picked here. */
+    const me_controller *ctls;
+    unsigned ctl_usable;
+    char ctl_console[32];
+    int ctl_was, ctl_sel;
+    int stick;               /* the console's controller has an analog stick */
+    me_input_layout game_layout;
+
     /* Working copy, indexed by me_input_id / me_hotkey_id. */
     me_kb_bindings kb[ME_IN_COUNT];
     me_xi_bindings xi[ME_IN_COUNT];
@@ -72,7 +86,7 @@ typedef struct {
     unsigned cap_xi_chord;        /* hotkeys: buttons pressed so far */
     unsigned last_vk;             /* last key captured (to ignore its Esc) */
 
-    HWND list, hint, slot_combo, adv_check;
+    HWND list, hint, slot_combo, adv_check, ctl_combo;
 } bind_dlg;
 
 /* ---- list contents -------------------------------------------------------- */
@@ -302,14 +316,8 @@ static void capture_tick(HWND dlg, bind_dlg *d) {
 }
 
 /* ---- load / save ---------------------------------------------------------- */
-static void load_from(bind_dlg *d, const me_settings *s, int core_index) {
-    if (d->is_hotkeys) {
-        memcpy(d->kb, s->hk,    sizeof(s->hk));
-        memcpy(d->xi, s->hk_xi, sizeof(s->hk_xi));
-        d->source = s->hk_source;
-        d->slot   = s->hk_xi_index;
-        return;
-    }
+/* Player dialogs: the bindings for d->layout's controller. */
+static void load_bindings(bind_dlg *d, const me_settings *s, int core_index) {
     me_control_map m;
     me_controls_effective(s, &d->layout, core_index, d->console_map, d->player, &m);
     const me_control_map *adv = &s->advanced[d->player];
@@ -318,11 +326,22 @@ static void load_from(bind_dlg *d, const me_settings *s, int core_index) {
         d->kb[id] = a ? adv->keys[id] : m.keys[id];
         d->xi[id] = a ? adv->xi[id]   : m.xi[id];
     }
+    d->lstick_as_dpad = d->console_map ? me_lstick_as_dpad(s, &d->layout, 1, d->player)
+                                       : s->lstick_as_dpad[d->player];
+}
+
+static void load_from(bind_dlg *d, const me_settings *s, int core_index) {
+    if (d->is_hotkeys) {
+        memcpy(d->kb, s->hk,    sizeof(s->hk));
+        memcpy(d->xi, s->hk_xi, sizeof(s->hk_xi));
+        d->source = s->hk_source;
+        d->slot   = s->hk_xi_index;
+        return;
+    }
+    load_bindings(d, s, core_index);
     d->source = s->input_source[d->player];
     d->slot   = s->xi_index[d->player];
     d->show_advanced = s->show_advanced_inputs;
-    d->lstick_as_dpad = d->console_map ? me_lstick_as_dpad(s, &d->layout, 1, d->player)
-                                       : s->lstick_as_dpad[d->player];
     d->rumble = s->rumble[d->player];
 }
 
@@ -363,6 +382,10 @@ static void store_into(const bind_dlg *d, me_settings *s, int core_index) {
     else
         s->lstick_as_dpad[d->player] = d->lstick_as_dpad;
     s->rumble[d->player] = d->rumble;
+    /* The console's first controller is the default, not written down. */
+    if (d->ctls && d->ctl_sel >= 0)
+        me_settings_set_console_controller(s, d->ctl_console, d->player,
+                                           d->ctl_sel == 0 ? "" : d->ctls[d->ctl_sel].id);
 }
 
 /* The per-core entry in `s` matching the one being edited (by name), or -1. */
@@ -394,11 +417,13 @@ static void save(bind_dlg *d) {
     store_into(d, live, d->core_index);
     me_settings_unlock();
     me_ui_persist(patch_bindings, d);
+    if (d->ctls) me_cmd_post(ME_CMD_CONTROLLER, 0, NULL);
 }
 
 /* ---- dialog procedure ----------------------------------------------------- */
-static void create_controls(HWND dlg, bind_dlg *d) {
-    char scope[240], shown[120] = "";
+/* What the dialog edits, and which controller it shows. */
+static void scope_text(const bind_dlg *d, char *scope, size_t scope_sz) {
+    char shown[120] = "";
     /* "the NES controller", but "the Classic Controller", "the Wii Remote". */
     if (!d->is_hotkeys && d->layout.curated)
         snprintf(shown, sizeof(shown), " Showing the %s%s.", d->layout.name,
@@ -407,15 +432,50 @@ static void create_controls(HWND dlg, bind_dlg *d) {
     else if (!d->is_hotkeys && d->layout.name[0])
         snprintf(shown, sizeof(shown), " Showing the buttons %s uses.", d->layout.name);
     if (d->is_hotkeys)
-        snprintf(scope, sizeof(scope), "Hotkeys work in every core.");
+        snprintf(scope, scope_sz, "Hotkeys work in every core.");
     else if (d->core_index >= 0)
-        snprintf(scope, sizeof(scope), "Editing Player %d controls for %s only (this core has its own map).%s",
+        snprintf(scope, scope_sz, "Editing Player %d controls for %s only (this core has its own map).%s",
                  d->player + 1, d->core_name, shown);
     else if (d->console_map)
-        snprintf(scope, sizeof(scope), "Editing Player %d controls for %s games only.%s",
+        snprintf(scope, scope_sz, "Editing Player %d controls for %s games only.%s",
                  d->player + 1, d->layout.console[0] ? d->layout.console : d->layout.key, shown);
     else
-        snprintf(scope, sizeof(scope), "Editing Player %d controls for all cores.%s", d->player + 1, shown);
+        snprintf(scope, scope_sz, "Editing Player %d controls for all cores.%s", d->player + 1, shown);
+}
+
+/* "Plays with": the controllers the core has, each item's data its index
+   in the console's list. */
+static void fill_ctl_combo(bind_dlg *d) {
+    for (int i = 0; d->ctls[i].id && i < 32; i++) {
+        if (!(d->ctl_usable >> i & 1u)) continue;
+        LRESULT at = SendMessageA(d->ctl_combo, CB_ADDSTRING, 0, (LPARAM)d->ctls[i].name);
+        SendMessageA(d->ctl_combo, CB_SETITEMDATA, (WPARAM)at, (LPARAM)i);
+        if (i == d->ctl_sel) SendMessageA(d->ctl_combo, CB_SETCURSEL, (WPARAM)at, 0);
+    }
+}
+
+/* Show controller `i`'s buttons and the player's bindings for it. Edits to
+   the one shown before are dropped, as its rows are gone. */
+static void switch_controller(HWND dlg, bind_dlg *d, int i) {
+    if (i == d->ctl_sel) return;
+    d->ctl_sel = i;
+    if (i == d->ctl_was) d->layout = d->game_layout;   /* keeps the core's advanced inputs */
+    else me_layout_for_controller(d->ctls[i].layout, d->stick, &d->layout);
+    d->console_map = d->layout.key[0] != '\0';
+    me_settings_lock();
+    load_bindings(d, me_app_settings(), d->core_index);
+    me_settings_unlock();
+    char scope[240];
+    scope_text(d, scope, sizeof(scope));
+    SetDlgItemTextA(dlg, IDC_SCOPE, scope);
+    EnableWindow(d->adv_check, d->layout.advanced != 0);
+    refresh_all(dlg, d);
+    idle_hint(d);
+}
+
+static void create_controls(HWND dlg, bind_dlg *d) {
+    char scope[240];
+    scope_text(d, scope, sizeof(scope));
     me_ui_add_control(dlg, "STATIC", scope, SS_LEFT, 7, 3, 306, 17, IDC_SCOPE);
 
     me_ui_add_control(dlg, "STATIC", "Input:", SS_LEFT, 7, 23, 40, 10, 0);
@@ -429,25 +489,34 @@ static void create_controls(HWND dlg, bind_dlg *d) {
                                 50, 38, 130, 80, IDC_SLOT);
     fill_slot_combo(d);
 
+    /* A choice of controllers adds a row; the rest moves down. */
+    int ex = d->ctls ? 15 : 0;
     if (!d->is_hotkeys) {
         /* Greyed out when the running core offers nothing extra. */
         d->adv_check = me_ui_add_control(dlg, "BUTTON", "Show advanced inputs",
                                    BS_AUTOCHECKBOX | WS_TABSTOP | WS_GROUP, 193, 39, 120, 11, IDC_ADVANCED);
         EnableWindow(d->adv_check, d->layout.advanced != 0);
+        if (d->ctls) {
+            me_ui_add_control(dlg, "STATIC", "Plays with:", SS_LEFT, 7, 55, 42, 10, 0);
+            d->ctl_combo = me_ui_add_control(dlg, "COMBOBOX", "",
+                                             CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP | WS_GROUP,
+                                             50, 53, 130, 100, IDC_PLAYS_WITH);
+            fill_ctl_combo(d);
+        }
         me_ui_add_control(dlg, "BUTTON", !d->console_map ? "Left stick works the D-pad (consoles with no analog stick)"
                                        : d->layout.stick ? "Left stick works the D-pad (instead of the analog stick)"
                                        : "Left stick works the D-pad",
-                          BS_AUTOCHECKBOX | WS_TABSTOP | WS_GROUP, 50, 53, 263, 11, IDC_LSTICK_DPAD);
+                          BS_AUTOCHECKBOX | WS_TABSTOP | WS_GROUP, 50, 53 + ex, 263, 11, IDC_LSTICK_DPAD);
         me_ui_add_control(dlg, "BUTTON", "Rumble (consoles that support it)",
-                          BS_AUTOCHECKBOX | WS_TABSTOP | WS_GROUP, 50, 66, 263, 11, IDC_RUMBLE);
+                          BS_AUTOCHECKBOX | WS_TABSTOP | WS_GROUP, 50, 66 + ex, 263, 11, IDC_RUMBLE);
     }
 
     /* Player dialogs have two more rows above the list. */
-    int list_y = d->is_hotkeys ? 56 : 83;
+    int list_y = d->is_hotkeys ? 56 : 83 + ex;
     d->list = me_ui_add_control(dlg, WC_LISTVIEWA, "",
                           LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_NOSORTHEADER |
                           WS_BORDER | WS_TABSTOP,
-                          7, list_y, 306, 216 - list_y, IDC_LIST);
+                          7, list_y, 306, 216 + ex - list_y, IDC_LIST);
     SendMessageA(d->list, LVM_SETEXTENDEDLISTVIEWSTYLE, 0,
                  LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
     RECT lr;
@@ -461,11 +530,11 @@ static void create_controls(HWND dlg, bind_dlg *d) {
         SendMessageA(d->list, LVM_INSERTCOLUMNA, (WPARAM)c, (LPARAM)&col);
     }
 
-    d->hint = me_ui_add_control(dlg, "STATIC", "", SS_LEFT, 7, 220, 306, 18, IDC_HINT);
+    d->hint = me_ui_add_control(dlg, "STATIC", "", SS_LEFT, 7, 220 + ex, 306, 18, IDC_HINT);
 
-    me_ui_add_control(dlg, "BUTTON", "Default", BS_PUSHBUTTON | WS_TABSTOP | WS_GROUP, 7, 243, 55, 14, IDC_DEFAULT);
-    me_ui_add_control(dlg, "BUTTON", "Cancel",  BS_PUSHBUTTON | WS_TABSTOP, 199, 243, 55, 14, IDCANCEL);
-    me_ui_add_control(dlg, "BUTTON", "Save",    BS_PUSHBUTTON | WS_TABSTOP, 258, 243, 55, 14, IDC_SAVE);
+    me_ui_add_control(dlg, "BUTTON", "Default", BS_PUSHBUTTON | WS_TABSTOP | WS_GROUP, 7, 243 + ex, 55, 14, IDC_DEFAULT);
+    me_ui_add_control(dlg, "BUTTON", "Cancel",  BS_PUSHBUTTON | WS_TABSTOP, 199, 243 + ex, 55, 14, IDCANCEL);
+    me_ui_add_control(dlg, "BUTTON", "Save",    BS_PUSHBUTTON | WS_TABSTOP, 258, 243 + ex, 55, 14, IDC_SAVE);
     refresh_all(dlg, d);
     idle_hint(d);
 }
@@ -539,6 +608,16 @@ static INT_PTR CALLBACK bind_dlg_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) 
                 case IDC_RUMBLE:
                     d->rumble = IsDlgButtonChecked(dlg, IDC_RUMBLE) == BST_CHECKED;
                     return TRUE;
+                case IDC_PLAYS_WITH:
+                    if (HIWORD(wp) == CBN_SELCHANGE) {
+                        LRESULT sel = SendMessageA(d->ctl_combo, CB_GETCURSEL, 0, 0);
+                        if (sel >= 0) {
+                            if (d->cap_col) end_capture(dlg, d);
+                            switch_controller(dlg, d, (int)SendMessageA(d->ctl_combo, CB_GETITEMDATA,
+                                                                        (WPARAM)sel, 0));
+                        }
+                    }
+                    return TRUE;
                 case IDC_DEFAULT:
                     if (d->cap_col) end_capture(dlg, d);
                     apply_defaults(dlg, d);
@@ -581,9 +660,22 @@ void me_ui_player_dialog(HWND owner, int player) {
     me_app_status st;
     me_status_get(&st);
 
-    /* Rows: the loaded (or powered-off) game's controller, else every input. */
-    if (st.core_path[0]) me_layout_get(&d.layout);
+    /* Rows: the player's controller in the loaded (or powered-off) game,
+       else every input. */
+    if (st.core_path[0]) me_layout_get(player, &d.layout);
     else                 me_layout_unknown(&d.layout);
+    /* A choice of controllers, where the running core offers one. */
+    const me_console *c = me_console_at(st.console);
+    unsigned usable = st.controllers_usable;
+    d.ctls = me_console_controllers(c);
+    if (!d.ctls || !(usable & (usable - 1)) || st.controller[player] < 0) d.ctls = NULL;
+    if (d.ctls) {
+        d.ctl_usable = usable;
+        snprintf(d.ctl_console, sizeof(d.ctl_console), "%s", c->id);
+        d.ctl_was = d.ctl_sel = st.controller[player];
+        d.stick = (c->flags & ME_CONSOLE_ANALOG) != 0;
+        d.game_layout = d.layout;
+    }
     d.console_map = d.layout.key[0] != '\0';
     d.core_index = -1;
     if (st.core_path[0]) {
@@ -599,7 +691,7 @@ void me_ui_player_dialog(HWND owner, int player) {
 
     wchar_t title[32];
     swprintf(title, sizeof(title) / sizeof(title[0]), L"Player %d Controls", player + 1);
-    me_ui_dialog(owner, title, 320, 264, bind_dlg_proc, (LPARAM)&d);
+    me_ui_dialog(owner, title, 320, d.ctls ? 279 : 264, bind_dlg_proc, (LPARAM)&d);
 }
 
 void me_ui_hotkeys_dialog(HWND owner) {

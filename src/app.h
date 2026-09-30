@@ -26,8 +26,8 @@ typedef enum {
     ME_CMD_FRAME_GEN,   /* arg: 1 = on, 0 = off */
     ME_CMD_ADAPTER,     /* the running console's adapter changed in the live
                            settings; plug it into the core */
-    ME_CMD_CONTROLLER,  /* the running console's controller changed in the
-                           live settings; plug it into every port */
+    ME_CMD_CONTROLLER,  /* a player's controller for the running console
+                           changed in the live settings; plug it in */
 } me_cmd_type;
 
 #define ME_LOAD_ASK (-1)
@@ -80,18 +80,20 @@ typedef struct {
     int      console;
     unsigned adapters_usable;
     int      adapter;
-    /* The same for the console's controllers (-1 = the core's own). */
+    /* The same for the console's controllers, per player (-1 = the core's
+       own). */
     unsigned controllers_usable;
-    int      controller;
+    int      controller[ME_MAX_PLAYERS];
 } me_app_status;
 
 void me_status_set(const me_app_status *s);
 void me_status_get(me_app_status *out);
 
-/* The running game's controller (consoles.h), for the binding dialogs.
-   Written by the emulation thread when a game loads and whenever the core
-   re-describes its inputs; read by the UI thread. */
-void me_layout_publish(const me_input_layout *l);
-void me_layout_get(me_input_layout *out);
+/* Each player's controller in the running game (consoles.h), for the
+   binding dialogs. Written by the emulation thread when a game loads,
+   whenever the core re-describes its inputs and when a player's controller
+   changes; read by the UI thread. */
+void me_layout_publish(int player, const me_input_layout *l);
+void me_layout_get(int player, me_input_layout *out);
 
 #endif

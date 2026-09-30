@@ -17,7 +17,7 @@ static volatile LONG    g_quit;
 
 static CRITICAL_SECTION g_status_cs;
 static me_app_status    g_status;
-static me_input_layout  g_layout;
+static me_input_layout  g_layout[ME_MAX_PLAYERS];
 
 void me_app_init(me_settings *live, const char *settings_path) {
     g_live = live;
@@ -25,7 +25,7 @@ void me_app_init(me_settings *live, const char *settings_path) {
     InitializeCriticalSection(&g_settings_cs);
     InitializeCriticalSection(&g_cmd_cs);
     InitializeCriticalSection(&g_status_cs);
-    me_layout_unknown(&g_layout);
+    for (int p = 0; p < ME_MAX_PLAYERS; p++) me_layout_unknown(&g_layout[p]);
     g_wake = CreateEventA(NULL, FALSE, FALSE, NULL);
 }
 
@@ -81,14 +81,16 @@ void me_status_get(me_app_status *out) {
     LeaveCriticalSection(&g_status_cs);
 }
 
-void me_layout_publish(const me_input_layout *l) {
+void me_layout_publish(int player, const me_input_layout *l) {
+    if (player < 0 || player >= ME_MAX_PLAYERS) return;
     EnterCriticalSection(&g_status_cs);
-    g_layout = *l;
+    g_layout[player] = *l;
     LeaveCriticalSection(&g_status_cs);
 }
 
-void me_layout_get(me_input_layout *out) {
+void me_layout_get(int player, me_input_layout *out) {
+    if (player < 0 || player >= ME_MAX_PLAYERS) player = 0;
     EnterCriticalSection(&g_status_cs);
-    *out = g_layout;
+    *out = g_layout[player];
     LeaveCriticalSection(&g_status_cs);
 }

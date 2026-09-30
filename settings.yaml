@@ -487,11 +487,15 @@ console_cores: {}
 #   pce: turbotap      sgx: turbotap
 console_adapters: {}
 
-# What a console's games are played with, where it has a choice. Only Wii
-# games have one; they use a GameCube controller unless listed here. Controls
-# > Controller (while a Wii game is running) edits it. The Wii's choices
-# (under `gamecube`, the GameCube / Wii console):
+# What each player plays a console's games with, where it has a choice. Only
+# Wii games have one; players not listed use a GameCube controller. "Plays
+# with" in Controls > Player N (while a Wii game is running) edits it. The
+# Wii's choices go under `gamecube` (the GameCube / Wii console):
 #   gamecube  classic  classic_pro  nunchuk  remote_sideways  remote
+# e.g.
+#   gamecube:
+#     player1: classic
+#     player2: nunchuk
 console_controllers: {}
 
 # File > Open Recent (most recent first). Filled in as you play.
