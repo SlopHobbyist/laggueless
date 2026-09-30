@@ -69,6 +69,15 @@ enum { ME_ROM_UNKNOWN = -1, ME_ROM_AMBIGUOUS = -2 };
    (may be NULL) gets the consoles it could be. */
 int me_console_for_rom(const char *rom_path, me_console_set *candidates);
 
+/* Every console whose extension lists (`exts` or `also_exts`) have the
+   ROM's extension, header aside. */
+me_console_set me_rom_candidates(const char *rom_path);
+
+/* A ROM's fingerprint, 16 hex digits, for remembering things about it that
+   survive moving or renaming the file: a hash of its size and its first
+   and last 64 KB (a .cue's data track's). Returns 0 if it can't be read. */
+int me_rom_fingerprint(const char *rom_path, char *out, size_t out_sz);
+
 /* The console's adapter with this id, or NULL. */
 const me_adapter *me_console_adapter(const me_console *c, const char *id);
 

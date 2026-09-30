@@ -1717,6 +1717,34 @@ static int create_main_window(int w, int h) {
     return 0;
 }
 
+/* The console the player picked for this ROM before (settings.yaml
+   console_picks), or -1. Only ROMs whose type several consoles use have one;
+   for the rest, nothing is read. */
+static int remembered_console(const char *rom_path) {
+    me_console_set candidates = me_rom_candidates(rom_path);
+    char fp[17];
+    if (!candidates || !(candidates & (candidates - 1)) ||
+        !me_rom_fingerprint(rom_path, fp, sizeof(fp)))
+        return -1;
+    int console = -1;
+    me_settings_lock();   /* the UI thread writes the picks */
+    const char *id = me_settings_console_pick(&g_settings, fp);
+    for (int i = 0; id && i < me_console_count(); i++)
+        if ((candidates >> i & 1) && _stricmp(me_console_at(i)->id, id) == 0) console = i;
+    me_settings_unlock();
+    return console;
+}
+
+/* Once a ROM has opened as `console` by the player's pick (now or before),
+   remember it as their most recent; or forget it where its header decides
+   the same anyway, so settings.yaml keeps only picks that matter. */
+static void remember_console(const char *rom_path, int console) {
+    char fp[17];
+    const me_console *c = me_console_at(console);
+    if (!c || !me_rom_fingerprint(rom_path, fp, sizeof(fp))) return;
+    me_ui_notify_console_pick(fp, me_console_for_rom(rom_path, NULL) == console ? "" : c->id);
+}
+
 /* Work out a ROM's console and its core (Cores > Set Cores, else our pick)
    as cores\<dll> next to the exe. `*console` is the console the player
    picked, or -1 to go by the ROM's extension and header. Returns 0 with
@@ -2605,16 +2633,31 @@ static void run_command(me_session *s, const me_cmd *c) {
     switch (c->type) {
         case ME_CMD_LOAD_ROM: {
             char core_path[MAX_PATH], err[MAX_PATH * 2];
-            int console = c->arg - 1;
             me_console_set candidates;
             printf("[load] %s\n", c->path);
+            /* The player's pick of console: just now, or remembered. */
+            int picked = c->arg > 0 ? c->arg - 1 : remembered_console(c->path);
+            if (c->arg == ME_LOAD_ASK) {
+                /* Shift: ask, starting on what it would open as. A type only
+                   one console uses has nothing to ask. */
+                candidates = me_rom_candidates(c->path);
+                if (candidates & (candidates - 1)) {
+                    int now = picked >= 0 ? picked : me_console_for_rom(c->path, NULL);
+                    printf("[load] Shift held; asking which console\n");
+                    me_ui_pick_console(c->path, candidates, now >= 0 ? now : -1);
+                    return;
+                }
+            }
+            if (picked >= 0 && c->arg <= 0)
+                printf("[load] opening as %s, as picked before\n", me_console_at(picked)->name);
+            int console = picked;
             /* The current game (if any) keeps running untouched until the
                new one is ready to open, or for good if it can't be. */
             int rc = resolve_rom_core(c->path, &console, &candidates,
                                       core_path, sizeof(core_path), err, sizeof(err));
             if (rc == ME_ROM_AMBIGUOUS) {
                 printf("[load] several consoles use this file type; asking which\n");
-                me_ui_pick_console(c->path, candidates);
+                me_ui_pick_console(c->path, candidates, -1);
                 return;
             }
             if (rc != 0) {
@@ -2623,7 +2666,9 @@ static void run_command(me_session *s, const me_cmd *c) {
                 return;
             }
             if (s->active) session_close(s);
-            open_game(s, core_path, c->path, console);
+            /* Remembered only once it opens: a wrong pick that fails isn't. */
+            if (open_game(s, core_path, c->path, console) == 0 && picked >= 0)
+                remember_console(c->path, console);
             return;
         }
         case ME_CMD_HARD_RESET:
@@ -2846,7 +2891,7 @@ int main(int argc, char **argv) {
     char table_core_path[MAX_PATH], pick_path[MAX_PATH] = "";
     const char *core_path = NULL;
     const char *rom_path  = NULL;
-    int console = -1;
+    int console = -1, remembered = -1;
     me_console_set candidates = 0;
     if (npos == 2) {
         core_path = positional[0];
@@ -2854,6 +2899,7 @@ int main(int argc, char **argv) {
         console   = console_for_core(rom_path, core_path);
     } else if (npos == 1) {
         char err[MAX_PATH * 2];
+        console = remembered = remembered_console(positional[0]);
         int rc = resolve_rom_core(positional[0], &console, &candidates,
                                   table_core_path, sizeof(table_core_path), err, sizeof(err));
         if (rc == ME_ROM_AMBIGUOUS) {
@@ -2916,13 +2962,15 @@ int main(int argc, char **argv) {
     int exit_code = 0;
     if (rom_path) {
         /* A failure after the window is up leaves it idle, showing why. */
-        if (open_game(&session, core_path, rom_path, console) != 0 && !g_hwnd) exit_code = 1;
+        int rc = open_game(&session, core_path, rom_path, console);
+        if (rc != 0 && !g_hwnd) exit_code = 1;
+        if (rc == 0 && remembered >= 0) remember_console(rom_path, console);   /* most recent */
     } else if (create_main_window(640, 480) == 0) {
         me_platform_set_idle(g_hwnd, 1);
         publish_status(&session);
         if (pick_path[0]) {
             printf("[main] several consoles use this file type; asking which\n");
-            me_ui_pick_console(pick_path, candidates);
+            me_ui_pick_console(pick_path, candidates, -1);
         } else {
             printf("[main] no game loaded; use File > Open ROM or drop a ROM onto the window\n");
         }

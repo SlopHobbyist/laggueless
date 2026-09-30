@@ -721,6 +721,21 @@ static void load_document(yaml_document_t *doc, yaml_node_t *root, me_settings *
                 snprintf(out->recent[out->recent_n++], sizeof(out->recent[0]), "%s", path);
         }
     }
+
+    /* ROM fingerprint -> picked console, most recent first */
+    yaml_node_t *cp = map_get(doc, root, "console_picks");
+    if (cp && cp->type == YAML_MAPPING_NODE) {
+        out->console_picks_n = 0;
+        for (yaml_node_pair_t *p = cp->data.mapping.pairs.start;
+             p < cp->data.mapping.pairs.top && out->console_picks_n < ME_CONSOLE_PICKS_MAX; p++) {
+            const char *rom = scalar_str(doc_get(doc, p->key));
+            const char *console = scalar_str(doc_get(doc, p->value));
+            if (!rom || !*rom || !console || !*console) continue;
+            struct me_console_pick *e = &out->console_picks[out->console_picks_n++];
+            snprintf(e->rom, sizeof(e->rom), "%s", rom);
+            snprintf(e->console, sizeof(e->console), "%s", console);
+        }
+    }
 }
 
 /* Parse whatever input `parser` was given into `out`. Returns 0 on success. */
@@ -950,6 +965,17 @@ int me_settings_save(const char *path, const me_settings *s) {
         fputc('\n', f);
     }
 
+    fprintf(f, "\nconsole_picks:");
+    if (s->console_picks_n == 0) fprintf(f, " {}");
+    fputc('\n', f);
+    for (int i = 0; i < s->console_picks_n; i++) {
+        fprintf(f, "  ");
+        write_quoted(f, s->console_picks[i].rom);
+        fprintf(f, ": ");
+        write_quoted(f, s->console_picks[i].console);
+        fputc('\n', f);
+    }
+
     int bad = ferror(f);
     if (fclose(f) != 0) bad = 1;
     if (bad) {
@@ -1058,6 +1084,34 @@ void me_settings_set_console_core(me_settings *s, const char *console, const cha
         snprintf(s->console_cores[i].console, sizeof(s->console_cores[i].console), "%s", console);
     }
     snprintf(s->console_cores[i].dll, sizeof(s->console_cores[i].dll), "%s", dll);
+}
+
+static int console_pick_index(const me_settings *s, const char *rom) {
+    for (int i = 0; i < s->console_picks_n; i++)
+        if (iequals(s->console_picks[i].rom, rom)) return i;
+    return -1;
+}
+
+const char *me_settings_console_pick(const me_settings *s, const char *rom) {
+    int i = console_pick_index(s, rom);
+    return i >= 0 ? s->console_picks[i].console : NULL;
+}
+
+void me_settings_set_console_pick(me_settings *s, const char *rom, const char *console) {
+    if (!rom || !*rom) return;
+    int i = console_pick_index(s, rom);
+    if (i >= 0) {   /* take it out; it goes back in at the front */
+        memmove(&s->console_picks[i], &s->console_picks[i + 1],
+                (size_t)(s->console_picks_n - i - 1) * sizeof(s->console_picks[0]));
+        s->console_picks_n--;
+    }
+    if (!console || !*console) return;
+    if (s->console_picks_n >= ME_CONSOLE_PICKS_MAX) s->console_picks_n = ME_CONSOLE_PICKS_MAX - 1;
+    memmove(&s->console_picks[1], &s->console_picks[0],
+            (size_t)s->console_picks_n * sizeof(s->console_picks[0]));
+    s->console_picks_n++;
+    snprintf(s->console_picks[0].rom, sizeof(s->console_picks[0].rom), "%s", rom);
+    snprintf(s->console_picks[0].console, sizeof(s->console_picks[0].console), "%s", console);
 }
 
 static int console_adapter_index(const me_settings *s, const char *console) {

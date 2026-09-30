@@ -137,8 +137,11 @@ static LRESULT CALLBACK me_wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_DROPFILES: {
             HDROP drop = (HDROP)wp;
             char path[MAX_PATH];
+            /* Shift held: ask which console, even if it's known. The physical
+               state: during the drag, the keyboard was Explorer's. */
+            int ask = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
             if (DragQueryFileA(drop, 0, path, sizeof(path)) > 0)
-                me_cmd_post(ME_CMD_LOAD_ROM, 0, path);
+                me_cmd_post(ME_CMD_LOAD_ROM, ask ? ME_LOAD_ASK : 0, path);
             DragFinish(drop);
             /* Take focus so the game gets input right away (input is ignored
                while another window is foreground). May be refused by the OS

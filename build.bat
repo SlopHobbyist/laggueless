@@ -124,6 +124,9 @@ if errorlevel 1 (
     exit /b 1
 )
 
+REM Free system files cores need to start games (free_firmware\README.md).
+robocopy "%ROOT%free_firmware" "%BUILD%\firmware" /E /XF README.md /NFL /NDL /NJH /NJS /NP >nul
+
 REM Copy libyaml runtime alongside the exe so the user doesn't need mingw64\bin on PATH.
 for %%D in ("C:\msys64\mingw64\bin" "C:\mingw64\bin") do (
     if exist "%%~D\libyaml-0-2.dll" (

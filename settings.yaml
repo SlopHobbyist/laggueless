@@ -497,3 +497,8 @@ console_adapters: {}
 
 # File > Open Recent (most recent first). Filled in as you play.
 recent: []
+
+# The console picked for games whose file type several consoles use (Pick
+# Console), by file fingerprint. Filled in as you play; hold Shift while
+# dropping a game on the window to pick again. Keeps the last 100.
+console_picks: {}

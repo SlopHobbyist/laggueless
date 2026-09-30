@@ -17,7 +17,9 @@
 typedef enum {
     ME_CMD_LOAD_ROM,    /* path: ROM to load (core from its console, rom_cores.h);
                            arg: the console's index + 1 if the player picked it,
-                           0 to work it out */
+                           0 to work it out (a remembered pick, else its type
+                           and header), ME_LOAD_ASK to ask the player even if
+                           that's known */
     ME_CMD_HARD_RESET,  /* reload core + game */
     ME_CMD_SOFT_RESET,  /* retro_reset */
     ME_CMD_POWER,       /* power off the running game, or back on */
@@ -25,6 +27,8 @@ typedef enum {
     ME_CMD_ADAPTER,     /* the running console's adapter changed in the live
                            settings; plug it into the core */
 } me_cmd_type;
+
+#define ME_LOAD_ASK (-1)
 
 typedef struct {
     me_cmd_type type;

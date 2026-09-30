@@ -76,7 +76,7 @@ static const me_console k_consoles[] = {
       "genesis_plus_gx|gearsystem|picodrive|smsplus|mesen2", 1, NULL, 0 },
     { "sg1000",    "SG-1000",                  "sg|sc|mv", NULL,
       "genesis_plus_gx|gearsystem|picodrive|smsplus|bluemsx", 2, NULL, 0 },
-    { "dreamcast", "Dreamcast",                "gdi|cdi", "cue",
+    { "dreamcast", "Dreamcast",                "gdi|cdi", "cue|chd|m3u",
       "flycast", 4, NULL, 0 },
 
     /* NEC */
@@ -88,7 +88,7 @@ static const me_console k_consoles[] = {
     /* Sony */
     { "psx",       "PlayStation",              "cue|chd|ccd|toc|m3u|pbp", "iso",
       "mednafen_psx|mednafen_psx_hw|swanstation|pcsx_rearmed", 2, NULL, 0 },
-    { "psp",       "PlayStation Portable",     "iso|cso", NULL,
+    { "psp",       "PlayStation Portable",     "iso|cso", "chd",
       "ppsspp", 1, NULL, 0 },
 
     /* Atari */
@@ -169,19 +169,20 @@ static const struct { const char *core; const char *name; } k_core_names[] = {
     { "vecx", "vecx" },
 };
 
-/* System files (in the firmware folder) a core can't do without, as the core
-   names them: files or folders, '|' between names it accepts instead. Only
-   cores that fail or hang without them; ones with a built-in stand-in
-   (Flycast, PCSX ReARMed, PokeMini...) aren't listed. */
+/* System files (in the firmware folder) a core can't start games without, as
+   the core names them: files or folders, '|' between names it accepts
+   instead. Found by starting each core with an empty firmware folder; cores
+   that start without (a built-in stand-in, or files that only add extras,
+   like Dolphin's Sys and PPSSPP's assets) aren't listed. blueMSX's Machines
+   ships with laggueless (free_firmware\: C-BIOS). SwanStation needs a BIOS
+   too, but accepts any file name, so it can't be checked by name. */
 static const struct { const char *core; const char *files[3]; } k_core_files[] = {
     { "gearcoleco",      { "colecovision.rom|coleco.rom|os7.u2" } },
     { "freeintv",        { "exec.bin", "grom.bin" } },
     { "mednafen_psx",    { "scph5501.bin|scph5500.bin|scph5502.bin|scph5503.bin" } },
     { "mednafen_psx_hw", { "scph5501.bin|scph5500.bin|scph5502.bin|scph5503.bin" } },
     { "mednafen_lynx",   { "lynxboot.img" } },
-    { "bluemsx",         { "Machines", "Databases" } },
-    { "dolphin",         { "dolphin-emu/Sys" } },
-    { "ppsspp",          { "PPSSPP" } },
+    { "bluemsx",         { "Machines" } },
 };
 
 #define COUNT(a) (sizeof(a) / sizeof((a)[0]))
@@ -216,7 +217,53 @@ typedef struct {
     size_t        head_n;
     unsigned char sector0[16];    /* start of sector 0's user data */
     char          system_id[33];  /* primary volume descriptor's; "" if none */
+    /* A CHD's disc, from its track list: 'D' a DVD, 'G' a GD-ROM, or a CD
+       whose first track is '1' mode 1 data, '2' mode 2 data, 'A' audio.
+       0 if not a CHD (or none of those). */
+    char          chd_disc;
 } rom_header;
+
+static int bytes_at(const rom_header *h, size_t off, const void *sig, size_t n) {
+    return h->head_n >= off + n && memcmp(h->head + off, sig, n) == 0;
+}
+
+/* `name`, a file a list (cue sheet, playlist) names: as is if absolute,
+   else beside the list. */
+static void beside(const char *list_path, const char *name, char *out, size_t out_sz) {
+    if (name[0] == '\\' || name[0] == '/' || (name[0] && name[1] == ':')) {
+        snprintf(out, out_sz, "%s", name);
+        return;
+    }
+    size_t dir = 0;
+    for (size_t i = 0; list_path[i]; i++) if (list_path[i] == '\\' || list_path[i] == '/') dir = i + 1;
+    snprintf(out, out_sz, "%.*s%s", (int)dir, list_path, name);
+}
+
+/* The first file an .m3u playlist lists (one per line; '#' lines are
+   comments). */
+static int m3u_first_entry(const char *m3u_path, char *out, size_t out_sz) {
+    FILE *f = fopen(m3u_path, "rb");
+    if (!f) return 0;
+    char text[16384];
+    size_t n = fread(text, 1, sizeof(text) - 1, f);
+    fclose(f);
+    text[n] = '\0';
+    char *line = text;
+    if (memcmp(line, "\xEF\xBB\xBF", 3) == 0) line += 3;   /* UTF-8 BOM */
+    while (line && *line) {
+        char *next = strpbrk(line, "\r\n");
+        if (next) *next++ = '\0';
+        while (*line == ' ' || *line == '\t') line++;
+        size_t len = strlen(line);
+        while (len && (line[len - 1] == ' ' || line[len - 1] == '\t')) line[--len] = '\0';
+        if (len && line[0] != '#') {
+            beside(m3u_path, line, out, out_sz);
+            return 1;
+        }
+        line = next;
+    }
+    return 0;
+}
 
 /* The file a cue sheet's first data track is in, relative to the sheet
    unless absolute. Falls back to its first file. */
@@ -247,14 +294,44 @@ static int cue_data_file(const char *cue_path, char *out, size_t out_sz) {
     }
     const char *name = data ? file : first;
     if (!name[0]) return 0;
-    if (name[0] == '\\' || name[0] == '/' || (name[0] && name[1] == ':')) {
-        snprintf(out, out_sz, "%s", name);
-    } else {
-        size_t dir = 0;
-        for (size_t i = 0; cue_path[i]; i++) if (cue_path[i] == '\\' || cue_path[i] == '/') dir = i + 1;
-        snprintf(out, out_sz, "%.*s%s", (int)dir, cue_path, name);
-    }
+    beside(cue_path, name, out, out_sz);
     return 1;
+}
+
+static unsigned long long big_endian(const unsigned char *p, int n) {
+    unsigned long long v = 0;
+    while (n--) v = v << 8 | *p++;
+    return v;
+}
+
+/* A CHD's disc data is compressed, but its track list is metadata stored
+   plain: entries of tag, flags + 24-bit length, the next entry's offset,
+   then the data ("TRACK:1 TYPE:MODE2_RAW ..." for a CD track). The first
+   entry's offset is in the header, at 48 in version 5, 36 before. */
+static void read_chd_disc(FILE *f, rom_header *h) {
+    if (h->head_n < 56) return;
+    unsigned version = (unsigned)big_endian(h->head + 12, 4);
+    unsigned long long meta = big_endian(h->head + (version >= 5 ? 48 : 36), 8);
+    for (int n = 0; meta && n < 256; n++) {
+        unsigned char e[16];
+        char text[256];
+        if (_fseeki64(f, (long long)meta, SEEK_SET) != 0 || fread(e, 1, sizeof(e), f) != sizeof(e)) return;
+        size_t len = (size_t)big_endian(e + 5, 3);
+        len = fread(text, 1, len < sizeof(text) - 1 ? len : sizeof(text) - 1, f);
+        text[len] = '\0';
+        if (memcmp(e, "DVD ", 4) == 0) {
+            h->chd_disc = 'D';
+        } else if (memcmp(e, "CHGD", 4) == 0) {
+            h->chd_disc = 'G';
+        } else if ((memcmp(e, "CHT2", 4) == 0 || memcmp(e, "CHTR", 4) == 0) && !h->chd_disc &&
+                   strncmp(text, "TRACK:1 ", 8) == 0) {
+            const char *t = strstr(text, "TYPE:");
+            if (t) h->chd_disc = strncmp(t + 5, "MODE2", 5) == 0 ? '2'
+                               : strncmp(t + 5, "MODE1", 5) == 0 ? '1'
+                               : strncmp(t + 5, "AUDIO", 5) == 0 ? 'A' : 0;
+        }
+        meta = big_endian(e + 8, 8);
+    }
 }
 
 static int read_header(const char *rom_path, const char *ext, rom_header *h) {
@@ -267,6 +344,11 @@ static int read_header(const char *rom_path, const char *ext, rom_header *h) {
     FILE *f = fopen(rom_path, "rb");
     if (!f) return 0;
     h->head_n = fread(h->head, 1, sizeof(h->head), f);
+    if (bytes_at(h, 0, "MComprHD", 8)) {
+        read_chd_disc(f, h);
+        fclose(f);
+        return 1;
+    }
 
     /* Raw 2352-byte sectors start with a sync pattern, then a header whose
        last byte is the mode: user data follows it (mode 1), or an 8-byte
@@ -290,10 +372,6 @@ static int read_header(const char *rom_path, const char *ext, rom_header *h) {
     return 1;
 }
 
-static int bytes_at(const rom_header *h, size_t off, const void *sig, size_t n) {
-    return h->head_n >= off + n && memcmp(h->head + off, sig, n) == 0;
-}
-
 /* Does the header say it's a game for this console? Only asked of the
    consoles an extension could be for, so each needs to tell its games apart
    from the others' only. Consoles whose ROMs have no header never say so. */
@@ -311,12 +389,16 @@ static int header_is(const me_console *c, const rom_header *h) {
         return h->head_n >= 3 && h->head[0] == 0xA8 && (h->head[1] ^ h->head[2]) == 0xFF;
     if (strcmp(id, "gamecube") == 0)   /* Wii magic word, GameCube magic word */
         return bytes_at(h, 0x18, "\x5D\x1C\x9E\xA3", 4) || bytes_at(h, 0x1C, "\xC2\x33\x9F\x3D", 4);
+    /* A CHD: of the consoles that take them, the PSP's discs are the DVDs
+       (UMDs), the PlayStation's the CDs in mode 2, the Dreamcast's GD-ROMs
+       or (converted from a cue sheet) mode 1 CDs. */
     if (strcmp(id, "psp") == 0)
-        return strncmp(h->system_id, "PSP GAME", 8) == 0;
+        return strncmp(h->system_id, "PSP GAME", 8) == 0 || h->chd_disc == 'D';
     if (strcmp(id, "psx") == 0)
-        return strncmp(h->system_id, "PLAYSTATION", 11) == 0;
+        return strncmp(h->system_id, "PLAYSTATION", 11) == 0 || h->chd_disc == '2';
     if (strcmp(id, "dreamcast") == 0)  /* IP.BIN, on both of a GD-ROM's areas */
-        return memcmp(h->sector0, "SEGA SEGAKATANA", 15) == 0;
+        return memcmp(h->sector0, "SEGA SEGAKATANA", 15) == 0 ||
+               h->chd_disc == 'G' || h->chd_disc == '1';
     return 0;
 }
 
@@ -328,29 +410,85 @@ static int first_of(me_console_set s) {
     return i;
 }
 
-int me_console_for_rom(const char *rom_path, me_console_set *candidates) {
-    if (candidates) *candidates = 0;
-    if (!rom_path) return ME_ROM_UNKNOWN;
+/* The extension of a path's file name ("nes"), or NULL. */
+static const char *extension_of(const char *path) {
     const char *ext = NULL;
-    for (const char *p = rom_path; *p; p++) {
+    for (const char *p = path; *p; p++) {
         if (*p == '\\' || *p == '/') ext = NULL;
         else if (*p == '.')          ext = p + 1;
     }
-    if (!ext || !*ext) return ME_ROM_UNKNOWN;
+    return ext && *ext ? ext : NULL;
+}
 
+me_console_set me_rom_candidates(const char *rom_path) {
+    const char *ext = rom_path ? extension_of(rom_path) : NULL;
     me_console_set all = 0;
-    for (size_t i = 0; i < COUNT(k_consoles); i++) {
+    for (size_t i = 0; ext && i < COUNT(k_consoles); i++) {
         const me_console *c = &k_consoles[i];
         if (in_list(c->exts, ext) || (c->also_exts && in_list(c->also_exts, ext)))
             all |= 1ull << i;
     }
+    return all;
+}
+
+int me_rom_fingerprint(const char *rom_path, char *out, size_t out_sz) {
+    if (out_sz) out[0] = '\0';
+    /* By the disc a playlist starts with, and a cue sheet's data track: two
+       games' playlists or cue sheets can read the same. */
+    const char *ext = rom_path ? extension_of(rom_path) : NULL;
+    char entry[MAX_PATH], track[MAX_PATH];
+    if (ext && _stricmp(ext, "m3u") == 0 && m3u_first_entry(rom_path, entry, sizeof(entry))) {
+        rom_path = entry;
+        ext = extension_of(entry);
+    }
+    if (ext && _stricmp(ext, "cue") == 0 && cue_data_file(rom_path, track, sizeof(track)))
+        rom_path = track;
+    FILE *f = rom_path ? fopen(rom_path, "rb") : NULL;
+    if (!f) return 0;
+    /* FNV-1a 64 of the size, the first 64 KB and the last 64 KB: fast on
+       disc images, and a small cartridge is read whole. */
+    unsigned long long h = 0xcbf29ce484222325ull;
+    unsigned char buf[65536];
+    long long size = (_fseeki64(f, 0, SEEK_END) == 0) ? _ftelli64(f) : -1;
+    for (int i = 0; i < 8; i++) { h ^= (unsigned char)(size >> (8 * i)); h *= 0x100000001b3ull; }
+    long long offs[2] = { 0, size > (long long)sizeof(buf) ? size - (long long)sizeof(buf) : -1 };
+    for (int k = 0; k < 2; k++) {
+        if (offs[k] < 0 || _fseeki64(f, offs[k], SEEK_SET) != 0) continue;
+        size_t n = fread(buf, 1, sizeof(buf), f);
+        for (size_t i = 0; i < n; i++) { h ^= buf[i]; h *= 0x100000001b3ull; }
+    }
+    fclose(f);
+    if (size < 0) return 0;
+    snprintf(out, out_sz, "%016llx", h);
+    return 1;
+}
+
+int me_console_for_rom(const char *rom_path, me_console_set *candidates) {
+    me_console_set all = me_rom_candidates(rom_path);
     if (candidates) *candidates = all;
     if (!all) return ME_ROM_UNKNOWN;
     if (only_one(all)) return first_of(all);
 
+    /* A playlist is for the console its first disc is (not another
+       playlist: that could go round in circles). */
+    char entry[MAX_PATH];
+    if (_stricmp(extension_of(rom_path), "m3u") == 0) {
+        const char *entry_ext = m3u_first_entry(rom_path, entry, sizeof(entry)) ? extension_of(entry) : NULL;
+        if (entry_ext && _stricmp(entry_ext, "m3u") != 0) {
+            me_console_set disc;
+            int i = me_console_for_rom(entry, &disc);
+            if (i >= 0 && (all >> i & 1)) return i;
+            if (i == ME_ROM_AMBIGUOUS && (disc & all)) {
+                if (only_one(disc & all)) return first_of(disc & all);
+                if (candidates) *candidates = disc & all;
+            }
+        }
+        return ME_ROM_AMBIGUOUS;
+    }
+
     me_console_set says = 0;
     rom_header h;
-    if (read_header(rom_path, ext, &h)) {
+    if (read_header(rom_path, extension_of(rom_path), &h)) {
         for (size_t i = 0; i < COUNT(k_consoles); i++)
             if ((all >> i & 1) && header_is(&k_consoles[i], &h)) says |= 1ull << i;
     }

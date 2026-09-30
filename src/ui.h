@@ -21,8 +21,12 @@ void me_ui_notify_frame_gen(int on);              /* result of ME_CMD_FRAME_GEN 
 void me_ui_notify_error(const char *fmt, ...);    /* message box; before the window
                                                      exists, shown right away */
 /* Ask which of `consoles` a ROM is for (its file type is shared and its
-   header doesn't say), then load it as that console's game. */
-void me_ui_pick_console(const char *rom_path, me_console_set consoles);
+   header doesn't say, or the player held Shift), then load it as that
+   console's game. `current` (an index, or -1) starts selected. */
+void me_ui_pick_console(const char *rom_path, me_console_set consoles, int current);
+/* Remember `console` (an id; "" forgets) for the ROM with this fingerprint
+   (me_rom_fingerprint) in settings.yaml. */
+void me_ui_notify_console_pick(const char *rom_fingerprint, const char *console);
 
 /* Re-read settings.yaml, apply `patch`, and write it back. Re-reading (rather
    than saving the live struct) keeps command-line overrides out of the file.

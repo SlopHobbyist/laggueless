@@ -14,6 +14,7 @@
 #define WM_ME_ERROR     (WM_APP + 11)
 #define WM_ME_FRAME_GEN (WM_APP + 12)   /* wp: 1 = on */
 #define WM_ME_PICK      (WM_APP + 13)   /* lParam = malloc'd pick_request */
+#define WM_ME_CONSOLE_PICK (WM_APP + 14) /* lParam = malloc'd "fingerprint=console" */
 
 enum {
     IDM_OPEN = 100,
@@ -261,20 +262,37 @@ void me_ui_notify_error(const char *fmt, ...) {
 
 typedef struct {
     me_console_set consoles;
+    int            current;   /* console index to start on, or -1 */
     char           path[MAX_PATH];
 } pick_request;
 
-void me_ui_pick_console(const char *rom_path, me_console_set consoles) {
+void me_ui_pick_console(const char *rom_path, me_console_set consoles, int current) {
     HWND h = me_platform_hwnd();
     pick_request *r = h ? malloc(sizeof(*r)) : NULL;
     if (!r) return;
     r->consoles = consoles;
+    r->current  = current;
     snprintf(r->path, sizeof(r->path), "%s", rom_path);
     if (!PostMessageA(h, WM_ME_PICK, 0, (LPARAM)r)) free(r);
 }
 
+void me_ui_notify_console_pick(const char *rom_fingerprint, const char *console) {
+    char buf[64];
+    snprintf(buf, sizeof(buf), "%s=%s", rom_fingerprint, console ? console : "");
+    post_string(WM_ME_CONSOLE_PICK, 0, buf);
+}
+
+static void patch_console_pick(me_settings *s, const void *ctx) {
+    char buf[64];
+    snprintf(buf, sizeof(buf), "%s", (const char *)ctx);
+    char *eq = strchr(buf, '=');
+    if (!eq) return;
+    *eq = '\0';
+    me_settings_set_console_pick(s, buf, eq + 1);
+}
+
 /* ---- Pick Console ------------------------------------------------------------ */
-enum { IDC_PICK_FILE = 1400, IDC_PICK_HINT, IDC_PICK_LIST };
+enum { IDC_PICK_FILE = 1400, IDC_PICK_HINT, IDC_PICK_LIST, IDC_PICK_NOTE };
 
 typedef struct {
     const pick_request *req;
@@ -293,9 +311,13 @@ static INT_PTR CALLBACK pick_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
             me_ui_add_control(dlg, "STATIC", base, SS_LEFT | SS_NOPREFIX | SS_ENDELLIPSIS,
                               7, 7, 226, 9, IDC_PICK_FILE);
             me_ui_add_control(dlg, "STATIC",
-                              "Several consoles use this type of file, and the file doesn't say "
-                              "which one it's for. Pick its console:",
+                              d->req->current >= 0
+                                  ? "Several consoles use this type of file. Pick the one it's for "
+                                    "(it opens as the selected one now):"
+                                  : "Several consoles use this type of file, and the file doesn't say "
+                                    "which one it's for. Pick its console:",
                               SS_LEFT, 7, 19, 226, 18, IDC_PICK_HINT);
+            int sel = 0;
             HWND list = me_ui_add_control(dlg, "LISTBOX", "",
                                           LBS_NOTIFY | LBS_NOINTEGRALHEIGHT | WS_BORDER |
                                           WS_VSCROLL | WS_TABSTOP,
@@ -309,14 +331,19 @@ static INT_PTR CALLBACK pick_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
                 me_core_display_name(dll, core, sizeof(core));
                 snprintf(label, sizeof(label), "%s  (%s)", c->name, core);
                 SendMessageA(list, LB_ADDSTRING, 0, (LPARAM)label);
+                if (i == d->req->current) sel = d->n;
                 d->console[d->n++] = i;
             }
             me_settings_unlock();
-            SendMessageA(list, LB_SETCURSEL, 0, 0);
+            SendMessageA(list, LB_SETCURSEL, (WPARAM)sel, 0);
+            me_ui_add_control(dlg, "STATIC",
+                              "It opens as this console from now on. To pick again, hold Shift "
+                              "while dropping it on the window or clicking it in Open Recent.",
+                              SS_LEFT, 7, 118, 226, 18, IDC_PICK_NOTE);
             me_ui_add_control(dlg, "BUTTON", "Open",   BS_DEFPUSHBUTTON | WS_TABSTOP | WS_GROUP,
-                              119, 119, 55, 14, IDOK);
+                              119, 141, 55, 14, IDOK);
             me_ui_add_control(dlg, "BUTTON", "Cancel", BS_PUSHBUTTON | WS_TABSTOP,
-                              178, 119, 55, 14, IDCANCEL);
+                              178, 141, 55, 14, IDCANCEL);
             SetFocus(list);
             return FALSE;   /* focus set */
         }
@@ -343,7 +370,7 @@ static INT_PTR CALLBACK pick_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
    replaced once a console is picked. */
 static void pick_console(HWND owner, const pick_request *r) {
     pick_dlg d = { .req = r };
-    INT_PTR picked = me_ui_dialog(owner, L"Pick Console", 240, 140, pick_proc, (LPARAM)&d);
+    INT_PTR picked = me_ui_dialog(owner, L"Pick Console", 240, 162, pick_proc, (LPARAM)&d);
     if (picked > 0) me_cmd_post(ME_CMD_LOAD_ROM, (int)picked, r->path);
 }
 
@@ -546,7 +573,9 @@ static void on_command(HWND h, UINT id) {
     }
     if (id >= IDM_RECENT_FIRST && id < IDM_RECENT_FIRST + ME_RECENT_MAX) {
         int i = (int)(id - IDM_RECENT_FIRST);
-        if (i < s->recent_n) me_cmd_post(ME_CMD_LOAD_ROM, 0, s->recent[i]);
+        /* Shift-click: ask which console, as Shift does on a drop. */
+        int ask = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+        if (i < s->recent_n) me_cmd_post(ME_CMD_LOAD_ROM, ask ? ME_LOAD_ASK : 0, s->recent[i]);
         return;
     }
     switch (id) {
@@ -631,6 +660,15 @@ LRESULT me_ui_handle(HWND h, UINT msg, WPARAM wp, LPARAM lp, int *handled) {
             pick_request *r = (pick_request *)lp;
             pick_console(h, r);
             free(r);
+            return 0;
+        }
+        case WM_ME_CONSOLE_PICK: {
+            char *pick = (char *)lp;
+            me_settings_lock();   /* the emulation thread looks picks up */
+            patch_console_pick(me_app_settings(), pick);
+            me_settings_unlock();
+            me_ui_persist(patch_console_pick, pick);
+            free(pick);
             return 0;
         }
     }

@@ -95,6 +95,10 @@ typedef enum {
 /* Consoles with a core picked in Cores > Set Cores. */
 #define ME_CONSOLE_CORES_MAX 64
 
+/* Console picks remembered for ROMs whose file type several consoles use.
+   The oldest is forgotten past this: about 4 KB of settings.yaml at most. */
+#define ME_CONSOLE_PICKS_MAX 100
+
 typedef enum {
     ME_ASPECT_1_1 = 0,
     ME_ASPECT_4_3 = 1,
@@ -211,6 +215,15 @@ typedef struct {
     /* Recently played ROMs, most recent first, no duplicates. */
     char recent[ME_RECENT_MAX][260];
     int  recent_n;
+
+    /* The console picked for a ROM (Pick Console), keyed by the ROM's
+       fingerprint (me_rom_fingerprint), most recent first. Only kept where
+       the ROM's header alone would decide differently. */
+    struct me_console_pick {
+        char rom[17];
+        char console[32];
+    } console_picks[ME_CONSOLE_PICKS_MAX];
+    int console_picks_n;
 } me_settings;
 
 /* Fill `out` with hard-coded defaults (used when settings.yaml is missing or
@@ -268,6 +281,13 @@ const char *me_settings_console_adapter(const me_settings *s, const char *consol
 
 /* Plug an adapter in for a console; NULL or "" unplugs it. */
 void me_settings_set_console_adapter(me_settings *s, const char *console, const char *adapter);
+
+/* The console id picked for a ROM fingerprint, or NULL. */
+const char *me_settings_console_pick(const me_settings *s, const char *rom);
+
+/* Remember `console` for a ROM fingerprint, as the most recent pick (the
+   oldest goes past ME_CONSOLE_PICKS_MAX); NULL or "" forgets it. */
+void me_settings_set_console_pick(me_settings *s, const char *rom, const char *console);
 
 /* Display names for the binding dialogs. */
 const char *me_input_label(me_input_id id);
