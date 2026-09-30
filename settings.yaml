@@ -154,7 +154,12 @@ hotkeys:
 # `playerN_input` picks which are active: both | keyboard | controller.
 # `playerN_controller` is the XInput slot (0..3) that player's pad is in.
 # `playerN_lstick_as_dpad`: on consoles with no analog stick (NES, SNES,
-#   Genesis...), that player's left stick also works the D-pad.
+#   Genesis...), that player's left stick also works the D-pad. Consoles with
+#   one (N64, GameCube, Dreamcast, PlayStation, PSP, 3DS, 5200, Vectrex) use
+#   it as their stick instead, unless you turn it on for them (Controls >
+#   Player N while one of their games runs; saved in console_controls). While
+#   the left stick works the D-pad, that is all it does, whatever is bound to
+#   its directions.
 # `playerN_rumble`: that player's pad rumbles when the game asks (N64 Rumble
 #   Pak, DualShock, GameCube...). Consoles without rumble never ask.
 #
@@ -242,6 +247,22 @@ controls:
       back:
         keyboard:   RShift
         controller: Back
+      lstick_up:
+        controller: LStickUp
+      lstick_down:
+        controller: LStickDown
+      lstick_left:
+        controller: LStickLeft
+      lstick_right:
+        controller: LStickRight
+      rstick_up:
+        controller: RStickUp
+      rstick_down:
+        controller: RStickDown
+      rstick_left:
+        controller: RStickLeft
+      rstick_right:
+        controller: RStickRight
     player2:               # controller only by default; the keyboard is player 1's
       dpad_up:
         controller: DPadUp
@@ -275,6 +296,22 @@ controls:
         controller: Start
       back:
         controller: Back
+      lstick_up:
+        controller: LStickUp
+      lstick_down:
+        controller: LStickDown
+      lstick_left:
+        controller: LStickLeft
+      lstick_right:
+        controller: LStickRight
+      rstick_up:
+        controller: RStickUp
+      rstick_down:
+        controller: RStickDown
+      rstick_left:
+        controller: RStickLeft
+      rstick_right:
+        controller: RStickRight
     player3:               # controller only by default
       dpad_up:
         controller: DPadUp
@@ -308,6 +345,22 @@ controls:
         controller: Start
       back:
         controller: Back
+      lstick_up:
+        controller: LStickUp
+      lstick_down:
+        controller: LStickDown
+      lstick_left:
+        controller: LStickLeft
+      lstick_right:
+        controller: LStickRight
+      rstick_up:
+        controller: RStickUp
+      rstick_down:
+        controller: RStickDown
+      rstick_left:
+        controller: RStickLeft
+      rstick_right:
+        controller: RStickRight
     player4:               # controller only by default
       dpad_up:
         controller: DPadUp
@@ -341,6 +394,22 @@ controls:
         controller: Start
       back:
         controller: Back
+      lstick_up:
+        controller: LStickUp
+      lstick_down:
+        controller: LStickDown
+      lstick_left:
+        controller: LStickLeft
+      lstick_right:
+        controller: LStickRight
+      rstick_up:
+        controller: RStickUp
+      rstick_down:
+        controller: RStickDown
+      rstick_left:
+        controller: RStickLeft
+      rstick_right:
+        controller: RStickRight
 
   # Advanced inputs: extras a core offers beyond its console's controller,
   # e.g. FDS disk swap and VS coins (NES), lid/mic (DS), buttons III-VI
@@ -397,9 +466,10 @@ cores:
 # Per-console controls: what you changed for one console's games (Controls >
 # Player N while one of them runs changes these, not universal). Same format
 # as universal, listing only the inputs that differ from the console's
-# built-in defaults. Keys are console ids (nes, snes, n64, psx, md...), some
-# with a suffix for a core that lays the pad out its own way (md_blastem,
-# lynx_beetle). A core with use_universal: false above overrides this too.
+# built-in defaults, and `lstick_as_dpad: true/false` per player where you
+# changed it for the console. Keys are console ids (nes, snes, n64, psx,
+# md...), some with a suffix for a core that lays the pad out its own way
+# (md_blastem, lynx_beetle). A core with use_universal: false above overrides this too.
 console_controls: {}
 
 # Which core each console's games open in. Cores > Set Cores edits this.

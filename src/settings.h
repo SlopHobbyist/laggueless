@@ -165,7 +165,8 @@ typedef struct {
     int             xi_index[ME_MAX_PLAYERS];
     /* On consoles whose controller has no analog stick, the player's left
        stick pushed past half travel also presses the D-pad (Controls >
-       Player N). On by default; a plain remap, so run-legal. */
+       Player N). On by default; a plain remap, so run-legal. A console can
+       have its own choice (console_controls); see me_lstick_as_dpad. */
     int             lstick_as_dpad[ME_MAX_PLAYERS];
     /* The player's pad rumbles when the core asks (consoles with rumble:
        N64 Rumble Pak, DualShock...). On by default; output only, so
@@ -208,6 +209,7 @@ typedef struct {
         char     key[32];
         me_control_map controls[ME_MAX_PLAYERS];
         unsigned overrides[ME_MAX_PLAYERS];
+        int      lstick_as_dpad[ME_MAX_PLAYERS];  /* 0/1, or -1: the default */
     } *console_controls;
     size_t console_controls_n;
 
@@ -292,6 +294,11 @@ int  me_settings_find_console_controls(const me_settings *s, const char *key);
    console left with none is dropped. */
 void me_settings_set_console_map(me_settings *s, const char *key, int player,
                                  const me_control_map *m, const me_control_map *base);
+
+/* Set whether the left stick works the D-pad in the console's games for
+   `player`; `on` equal to `def` (what the console has by default) goes
+   back to the default. */
+void me_settings_set_console_lstick(me_settings *s, const char *key, int player, int on, int def);
 
 /* Same match as me_settings_find_core, as an index into s->cores (-1 if none). */
 int me_settings_find_core_index(const me_settings *s, const char *core_path);

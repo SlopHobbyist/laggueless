@@ -419,6 +419,14 @@ void me_settings_defaults(me_settings *out) {
         XI1(m->xi[ME_IN_RSTICK],     ME_XI_RSTICK);
         XI1(m->xi[ME_IN_START],      ME_XI_START);
         XI1(m->xi[ME_IN_BACK],       ME_XI_BACK);
+        XI1(m->xi[ME_IN_LSTICK_UP],    ME_XI_LSTICK_UP);
+        XI1(m->xi[ME_IN_LSTICK_DOWN],  ME_XI_LSTICK_DOWN);
+        XI1(m->xi[ME_IN_LSTICK_LEFT],  ME_XI_LSTICK_LEFT);
+        XI1(m->xi[ME_IN_LSTICK_RIGHT], ME_XI_LSTICK_RIGHT);
+        XI1(m->xi[ME_IN_RSTICK_UP],    ME_XI_RSTICK_UP);
+        XI1(m->xi[ME_IN_RSTICK_DOWN],  ME_XI_RSTICK_DOWN);
+        XI1(m->xi[ME_IN_RSTICK_LEFT],  ME_XI_RSTICK_LEFT);
+        XI1(m->xi[ME_IN_RSTICK_RIGHT], ME_XI_RSTICK_RIGHT);
     }
 #undef SET1
 #undef XI1
@@ -715,6 +723,9 @@ static void load_document(yaml_document_t *doc, yaml_node_t *root, me_settings *
             struct me_console_controls *e = &out->console_controls[out->console_controls_n++];
             snprintf(e->key, sizeof(e->key), "%s", key);
             parse_players(doc, v, e->controls, e->overrides);
+            for (int pl = 0; pl < ME_MAX_PLAYERS; pl++)
+                e->lstick_as_dpad[pl] = scalar_bool(
+                    map_get(doc, map_get(doc, v, g_player_keys[pl]), "lstick_as_dpad"), -1);
         }
     }
 
@@ -854,10 +865,16 @@ static void write_xi_list(FILE *f, const me_xi_bindings *b) {
 }
 
 /* One `playerN:` block. With `overrides`, only those inputs are written
-   (a core's block lists just what it overrides; the rest follows universal). */
+   (a core's block lists just what it overrides; the rest follows universal).
+   `lstick_as_dpad` 0/1 adds that setting (console maps); -1 leaves it out. */
 static void write_player(FILE *f, const char *indent, const char *key,
-                         const me_control_map *m, const unsigned *overrides) {
+                         const me_control_map *m, const unsigned *overrides,
+                         int lstick_as_dpad) {
     int any = 0;
+    if (lstick_as_dpad >= 0) {
+        fprintf(f, "%s%s:\n%s  lstick_as_dpad: %s\n", indent, key, indent, yn(lstick_as_dpad));
+        any = 1;
+    }
     for (int id = 0; id < ME_IN_COUNT; id++) {
         if (overrides && !(*overrides & (1u << id))) continue;
         if (!any) { fprintf(f, "%s%s:\n", indent, key); any = 1; }
@@ -944,7 +961,7 @@ int me_settings_save(const char *path, const me_settings *s) {
     }
     fprintf(f, "  universal:\n");
     for (int pl = 0; pl < ME_MAX_PLAYERS; pl++)
-        write_player(f, "    ", g_player_keys[pl], &s->universal[pl], NULL);
+        write_player(f, "    ", g_player_keys[pl], &s->universal[pl], NULL, -1);
     fprintf(f, "  show_cursor_fullscreen: %s\n", yn(s->show_cursor_fullscreen));
     fprintf(f, "  show_advanced: %s\n", yn(s->show_advanced_inputs));
     fprintf(f, "  advanced:\n");
@@ -952,7 +969,7 @@ int me_settings_save(const char *path, const me_settings *s) {
         unsigned bound = 0;   /* just the bound ones; the rest stay unbound */
         for (int id = 0; id < ME_IN_COUNT; id++)
             if (s->advanced[pl].keys[id].count || s->advanced[pl].xi[id].count) bound |= 1u << id;
-        write_player(f, "    ", g_player_keys[pl], &s->advanced[pl], &bound);
+        write_player(f, "    ", g_player_keys[pl], &s->advanced[pl], &bound, -1);
     }
 
     fprintf(f, "\ncores:\n");
@@ -964,7 +981,7 @@ int me_settings_save(const char *path, const me_settings *s) {
         fprintf(f, "\n    use_universal: %s\n", yn(e->use_universal));
         fprintf(f, "    controls:\n");
         for (int pl = 0; pl < ME_MAX_PLAYERS; pl++)
-            write_player(f, "      ", g_player_keys[pl], &e->controls[pl], &e->overrides[pl]);
+            write_player(f, "      ", g_player_keys[pl], &e->controls[pl], &e->overrides[pl], -1);
     }
 
     fprintf(f, "\nconsole_controls:");
@@ -976,7 +993,8 @@ int me_settings_save(const char *path, const me_settings *s) {
         write_quoted(f, e->key);
         fprintf(f, ":\n");
         for (int pl = 0; pl < ME_MAX_PLAYERS; pl++)
-            write_player(f, "    ", g_player_keys[pl], &e->controls[pl], &e->overrides[pl]);
+            write_player(f, "    ", g_player_keys[pl], &e->controls[pl], &e->overrides[pl],
+                         e->lstick_as_dpad[pl]);
     }
 
     fprintf(f, "\nconsole_cores:");
@@ -1073,28 +1091,50 @@ int me_settings_find_console_controls(const me_settings *s, const char *key) {
     return -1;
 }
 
+/* The console map for `key`, added if missing (-1 if it can't be). */
+static int console_controls_add(me_settings *s, const char *key) {
+    int i = me_settings_find_console_controls(s, key);
+    if (i >= 0) return i;
+    struct me_console_controls *grown = (struct me_console_controls *)realloc(
+        s->console_controls, (s->console_controls_n + 1) * sizeof(*grown));
+    if (!grown) return -1;
+    s->console_controls = grown;
+    i = (int)s->console_controls_n++;
+    memset(&grown[i], 0, sizeof(grown[i]));
+    snprintf(grown[i].key, sizeof(grown[i].key), "%s", key);
+    for (int pl = 0; pl < ME_MAX_PLAYERS; pl++) grown[i].lstick_as_dpad[pl] = -1;
+    return i;
+}
+
+/* Drop console map `i` if it changes nothing. */
+static void console_controls_trim(me_settings *s, int i) {
+    struct me_console_controls *e = &s->console_controls[i];
+    for (int pl = 0; pl < ME_MAX_PLAYERS; pl++)
+        if (e->overrides[pl] || e->lstick_as_dpad[pl] >= 0) return;
+    memmove(e, e + 1, (s->console_controls_n - (size_t)i - 1) * sizeof(*e));
+    s->console_controls_n--;
+}
+
 void me_settings_set_console_map(me_settings *s, const char *key, int player,
                                  const me_control_map *m, const me_control_map *base) {
     if (!key || !*key) return;
     unsigned bits = changed_inputs(m, base);
-    int i = me_settings_find_console_controls(s, key);
-    if (i < 0) {
-        if (!bits) return;
-        struct me_console_controls *grown = (struct me_console_controls *)realloc(
-            s->console_controls, (s->console_controls_n + 1) * sizeof(*grown));
-        if (!grown) return;
-        s->console_controls = grown;
-        i = (int)s->console_controls_n++;
-        memset(&grown[i], 0, sizeof(grown[i]));
-        snprintf(grown[i].key, sizeof(grown[i].key), "%s", key);
-    }
-    struct me_console_controls *e = &s->console_controls[i];
-    e->controls[player] = *m;
-    e->overrides[player] = bits;
-    for (int pl = 0; pl < ME_MAX_PLAYERS; pl++)
-        if (e->overrides[pl]) return;
-    memmove(e, e + 1, (s->console_controls_n - (size_t)i - 1) * sizeof(*e));
-    s->console_controls_n--;
+    if (!bits && me_settings_find_console_controls(s, key) < 0) return;
+    int i = console_controls_add(s, key);
+    if (i < 0) return;
+    s->console_controls[i].controls[player] = *m;
+    s->console_controls[i].overrides[player] = bits;
+    console_controls_trim(s, i);
+}
+
+void me_settings_set_console_lstick(me_settings *s, const char *key, int player, int on, int def) {
+    if (!key || !*key) return;
+    int v = (!on == !def) ? -1 : !!on;
+    if (v < 0 && me_settings_find_console_controls(s, key) < 0) return;
+    int i = console_controls_add(s, key);
+    if (i < 0) return;
+    s->console_controls[i].lstick_as_dpad[player] = v;
+    console_controls_trim(s, i);
 }
 
 /* Generate a default settings.yaml file if it doesn't exist.

@@ -55,11 +55,11 @@ static const me_console k_consoles[] = {
     { "nds",       "Nintendo DS",              "nds|dsi|ids", NULL,
       "melondsds|melonds|desmume|noods", 1, NULL, ME_CONSOLE_TWO_SCREENS | ME_CONSOLE_TOUCH },
     { "3ds",       "Nintendo 3DS",             "3ds|3dsx|cci|cxi", NULL,
-      "azahar|citra", 1, NULL, ME_CONSOLE_TOUCH },
+      "azahar|citra", 1, NULL, ME_CONSOLE_TOUCH | ME_CONSOLE_ANALOG },
     { "n64",       "Nintendo 64",              "n64|z64|v64|ndd", NULL,
-      "parallel_n64|mupen64plus_next", 4, NULL, 0 },
+      "parallel_n64|mupen64plus_next", 4, NULL, ME_CONSOLE_ANALOG },
     { "gamecube",  "GameCube / Wii",           "gcm|gcz|rvz|wbfs|ciso|wia", "iso",
-      "dolphin", 4, NULL, 0 },
+      "dolphin", 4, NULL, ME_CONSOLE_ANALOG },
     { "vb",        "Virtual Boy",              "vb|vboy", NULL,
       "mednafen_vb", 1, NULL, 0 },
     { "pokemini",  "Pokemon Mini",             "min", NULL,
@@ -77,7 +77,7 @@ static const me_console k_consoles[] = {
     { "sg1000",    "SG-1000",                  "sg|sc|mv", NULL,
       "genesis_plus_gx|gearsystem|picodrive|smsplus|bluemsx", 2, NULL, 0 },
     { "dreamcast", "Dreamcast",                "gdi|cdi", "cue|chd|m3u",
-      "flycast", 4, NULL, 0 },
+      "flycast", 4, NULL, ME_CONSOLE_ANALOG },
 
     /* NEC */
     { "pce",       "PC Engine / TurboGrafx-16", "pce", NULL,
@@ -87,9 +87,9 @@ static const me_console k_consoles[] = {
 
     /* Sony */
     { "psx",       "PlayStation",              "cue|chd|ccd|toc|m3u|pbp", "iso",
-      "mednafen_psx|mednafen_psx_hw|swanstation|pcsx_rearmed", 2, NULL, 0 },
+      "mednafen_psx|mednafen_psx_hw|swanstation|pcsx_rearmed", 2, NULL, ME_CONSOLE_ANALOG },
     { "psp",       "PlayStation Portable",     "iso|cso", "chd",
-      "ppsspp", 1, NULL, 0 },
+      "ppsspp", 1, NULL, ME_CONSOLE_ANALOG },
 
     /* Atari */
     { "a2600",     "Atari 2600",               "a26", "bin",
@@ -98,7 +98,7 @@ static const me_console k_consoles[] = {
          type"), where 2023 and 2014 load them. */
       "stella2023|stella|stella2014", 2, NULL, 0 },
     { "a5200",     "Atari 5200",               "a52", "bin",
-      "a5200|atari800", 4, NULL, 0 },
+      "a5200|atari800", 4, NULL, ME_CONSOLE_ANALOG },
     { "a7800",     "Atari 7800",               "a78", "bin",
       "prosystem", 2, NULL, 0 },
     { "lynx",      "Atari Lynx",               "lnx|lyx", NULL,
@@ -120,7 +120,7 @@ static const me_console k_consoles[] = {
     { "intv",      "Intellivision",            "int", "bin|rom",
       "freeintv", 2, NULL, 0 },
     { "vectrex",   "Vectrex",                  "vec", NULL,
-      "vecx", 2, NULL, 0 },
+      "vecx", 2, NULL, ME_CONSOLE_ANALOG },
     { "msx",       "MSX",                      "mx1|mx2|rom", NULL,
       "bluemsx|fmsx", 2, NULL, 0 },
 };

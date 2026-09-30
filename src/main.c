@@ -933,17 +933,28 @@ static void poll_player(int p) {
     me_control_map map;
     me_controls_effective(&g_settings, &g_in_layout, g_core_index, 1, p, &map);
     const me_control_map *m = &map;
+    /* Left stick as D-pad (consoles.h): then that is all the left stick
+       does, whatever else is bound to its directions. */
+    int stick_dpad = me_lstick_as_dpad(&g_settings, &g_in_layout, 1, p) &&
+                     g_settings.input_source[p] != ME_SRC_KEYBOARD;
+    if (stick_dpad) {
+        const unsigned lstick_dirs = ME_XI_LSTICK_UP | ME_XI_LSTICK_DOWN |
+                                     ME_XI_LSTICK_LEFT | ME_XI_LSTICK_RIGHT;
+        for (int id = 0; id < ME_IN_COUNT; id++) {
+            me_xi_bindings *xb = &map.xi[id];
+            int n = 0;
+            for (int i = 0; i < xb->count; i++)
+                if (!(xb->b[i].buttons & lstick_dirs)) xb->b[n++] = xb->b[i];
+            xb->count = n;
+        }
+    }
     int up    = live_down(m, p, ME_IN_DPAD_UP);
     int down  = live_down(m, p, ME_IN_DPAD_DOWN);
     int lf    = live_down(m, p, ME_IN_DPAD_LEFT);
     int right = live_down(m, p, ME_IN_DPAD_RIGHT);
-    /* Left stick as D-pad on consoles without a stick (settings.h). It adds
-       to the D-pad bindings before SOCD, so stick and D-pad pushed opposite
-       ways still cancel to neutral. */
-    const unsigned lstick_bits = (1u << ME_IN_LSTICK_UP) | (1u << ME_IN_LSTICK_DOWN) |
-                                 (1u << ME_IN_LSTICK_LEFT) | (1u << ME_IN_LSTICK_RIGHT);
-    if (g_settings.lstick_as_dpad[p] && g_settings.input_source[p] != ME_SRC_KEYBOARD &&
-        !(g_in_layout.live & lstick_bits)) {
+    /* The stick adds to the D-pad bindings before SOCD, so stick and D-pad
+       pushed opposite ways still cancel to neutral. */
+    if (stick_dpad) {
         int slot = g_settings.xi_index[p];
         unsigned live = live_inputs();
         if (live & (1u << ME_IN_DPAD_UP))    up    |= me_xinput_button(slot, ME_XI_LSTICK_UP);
@@ -978,7 +989,8 @@ static void poll_player(int p) {
        digital bindings (keys, or buttons like the N64's C-Left on Xbox Y,
        which must work while the other stick moves). A stick the console
        doesn't have stays centered; an advanced stick (PSP right stick, DS
-       touch joystick) moves only through its bindings. */
+       touch joystick) moves only through its bindings. The real left stick
+       doesn't move it while it works the D-pad. */
     int16_t *an = g_analog[p];
     int slot = g_settings.xi_index[p];
     int use_pad = g_settings.input_source[p] != ME_SRC_KEYBOARD;
@@ -986,7 +998,7 @@ static void poll_player(int p) {
                             (1u << ME_IN_LSTICK_LEFT) | (1u << ME_IN_LSTICK_RIGHT);
     const unsigned rstick = (1u << ME_IN_RSTICK_UP) | (1u << ME_IN_RSTICK_DOWN) |
                             (1u << ME_IN_RSTICK_LEFT) | (1u << ME_IN_RSTICK_RIGHT);
-    int use_l = use_pad && (g_in_layout.live & lstick);
+    int use_l = use_pad && !stick_dpad && (g_in_layout.live & lstick);
     int use_r = use_pad && (g_in_layout.live & rstick);
     int16_t xi_lx = use_l ? me_xinput_axis(slot, ME_XI_AXIS_LX) : 0;
     int16_t xi_ly = use_l ? me_xinput_axis(slot, ME_XI_AXIS_LY) : 0;
@@ -1964,7 +1976,8 @@ static int session_open(me_session *s, const char *core_path_in, const char *rom
         /* Uncurated: every input, for the core's input descriptors to narrow. */
         me_input_layout l;
         const me_console *c = me_console_at(console);
-        if (me_layout_for_game(g_core_name, rom_path, c ? c->id : NULL, c ? c->name : NULL, &l))
+        if (me_layout_for_game(g_core_name, rom_path, c ? c->id : NULL, c ? c->name : NULL,
+                               c && (c->flags & ME_CONSOLE_ANALOG), &l))
             printf("[input] %s controller (%d inputs)\n", l.name, l.n);
         if (l.key[0]) printf("[input] controls: %s\n", l.key);
         set_input_layout(&l);

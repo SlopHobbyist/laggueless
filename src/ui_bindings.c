@@ -321,7 +321,8 @@ static void load_from(bind_dlg *d, const me_settings *s, int core_index) {
     d->source = s->input_source[d->player];
     d->slot   = s->xi_index[d->player];
     d->show_advanced = s->show_advanced_inputs;
-    d->lstick_as_dpad = s->lstick_as_dpad[d->player];
+    d->lstick_as_dpad = d->console_map ? me_lstick_as_dpad(s, &d->layout, 1, d->player)
+                                       : s->lstick_as_dpad[d->player];
     d->rumble = s->rumble[d->player];
 }
 
@@ -356,7 +357,11 @@ static void store_into(const bind_dlg *d, me_settings *s, int core_index) {
     s->input_source[d->player] = d->source;
     s->xi_index[d->player]     = d->slot;
     s->show_advanced_inputs    = d->show_advanced;
-    s->lstick_as_dpad[d->player] = d->lstick_as_dpad;
+    if (d->console_map)
+        me_settings_set_console_lstick(s, d->layout.key, d->player, d->lstick_as_dpad,
+                                       me_lstick_as_dpad(s, &d->layout, 0, d->player));
+    else
+        s->lstick_as_dpad[d->player] = d->lstick_as_dpad;
     s->rumble[d->player] = d->rumble;
 }
 
@@ -426,7 +431,9 @@ static void create_controls(HWND dlg, bind_dlg *d) {
         d->adv_check = me_ui_add_control(dlg, "BUTTON", "Show advanced inputs",
                                    BS_AUTOCHECKBOX | WS_TABSTOP | WS_GROUP, 193, 39, 120, 11, IDC_ADVANCED);
         EnableWindow(d->adv_check, d->layout.advanced != 0);
-        me_ui_add_control(dlg, "BUTTON", "Left stick works the D-pad (consoles with no analog stick)",
+        me_ui_add_control(dlg, "BUTTON", !d->console_map ? "Left stick works the D-pad (consoles with no analog stick)"
+                                       : d->layout.stick ? "Left stick works the D-pad (instead of the analog stick)"
+                                       : "Left stick works the D-pad",
                           BS_AUTOCHECKBOX | WS_TABSTOP | WS_GROUP, 50, 53, 263, 11, IDC_LSTICK_DPAD);
         me_ui_add_control(dlg, "BUTTON", "Rumble (consoles that support it)",
                           BS_AUTOCHECKBOX | WS_TABSTOP | WS_GROUP, 50, 66, 263, 11, IDC_RUMBLE);

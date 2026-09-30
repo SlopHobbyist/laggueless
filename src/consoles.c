@@ -370,6 +370,14 @@ static void add_row(me_input_layout *l, me_input_id id, const char *label, int a
     else          l->live     |= 1u << id;
 }
 
+int me_lstick_as_dpad(const me_settings *s, const me_input_layout *l, int with_console,
+                      int player) {
+    int ci = with_console ? me_settings_find_console_controls(s, l->key) : -1;
+    if (ci >= 0 && s->console_controls[ci].lstick_as_dpad[player] >= 0)
+        return s->console_controls[ci].lstick_as_dpad[player];
+    return l->stick ? 0 : s->lstick_as_dpad[player];
+}
+
 /* Rows for the unknown layout: d-pad, face buttons, system,
    shoulders/triggers, stick clicks, stick directions. */
 static const me_input_id k_default_order[ME_IN_COUNT] = {
@@ -405,11 +413,12 @@ static void set_defaults(me_input_layout *l, const pad_default *d) {
 }
 
 int me_layout_for_game(const char *library_name, const char *rom_path,
-                       const char *console_id, const char *console_name,
+                       const char *console_id, const char *console_name, int stick,
                        me_input_layout *out) {
     const char *lib = library_name ? library_name : "";
     const char *ext = extension_of(rom_path ? rom_path : "");
     me_layout_unknown(out);
+    out->stick = stick;
     snprintf(out->key, sizeof(out->key), "%s", console_id ? console_id : "");
     snprintf(out->console, sizeof(out->console), "%s", console_name ? console_name : "");
     for (size_t i = 0; i < sizeof(k_rules) / sizeof(k_rules[0]); i++) {
@@ -436,6 +445,7 @@ int me_layout_for_game(const char *library_name, const char *rom_path,
 static void keep_console(me_input_layout *dst, const me_input_layout *src) {
     memcpy(dst->key, src->key, sizeof(dst->key));
     memcpy(dst->console, src->console, sizeof(dst->console));
+    dst->stick  = src->stick;
     dst->def_kb = src->def_kb;
     dst->def_xi = src->def_xi;
     memcpy(dst->def_kbs, src->def_kbs, sizeof(dst->def_kbs));

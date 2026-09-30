@@ -42,6 +42,7 @@ typedef struct {
 
     char     key[32];                  /* console map key ("nes"); "" = universal */
     char     console[64];              /* that console's name, for the dialogs */
+    int      stick;                    /* its controller has an analog stick */
     unsigned def_kb, def_xi;           /* bit per me_input_id with a console default */
     me_kb_bindings def_kbs[ME_IN_COUNT];
     me_xi_bindings def_xis[ME_IN_COUNT];
@@ -54,11 +55,12 @@ void me_layout_unknown(me_input_layout *out);
 
 /* Layout for `library_name` (retro_system_info) running `rom_path`, a game
    for the console `console_id` / `console_name` (rom_cores.h; NULL if
-   unknown). Returns 1 when the console is in the table (a curated layout),
-   else 0 with every input listed, for the core's descriptors to narrow.
-   Either way `out` gets the console's key and default bindings. */
+   unknown), whose controller has an analog stick if `stick`. Returns 1 when
+   the console is in the table (a curated layout), else 0 with every input
+   listed, for the core's descriptors to narrow. Either way `out` gets the
+   console's key and default bindings. */
 int  me_layout_for_game(const char *library_name, const char *rom_path,
-                        const char *console_id, const char *console_name,
+                        const char *console_id, const char *console_name, int stick,
                         me_input_layout *out);
 
 /* Layout from RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS (port 0 only), for
@@ -79,5 +81,14 @@ void me_layout_set_advanced(me_input_layout *l, const struct retro_input_descrip
    Advanced inputs aren't resolved here: they have their own map. */
 void me_controls_effective(const me_settings *s, const me_input_layout *l, int core,
                            int with_console, int player, me_control_map *out);
+
+/* Whether the player's left stick works the D-pad in a game with layout
+   `l`. When it does, that is all the stick does: it doesn't move the
+   console's analog stick, and bindings to its directions don't fire. The
+   player's choice for the console if they made one, else off on consoles
+   with an analog stick and the player's setting (on by default) elsewhere.
+   `with_console` 0: the default, ignoring the choice for the console. */
+int  me_lstick_as_dpad(const me_settings *s, const me_input_layout *l, int with_console,
+                       int player);
 
 #endif

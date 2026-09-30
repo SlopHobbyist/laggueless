@@ -50,6 +50,9 @@ enum {
     /* A touch screen: the mouse reaches the core as RETRO_DEVICE_POINTER
        and RETRO_DEVICE_MOUSE. */
     ME_CONSOLE_TOUCH       = 1u << 1,
+    /* The controller has an analog stick: the left stick is that stick,
+       not the D-pad, unless the player switches it (consoles.h). */
+    ME_CONSOLE_ANALOG      = 1u << 2,
 };
 
 int               me_console_count(void);
