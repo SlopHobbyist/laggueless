@@ -49,6 +49,7 @@ enum {
     IDM_ASPECT_16_9,
     IDM_FAN_SERVER_FIRST = 190, /* Multiplayer > Fan Server, in me_fan_server order */
     IDM_FAN_SERVER_NOTE = IDM_FAN_SERVER_FIRST + ME_FAN_SERVER_COUNT,
+    IDM_MULTIPLAYER_NONE,
     IDM_RECENT_FIRST = 200,   /* .. IDM_RECENT_FIRST + ME_RECENT_MAX - 1 */
     IDM_RECENT_CLEAR = 200 + ME_RECENT_MAX,
 };
@@ -56,7 +57,7 @@ enum {
 /* Most adapters a console has (the Mega Drive's two). */
 #define ME_ADAPTERS_MAX 4
 static HMENU g_file_menu, g_recent_menu, g_console_menu, g_controls_menu, g_view_menu, g_backend_menu,
-             g_screen_menu, g_aspect_menu, g_fan_server_menu;
+             g_screen_menu, g_aspect_menu, g_multiplayer_menu, g_fan_server_menu;
 
 HMENU me_ui_create_menu(void) {
     HMENU bar = CreateMenu();
@@ -78,16 +79,6 @@ HMENU me_ui_create_menu(void) {
     /* Players and the adapter checkboxes are filled in when it opens. */
     g_controls_menu = CreatePopupMenu();
     AppendMenuA(bar, MF_POPUP, (UINT_PTR)g_controls_menu, "C&ontrols");
-
-    HMENU multiplayer = CreatePopupMenu();
-    g_fan_server_menu = CreatePopupMenu();
-    for (int i = 0; i < ME_FAN_SERVER_COUNT; i++)
-        AppendMenuA(g_fan_server_menu, MF_STRING, IDM_FAN_SERVER_FIRST + i,
-                    me_fan_server_info_of((me_fan_server)i)->name);
-    AppendMenuA(g_fan_server_menu, MF_SEPARATOR, 0, NULL);
-    AppendMenuA(g_fan_server_menu, MF_STRING | MF_GRAYED, IDM_FAN_SERVER_NOTE, "");
-    AppendMenuA(multiplayer, MF_POPUP, (UINT_PTR)g_fan_server_menu, "&Fan Server");
-    AppendMenuA(bar, MF_POPUP, (UINT_PTR)multiplayer, "&Multiplayer");
 
     HMENU cores = CreatePopupMenu();
     AppendMenuA(cores, MF_STRING, IDM_DOWNLOAD_CORES, "&Download Cores...");
@@ -118,6 +109,17 @@ HMENU me_ui_create_menu(void) {
     AppendMenuA(g_view_menu, MF_STRING, IDM_FRAME_GEN,  "Frame &Gen");
     AppendMenuA(g_view_menu, MF_POPUP, (UINT_PTR)g_backend_menu, "&Rendering Backend (requires restart)");
     AppendMenuA(bar, MF_POPUP, (UINT_PTR)g_view_menu, "&View");
+
+    /* Filled in when it opens, with what the running core offers. */
+    g_multiplayer_menu = CreatePopupMenu();
+    g_fan_server_menu = CreatePopupMenu();
+    for (int i = 0; i < ME_FAN_SERVER_COUNT; i++)
+        AppendMenuA(g_fan_server_menu, MF_STRING, IDM_FAN_SERVER_FIRST + i,
+                    me_fan_server_info_of((me_fan_server)i)->name);
+    AppendMenuA(g_fan_server_menu, MF_SEPARATOR, 0, NULL);
+    AppendMenuA(g_fan_server_menu, MF_STRING | MF_GRAYED, IDM_FAN_SERVER_NOTE,
+                "Applies at next game load or Hard Reset");
+    AppendMenuA(bar, MF_POPUP, (UINT_PTR)g_multiplayer_menu, "&Multiplayer");
 
     return bar;
 }
@@ -577,6 +579,19 @@ static void toggle_adapter(int i) {
     me_cmd_post(ME_CMD_ADAPTER, 0, NULL);
 }
 
+/* The online options the running core takes, one submenu each; just a
+   greyed line when it takes none. Rebuilt each time it opens. The submenus
+   live for the whole run, so they're detached (RemoveMenu), not destroyed. */
+static void rebuild_multiplayer_menu(const me_app_status *st) {
+    HMENU m = g_multiplayer_menu;
+    while (GetMenuItemCount(m) > 0) RemoveMenu(m, 0, MF_BYPOSITION);
+    if (st->fan_server_usable)
+        AppendMenuA(m, MF_POPUP, (UINT_PTR)g_fan_server_menu, "&Fan Server");
+    if (GetMenuItemCount(m) == 0)
+        AppendMenuA(m, MF_STRING | MF_GRAYED, IDM_MULTIPLAYER_NONE,
+                    st->game_running ? "(nothing for this core)" : "(no game running)");
+}
+
 static void refresh_menu(HMENU m) {
     me_app_status st;
     me_status_get(&st);
@@ -588,6 +603,8 @@ static void refresh_menu(HMENU m) {
         rebuild_recent_menu();
     } else if (m == g_controls_menu) {
         rebuild_controls_menu(&st);
+    } else if (m == g_multiplayer_menu) {
+        rebuild_multiplayer_menu(&st);
     } else if (m == g_console_menu) {
         UINT running = st.game_running ? MF_ENABLED : MF_GRAYED;
         set_hotkey_item(m, IDM_HARD_RESET, "&Hard Reset", ME_HK_HARD_RESET);
@@ -627,16 +644,9 @@ static void refresh_menu(HMENU m) {
         unsigned a = (unsigned)s->aspect <= 2 ? (unsigned)s->aspect : 0;
         CheckMenuRadioItem(m, IDM_ASPECT_1_1, IDM_ASPECT_16_9, IDM_ASPECT_1_1 + a, MF_BYCOMMAND);
     } else if (m == g_fan_server_menu) {
-        /* DS online play through the core's DNS: a DS game on a core without
-           the option can't use it; otherwise it's kept for the next load. */
         unsigned v = (unsigned)s->fan_server < ME_FAN_SERVER_COUNT ? (unsigned)s->fan_server : 0;
         CheckMenuRadioItem(m, IDM_FAN_SERVER_FIRST, IDM_FAN_SERVER_FIRST + ME_FAN_SERVER_COUNT - 1,
                            IDM_FAN_SERVER_FIRST + v, MF_BYCOMMAND);
-        const me_console *c = me_console_at(st.console);
-        int ds = c && strcmp(c->id, "nds") == 0;
-        set_item_text(m, IDM_FAN_SERVER_NOTE,
-                      ds && !st.fan_server_usable ? "DS online needs the melonDS DS core"
-                                                  : "Applies at next game load or Hard Reset");
     } else if (m == g_backend_menu) {
         static const UINT ids[] = { 0, IDM_BACKEND_VULKAN, IDM_BACKEND_GDI, IDM_BACKEND_D3D11 };
         backend_choice b = backend_of(s);

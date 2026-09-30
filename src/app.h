@@ -84,7 +84,8 @@ typedef struct {
        own). */
     unsigned controllers_usable;
     int      controller[ME_MAX_PLAYERS];
-    /* The running core takes Multiplayer > Fan Server. */
+    /* The running game's core takes Multiplayer > Fan Server (0 with no
+       game). */
     int      fan_server_usable;
 } me_app_status;
 
