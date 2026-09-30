@@ -3104,10 +3104,11 @@ int main(int argc, char **argv) {
         me_settings_load(_settings_path, &g_settings);
     }
     me_app_init(&g_settings, _settings_path);
+    /* On this thread because it pumps messages: SDL's hotplug window is on it. */
     if (me_xinput_init())
-        printf("[xinput] controller support active (player 1 in slot %d)\n", g_settings.xi_index[0]);
+        printf("[pad] controller support active (player 1 on controller %d)\n", g_settings.xi_index[0] + 1);
     else
-        printf("[xinput] XInput not available; controller input disabled\n");
+        printf("[pad] no controller API available; controller input disabled\n");
 
     g_no_audio      = g_settings.no_audio;
     g_force_gdi     = g_settings.force_gdi;

@@ -136,6 +136,17 @@ for %%D in ("C:\msys64\mingw64\bin" "C:\mingw64\bin") do (
 )
 :dll_done
 
+REM SDL2 runtime: DirectInput / Switch / PlayStation controllers. Loaded at
+REM runtime, so the build works without it; only XInput pads work then.
+for %%D in ("C:\msys64\mingw64\bin" "C:\mingw64\bin") do (
+    if exist "%%~D\SDL2.dll" (
+        copy /Y "%%~D\SDL2.dll" "%BUILD%\" >nul
+        goto :sdl_done
+    )
+)
+echo [build] SDL2.dll not found ^(pacman -S mingw-w64-x86_64-SDL2^) - only XInput controllers will work.
+:sdl_done
+
 REM Copy MSYS2 C++ runtimes if the lsfg bridge was linked (required at runtime).
 if not "%LSFG_OBJ%"=="" (
     for %%D in ("C:\msys64\mingw64\bin" "C:\mingw64\bin") do (

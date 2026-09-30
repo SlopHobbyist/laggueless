@@ -135,7 +135,7 @@ log:
 hotkeys:
   # Each hotkey can have both a keyboard binding and a controller binding.
   # `input` picks which are active: both | keyboard | controller.
-  # Controller hotkeys come from the pad in slot `controller_index` (0..3).
+  # Controller hotkeys come from the pad in slot `controller_index` (0..7).
   # A controller chord like Back+Start means "hold all of these".
   input: both
   controller_index: 0
@@ -179,7 +179,10 @@ hotkeys:
 #
 # Every input has separate `keyboard:` and `controller:` bindings.
 # `playerN_input` picks which are active: both | keyboard | controller.
-# `playerN_controller` is the XInput slot (0..3) that player's pad is in.
+# `playerN_controller` is the slot (0..7) that player's pad is in: Controls >
+#   Player N lists them as Controller 1..8. XInput pads sit in their XInput
+#   slot (0..3); any other pad (DirectInput, Switch, PlayStation... needs
+#   SDL2.dll next to the exe) takes the lowest slot with no pad in it.
 # `playerN_lstick_as_dpad`: on consoles with no analog stick (NES, SNES,
 #   Genesis...), that player's left stick also works the D-pad. Consoles with
 #   one (N64, GameCube, Dreamcast, PlayStation, PSP, 3DS, 5200, Vectrex) use

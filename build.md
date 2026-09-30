@@ -51,10 +51,10 @@ MSYS2 gives us `gcc`, `g++`, `ar`, and the `libyaml` library — everything `bui
 6. Now install the compiler toolchain and `libyaml`:
 
    ```bash
-   pacman -S --needed mingw-w64-x86_64-gcc mingw-w64-x86_64-libyaml
+   pacman -S --needed mingw-w64-x86_64-gcc mingw-w64-x86_64-libyaml mingw-w64-x86_64-SDL2
    ```
 
-   Press <kbd>Y</kbd> when prompted. This installs both `gcc` (C compiler) and `g++` (C++ compiler, needed for the optional LSFG backend), plus `libyaml`.
+   Press <kbd>Y</kbd> when prompted. This installs both `gcc` (C compiler) and `g++` (C++ compiler, needed for the optional LSFG backend), plus `libyaml` and `SDL2` (SDL2 is optional: it adds DirectInput, Switch and PlayStation controllers; without it only XInput controllers work).
 7. Close the MSYS2 terminal. You don't need it again — the build script uses the compiler directly from `C:\msys64\mingw64\bin\`.
 
 ---
@@ -113,7 +113,7 @@ What you should see:
 [build] OK.
 ```
 
-The final binary is at [build\laggueless.exe](build/laggueless.exe). The script also copies `libyaml-0-2.dll` next to it so you don't need MSYS2 on your PATH at runtime.
+The final binary is at [build\laggueless.exe](build/laggueless.exe). The script also copies `libyaml-0-2.dll` and `SDL2.dll` next to it so you don't need MSYS2 on your PATH at runtime.
 
 ### Test that it ran
 
@@ -164,6 +164,7 @@ laggueless\
 └── build\
     ├── laggueless.exe
     ├── libyaml-0-2.dll
+    ├── SDL2.dll
     ├── libgcc_s_seh-1.dll
     ├── libstdc++-6.dll
     ├── libwinpthread-1.dll
@@ -200,7 +201,7 @@ This creates a [release\](release/) folder containing `laggueless.exe` and every
 ## Troubleshooting
 
 **`'gcc' is not recognized` / `ERROR: gcc not found`**
-You either skipped Step 2 or installed MSYS2 somewhere other than `C:\msys64`. Reinstall MSYS2 to the default location and run `pacman -S --needed mingw-w64-x86_64-gcc mingw-w64-x86_64-libyaml` inside it.
+You either skipped Step 2 or installed MSYS2 somewhere other than `C:\msys64`. Reinstall MSYS2 to the default location and run `pacman -S --needed mingw-w64-x86_64-gcc mingw-w64-x86_64-libyaml mingw-w64-x86_64-SDL2` inside it.
 
 **`fatal error: yaml.h: No such file or directory`**
 You forgot to install `mingw-w64-x86_64-libyaml`. Open MSYS2 and run the `pacman -S ...` command from Step 2 again.
@@ -230,7 +231,7 @@ The build script normally copies this DLL automatically. If it didn't, copy `C:\
 :: 2. Install MSYS2 from https://www.msys2.org/ (default path C:\msys64)
 ::    Then, in MSYS2:
 ::      pacman -Syu                                          (twice)
-::      pacman -S --needed mingw-w64-x86_64-gcc mingw-w64-x86_64-libyaml
+::      pacman -S --needed mingw-w64-x86_64-gcc mingw-w64-x86_64-libyaml mingw-w64-x86_64-SDL2
 :: 3. (Optional) Install Vulkan SDK from https://vulkan.lunarg.com/sdk/home
 
 :: Build

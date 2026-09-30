@@ -1,7 +1,15 @@
 #ifndef ME_XINPUT_PAD_H
 #define ME_XINPUT_PAD_H
 
+#include <stddef.h>
 #include <stdint.h>
+
+/* Controller slots ("Controller 1..8"), all read in the Xbox layout below.
+   Slots 0..3 are XInput's user indices. Other pads (DirectInput, Switch Pro,
+   PlayStation, 8BitDo in D/Android/Switch mode...) come through SDL2.dll,
+   when it's next to the exe: each takes the lowest slot with no XInput pad
+   in it and keeps it until unplugged. Their buttons are positional, so the
+   bottom face button is A whatever it's labelled. */
 
 /* XInput button bitmasks (XINPUT_GAMEPAD_* values). */
 #define ME_XI_DPAD_UP        0x0001
@@ -33,7 +41,7 @@
 #define ME_XI_RSTICK_LEFT    0x01000000u
 #define ME_XI_RSTICK_RIGHT   0x02000000u
 
-#define ME_XI_SLOTS 4  /* XInput user indices 0..3 */
+#define ME_XI_SLOTS 8  /* XInput user indices 0..3, then other pads */
 
 /* Axis IDs for me_xinput_axis(). */
 typedef enum {
@@ -45,8 +53,9 @@ typedef enum {
     ME_XI_AXIS_RT,
 } me_xi_axis;
 
-/* Load xinput1_4.dll (falls back to xinput9_1_0.dll). Returns 1 on success.
-   Safe to call multiple times; only loads once. */
+/* Load xinput1_4.dll (falls back to xinput9_1_0.dll) and SDL2.dll. Returns
+   1 if either works. Call once, from a thread that pumps its window messages
+   (SDL's hotplug detection has a hidden window on it). */
 int  me_xinput_init(void);
 
 /* Poll the physical pad at `player_index` (0-based). Call once per frame
@@ -74,5 +83,9 @@ void me_xinput_rumble(int slot, uint16_t strong, uint16_t weak);
    the UI to capture bindings and list connected controllers while the
    emulation thread keeps polling. */
 unsigned me_xinput_read(int slot, int *connected);
+
+/* The pad in `slot` for the UI: its name ("XInput" for XInput pads) into
+   `out`. Returns 1 if a pad is there. Any thread. */
+int  me_xinput_name(int slot, char *out, size_t out_sz);
 
 #endif

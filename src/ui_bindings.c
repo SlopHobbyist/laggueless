@@ -175,16 +175,15 @@ static void idle_hint(bind_dlg *d) {
         : "Click a binding to change it; right-click to clear it.");
 }
 
-/* "Controller 2 (connected)" etc. Probing an empty slot is slow-ish, which
-   is fine here on the UI thread. */
+/* "Controller 2 (Pro Controller)", "Controller 3 (not connected)" etc.
+   Probing an empty slot is slow-ish, which is fine here on the UI thread. */
 static void fill_slot_combo(bind_dlg *d) {
     SendMessageA(d->slot_combo, CB_RESETCONTENT, 0, 0);
     for (int i = 0; i < ME_XI_SLOTS; i++) {
-        int connected = 0;
-        me_xinput_read(i, &connected);
-        char label[64];
+        char name[64], label[96];
+        int connected = me_xinput_name(i, name, sizeof(name));
         snprintf(label, sizeof(label), "Controller %d (%s)", i + 1,
-                 connected ? "connected" : "not connected");
+                 connected ? name : "not connected");
         SendMessageA(d->slot_combo, CB_ADDSTRING, 0, (LPARAM)label);
     }
     SendMessageA(d->slot_combo, CB_SETCURSEL, (WPARAM)d->slot, 0);
@@ -486,7 +485,12 @@ static void create_controls(HWND dlg, bind_dlg *d) {
 
     me_ui_add_control(dlg, "STATIC", "Controller:", SS_LEFT, 7, 40, 40, 10, 0);
     d->slot_combo = me_ui_add_control(dlg, "COMBOBOX", "", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP | WS_GROUP,
-                                50, 38, 130, 80, IDC_SLOT);
+                                50, 38, 130, 120, IDC_SLOT);
+    /* Pad names can be long ("Nintendo Switch Pro Controller"): the list
+       opens wider than the box. */
+    RECT drop = { 0, 0, 250, 0 };
+    MapDialogRect(dlg, &drop);
+    SendMessageA(d->slot_combo, CB_SETDROPPEDWIDTH, (WPARAM)drop.right, 0);
     fill_slot_combo(d);
 
     /* A choice of controllers adds a row; the rest moves down. */
