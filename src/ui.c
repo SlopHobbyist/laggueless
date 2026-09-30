@@ -52,12 +52,16 @@ enum {
     IDM_MULTIPLAYER_NONE,
     IDM_RECENT_FIRST = 200,   /* .. IDM_RECENT_FIRST + ME_RECENT_MAX - 1 */
     IDM_RECENT_CLEAR = 200 + ME_RECENT_MAX,
+    IDM_WII_FAN_SERVER_FIRST = 230, /* the Wii's Fan Server, in me_fan_server order */
+    IDM_WII_FAN_SERVER_STATUS = IDM_WII_FAN_SERVER_FIRST + ME_FAN_SERVER_COUNT,
+    IDM_WII_FAN_SERVER_NOTE,
+    IDM_WII_FAN_SERVER_NAND,
 };
 
 /* Most adapters a console has (the Mega Drive's two). */
 #define ME_ADAPTERS_MAX 4
 static HMENU g_file_menu, g_recent_menu, g_console_menu, g_controls_menu, g_view_menu, g_backend_menu,
-             g_screen_menu, g_aspect_menu, g_multiplayer_menu, g_fan_server_menu;
+             g_screen_menu, g_aspect_menu, g_multiplayer_menu, g_fan_server_menu, g_wii_fan_server_menu;
 
 HMENU me_ui_create_menu(void) {
     HMENU bar = CreateMenu();
@@ -119,6 +123,7 @@ HMENU me_ui_create_menu(void) {
     AppendMenuA(g_fan_server_menu, MF_SEPARATOR, 0, NULL);
     AppendMenuA(g_fan_server_menu, MF_STRING | MF_GRAYED, IDM_FAN_SERVER_NOTE,
                 "Applies at next game load or Hard Reset");
+    g_wii_fan_server_menu = CreatePopupMenu();   /* filled when it opens */
     AppendMenuA(bar, MF_POPUP, (UINT_PTR)g_multiplayer_menu, "&Multiplayer");
 
     return bar;
@@ -234,6 +239,10 @@ static void patch_aspect(me_settings *s, const void *ctx) {
 
 static void patch_fan_server(me_settings *s, const void *ctx) {
     s->fan_server = *(const me_fan_server *)ctx;
+}
+
+static void patch_wii_fan_server(me_settings *s, const void *ctx) {
+    s->wii_fan_server = *(const me_fan_server *)ctx;
 }
 
 static void patch_show_cursor(me_settings *s, const void *ctx) {
@@ -585,11 +594,36 @@ static void toggle_adapter(int i) {
 static void rebuild_multiplayer_menu(const me_app_status *st) {
     HMENU m = g_multiplayer_menu;
     while (GetMenuItemCount(m) > 0) RemoveMenu(m, 0, MF_BYPOSITION);
-    if (st->fan_server_usable)
+    if (st->fan_servers == ME_FAN_SERVERS_DS)
         AppendMenuA(m, MF_POPUP, (UINT_PTR)g_fan_server_menu, "&Fan Server");
+    else if (st->fan_servers == ME_FAN_SERVERS_WII)
+        AppendMenuA(m, MF_POPUP, (UINT_PTR)g_wii_fan_server_menu, "&Fan Server");
     if (GetMenuItemCount(m) == 0)
         AppendMenuA(m, MF_STRING | MF_GRAYED, IDM_MULTIPLAYER_NONE,
-                    st->game_running ? "(nothing for this core)" : "(no game running)");
+                    st->game_running ? "(nothing for this game)" : "(no game running)");
+}
+
+/* The servers with Wii patches, what the running game's load did with its
+   pick, and the notes. */
+static void rebuild_wii_fan_server_menu(const me_app_status *st, const me_settings *s) {
+    HMENU m = g_wii_fan_server_menu;
+    while (GetMenuItemCount(m) > 0) DeleteMenu(m, 0, MF_BYPOSITION);
+    UINT last = IDM_WII_FAN_SERVER_FIRST;
+    for (int i = 0; i < ME_FAN_SERVER_COUNT; i++) {
+        const me_fan_server_info *fs = me_fan_server_info_of((me_fan_server)i);
+        if (i != ME_FAN_SERVER_OFF && !fs->wii_patches) continue;
+        last = IDM_WII_FAN_SERVER_FIRST + i;
+        AppendMenuA(m, MF_STRING, last, fs->name);
+    }
+    unsigned v = (unsigned)s->wii_fan_server < ME_FAN_SERVER_COUNT ? (unsigned)s->wii_fan_server : 0;
+    CheckMenuRadioItem(m, IDM_WII_FAN_SERVER_FIRST, last, IDM_WII_FAN_SERVER_FIRST + v, MF_BYCOMMAND);
+    AppendMenuA(m, MF_SEPARATOR, 0, NULL);
+    if (st->fan_server_note[0])
+        AppendMenuA(m, MF_STRING | MF_GRAYED, IDM_WII_FAN_SERVER_STATUS, st->fan_server_note);
+    AppendMenuA(m, MF_STRING | MF_GRAYED, IDM_WII_FAN_SERVER_NOTE,
+                "Applies at next game load or Hard Reset");
+    AppendMenuA(m, MF_STRING | MF_GRAYED, IDM_WII_FAN_SERVER_NAND,
+                "Online may need a NAND from a real Wii");
 }
 
 static void refresh_menu(HMENU m) {
@@ -647,6 +681,8 @@ static void refresh_menu(HMENU m) {
         unsigned v = (unsigned)s->fan_server < ME_FAN_SERVER_COUNT ? (unsigned)s->fan_server : 0;
         CheckMenuRadioItem(m, IDM_FAN_SERVER_FIRST, IDM_FAN_SERVER_FIRST + ME_FAN_SERVER_COUNT - 1,
                            IDM_FAN_SERVER_FIRST + v, MF_BYCOMMAND);
+    } else if (m == g_wii_fan_server_menu) {
+        rebuild_wii_fan_server_menu(&st, s);
     } else if (m == g_backend_menu) {
         static const UINT ids[] = { 0, IDM_BACKEND_VULKAN, IDM_BACKEND_GDI, IDM_BACKEND_D3D11 };
         backend_choice b = backend_of(s);
@@ -700,6 +736,13 @@ static void on_command(HWND h, UINT id) {
         me_fan_server v = (me_fan_server)(id - IDM_FAN_SERVER_FIRST);
         s->fan_server = v;
         me_ui_persist(patch_fan_server, &v);
+        return;
+    }
+    if (id >= IDM_WII_FAN_SERVER_FIRST && id < IDM_WII_FAN_SERVER_FIRST + ME_FAN_SERVER_COUNT) {
+        /* Its patch is fetched when the next Wii game loads. */
+        me_fan_server v = (me_fan_server)(id - IDM_WII_FAN_SERVER_FIRST);
+        s->wii_fan_server = v;
+        me_ui_persist(patch_wii_fan_server, &v);
         return;
     }
     if (id >= IDM_RECENT_FIRST && id < IDM_RECENT_FIRST + ME_RECENT_MAX) {

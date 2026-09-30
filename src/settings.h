@@ -115,8 +115,10 @@ typedef enum {
 } me_screens;
 
 /* Multiplayer > Fan Server: the community server that stands in for the
-   shut-down Nintendo Wi-Fi Connection, reached by pointing the emulated DS's
-   DNS at it. OFF leaves the firmware's own DNS. */
+   shut-down Nintendo Wi-Fi Connection. A DS game reaches it through the
+   emulated DS's DNS; OFF leaves the firmware's own. A Wii game on Dolphin
+   (which ignores the Wii's DNS) through the server's patch for that game,
+   installed as a Gecko code (wii_wfc.h); OFF installs none. */
 typedef enum {
     ME_FAN_SERVER_OFF = 0,
     ME_FAN_SERVER_WIIMMFI,
@@ -130,6 +132,9 @@ typedef struct {
     const char *id;     /* settings.yaml value ("wiimmfi") */
     const char *name;   /* menu text ("Wiimmfi") */
     const char *dns;    /* its DNS server, NULL for OFF */
+    /* Where its Wii patches are ("<url><patch>.txt"), NULL when it has none:
+       only these are offered for Wii games. */
+    const char *wii_patches;
 } me_fan_server_info;
 
 /* ME_FAN_SERVER_OFF's for anything out of range. */
@@ -171,7 +176,8 @@ typedef struct {
     int thread_affinity; /* 0 = off, 1 = auto-detect P-cores, else leave OS default */
 
     /* multiplayer */
-    me_fan_server fan_server;
+    me_fan_server fan_server;       /* DS games */
+    me_fan_server wii_fan_server;   /* Wii games: OFF or one with wii_patches */
 
     /* run-ahead: number of frames to simulate ahead each iteration. 0 disables.
        Reduces visible input latency by displaying a future frame. Each ghost

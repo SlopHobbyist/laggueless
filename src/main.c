@@ -18,6 +18,7 @@
 #include "rom_cores.h"
 #include "app.h"
 #include "ui.h"
+#include "wii_wfc.h"
 
 /* ---- exe-relative path helpers -------------------------------------------- */
 static char g_exedir[MAX_PATH];
@@ -343,6 +344,9 @@ static const struct { const char *key, *value; } k_var_overrides[] = {
        shader inside retro_run, a ~70 ms hitch each. Ubershaders cover every
        pipeline from a small set compiled up front and cached to disk. */
     { "dolphin_shader_compilation_mode", "1" },
+    /* Dolphin: don't copy each game's codes to cheats\ for RetroArch's cheat
+       menu, which we don't have (it would keep the Wii Fan Server's patch). */
+    { "dolphin_cheats_import", "disabled" },
 };
 
 /* The override for `key` if `values` ("v1|v2|v3") lists it, else NULL. */
@@ -420,12 +424,31 @@ static int me_core_has_dns_var(void) {
     return 0;
 }
 
+/* A Wii game's Fan Server (wii_wfc.h): Dolphin runs its patch when the
+   core's cheats are on, which they are for a patched game only. Dolphin
+   declares its options inside retro_load_game, then reads them, then boots
+   the game (reading its inis), so the patch is set up when they're declared.
+   g_wii_wfc_rom is the game being loaded, NULL outside retro_load_game. */
+#define ME_DOLPHIN_CHEATS_VAR "dolphin_cheats_enabled"
+static me_wii_wfc  g_wii_wfc;
+static const char *g_wii_wfc_rom;
+
+static void me_wii_wfc_on_options(void) {
+    if (!g_wii_wfc_rom || !me_var_default_for(ME_DOLPHIN_CHEATS_VAR)) return;
+    char user_dir[MAX_PATH];   /* Dolphin's: <save directory>\User */
+    exepath(user_dir, sizeof(user_dir), "saves\\User");
+    me_wii_wfc_prepare(g_wii_wfc_rom, user_dir, g_settings.wii_fan_server, &g_wii_wfc);
+    g_wii_wfc_rom = NULL;   /* once per load */
+}
+
 /* GET_VARIABLE: the core's default, or ours where we set it. */
 static const char *me_var_value(const char *key) {
     const char *def = me_var_default_for(key);
     if (!def) return NULL;   /* not one of the core's options */
     const char *dns = me_dns_var_value(key);
-    return dns ? dns : def;
+    if (dns) return dns;
+    if (g_wii_wfc.patched && strcmp(key, ME_DOLPHIN_CHEATS_VAR) == 0) return "enabled";
+    return def;
 }
 
 /* Each player's controller in the running game (consoles.h). Inputs outside
@@ -716,6 +739,7 @@ static bool me_environment_cb(unsigned cmd, void *data) {
                 }
             }
             me_vars_set(arr);
+            me_wii_wfc_on_options();
             if (g_env_trace) me_log(ME_LOG_ENV, "[env] SET_VARIABLES stored %zu\n", g_var_count);
             return true;
         }
@@ -2206,7 +2230,11 @@ static int session_open(me_session *s, const char *core_path_in, const char *rom
             game.path ? game.path : "(null)", game.data, game.size);
     fflush(stderr);
 
+    memset(&g_wii_wfc, 0, sizeof(g_wii_wfc));
+    g_wii_wfc_rom = rom_path;
+    me_wii_wfc_on_options();   /* a core that declared its options already */
     bool loaded = core->retro_load_game(&game);
+    g_wii_wfc_rom = NULL;
     fprintf(stderr, "[load] retro_load_game -> %s\n", loaded ? "true" : "false");
     fflush(stderr);
     if (!loaded) {
@@ -2779,7 +2807,9 @@ static void publish_status(const me_session *s) {
             if (g_adapter == &c->adapters[i]) st.adapter = i;
         }
         st.controllers_usable = controllers_usable(s->core, c);
-        st.fan_server_usable = me_core_has_dns_var();
+        st.fan_servers = me_core_has_dns_var() ? ME_FAN_SERVERS_DS
+                       : g_wii_wfc.wii         ? ME_FAN_SERVERS_WII : ME_FAN_SERVERS_NONE;
+        snprintf(st.fan_server_note, sizeof(st.fan_server_note), "%s", g_wii_wfc.note);
         for (int p = 0; p < ME_MAX_PLAYERS; p++)
             if (g_controller[p]) st.controller[p] = (int)(g_controller[p] - me_console_controllers(c));
     }

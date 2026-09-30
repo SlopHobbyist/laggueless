@@ -84,10 +84,18 @@ typedef struct {
        own). */
     unsigned controllers_usable;
     int      controller[ME_MAX_PLAYERS];
-    /* The running game's core takes Multiplayer > Fan Server (0 with no
-       game). */
-    int      fan_server_usable;
+    /* Which Multiplayer > Fan Server list the running game takes
+       (ME_FAN_SERVERS_*; NONE with no game), and for a Wii game what its
+       load did with it ("" when nothing). */
+    int      fan_servers;
+    char     fan_server_note[96];
 } me_app_status;
+
+enum {
+    ME_FAN_SERVERS_NONE = 0,
+    ME_FAN_SERVERS_DS,    /* settings fan_server: the core's DNS option */
+    ME_FAN_SERVERS_WII,   /* settings wii_fan_server: Dolphin, a patch (wii_wfc.h) */
+};
 
 void me_status_set(const me_app_status *s);
 void me_status_get(me_app_status *out);
