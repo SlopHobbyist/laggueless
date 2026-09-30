@@ -167,6 +167,10 @@ typedef struct {
        stick pushed past half travel also presses the D-pad (Controls >
        Player N). On by default; a plain remap, so run-legal. */
     int             lstick_as_dpad[ME_MAX_PLAYERS];
+    /* The player's pad rumbles when the core asks (consoles with rumble:
+       N64 Rumble Pak, DualShock...). On by default; output only, so
+       run-legal. */
+    int             rumble[ME_MAX_PLAYERS];
 
     /* Universal control maps, one per player. */
     me_control_map universal[ME_MAX_PLAYERS];

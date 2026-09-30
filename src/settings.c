@@ -376,6 +376,7 @@ void me_settings_defaults(me_settings *out) {
         out->input_source[p] = ME_SRC_BOTH;
         out->xi_index[p] = p;
         out->lstick_as_dpad[p] = 1;
+        out->rumble[p] = 1;
     }
 
 /* Helper: assign a single default into a bindings slot. */
@@ -644,6 +645,8 @@ static void load_document(yaml_document_t *doc, yaml_node_t *root, me_settings *
             out->xi_index[pl] = scalar_int(map_get(doc, controls, key), out->xi_index[pl]);
             snprintf(key, sizeof(key), "player%d_lstick_as_dpad", pl + 1);
             out->lstick_as_dpad[pl] = scalar_bool(map_get(doc, controls, key), out->lstick_as_dpad[pl]);
+            snprintf(key, sizeof(key), "player%d_rumble", pl + 1);
+            out->rumble[pl] = scalar_bool(map_get(doc, controls, key), out->rumble[pl]);
         }
         yaml_node_t *uni = map_get(doc, controls, "universal");
         if (uni) parse_players(doc, uni, out->universal, NULL);
@@ -908,6 +911,7 @@ int me_settings_save(const char *path, const me_settings *s) {
         fprintf(f, "  player%d_input: %s\n", pl + 1, source_name(s->input_source[pl]));
         fprintf(f, "  player%d_controller: %d\n", pl + 1, s->xi_index[pl]);
         fprintf(f, "  player%d_lstick_as_dpad: %s\n", pl + 1, yn(s->lstick_as_dpad[pl]));
+        fprintf(f, "  player%d_rumble: %s\n", pl + 1, yn(s->rumble[pl]));
     }
     fprintf(f, "  universal:\n");
     for (int pl = 0; pl < ME_MAX_PLAYERS; pl++)

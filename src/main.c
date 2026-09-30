@@ -447,7 +447,8 @@ static void apply_adapter(me_core *core) {
 }
 
 /* Rumble: each player's strong and weak motor, as the core last set them,
-   on the controller slot that player uses. Cores may call from their own
+   on the controller slot that player uses, unless that player turned
+   rumble off (Controls > Player N). Cores may call from their own
    threads. */
 static volatile uint16_t g_rumble[ME_MAX_PLAYERS][2];
 
@@ -457,9 +458,19 @@ static bool me_set_rumble_state(unsigned port, enum retro_rumble_effect effect, 
     g_rumble[port][effect] = strength;
     me_settings_lock();
     int slot = g_settings.input_source[port] != ME_SRC_KEYBOARD ? g_settings.xi_index[port] : -1;
+    int on = g_settings.rumble[port];
     me_settings_unlock();
-    if (slot >= 0) me_xinput_rumble(slot, g_rumble[port][RETRO_RUMBLE_STRONG], g_rumble[port][RETRO_RUMBLE_WEAK]);
+    if (slot >= 0 && on) me_xinput_rumble(slot, g_rumble[port][RETRO_RUMBLE_STRONG], g_rumble[port][RETRO_RUMBLE_WEAK]);
     return true;
+}
+
+/* Each input poll: a player with rumble off whose game has the motors
+   running gets them stopped, so turning rumble off mid-rumble takes effect
+   now rather than on the core's next change. me_xinput_rumble skips
+   repeats. Settings lock held. */
+static void rumble_mute(int p) {
+    if (g_settings.rumble[p] || !(g_rumble[p][RETRO_RUMBLE_STRONG] | g_rumble[p][RETRO_RUMBLE_WEAK])) return;
+    if (g_settings.input_source[p] != ME_SRC_KEYBOARD) me_xinput_rumble(g_settings.xi_index[p], 0, 0);
 }
 
 /* Motors off on every pad, when a game closes. */
@@ -1154,7 +1165,10 @@ static void me_input_poll_cb(void) {
         for (int q = 0; q < p; q++) seen |= (g_settings.xi_index[q] == slot);
         if (!seen && g_settings.input_source[p] != ME_SRC_KEYBOARD) me_xinput_poll(slot);
     }
-    for (int p = 0; p < g_players; p++) poll_player(p);
+    for (int p = 0; p < g_players; p++) {
+        poll_player(p);
+        rumble_mute(p);
+    }
     me_settings_unlock();
 }
 

@@ -148,6 +148,8 @@ hotkeys:
 # `playerN_controller` is the XInput slot (0..3) that player's pad is in.
 # `playerN_lstick_as_dpad`: on consoles with no analog stick (NES, SNES,
 #   Genesis...), that player's left stick also works the D-pad.
+# `playerN_rumble`: that player's pad rumbles when the game asks (N64 Rumble
+#   Pak, DualShock, GameCube...). Consoles without rumble never ask.
 #
 # Naming uses Xbox / XInput vocabulary throughout:
 #   Face buttons:  a, b, x, y           (Xbox layout)
@@ -169,15 +171,19 @@ controls:
   player1_input: both
   player1_controller: 0
   player1_lstick_as_dpad: true
+  player1_rumble: true
   player2_input: both
   player2_controller: 1
   player2_lstick_as_dpad: true
+  player2_rumble: true
   player3_input: both
   player3_controller: 2
   player3_lstick_as_dpad: true
+  player3_rumble: true
   player4_input: both
   player4_controller: 3
   player4_lstick_as_dpad: true
+  player4_rumble: true
   show_cursor_fullscreen: false  # keep the mouse cursor visible in fullscreen
                                  # (touch screens). Controls > Show Cursor in Fullscreen
 
