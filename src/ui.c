@@ -250,6 +250,12 @@ void me_ui_notify_error(const char *fmt, ...) {
     va_start(ap, fmt);
     vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
+    /* No window yet (a game opened from the command line or by double-click
+       that failed to start): nothing runs that it could hold up. */
+    if (!me_platform_hwnd()) {
+        MessageBoxA(NULL, buf, "laggueless", MB_OK | MB_ICONWARNING);
+        return;
+    }
     post_string(WM_ME_ERROR, 0, buf);
 }
 

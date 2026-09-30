@@ -75,6 +75,12 @@ static enum retro_pixel_format g_pixel_format = RETRO_PIXEL_FORMAT_0RGB1555;
 /* BGRX backbuffer (32 bpp, top-down via negative bmi height). */
 static u32 *g_back = NULL;
 static unsigned g_back_max_w = 0, g_back_max_h = 0;
+/* The core's timing the game is paced by: from its AV info at load, or
+   SET_SYSTEM_AV_INFO since, which sets g_av_timing_changed for the frame
+   loop to pick up. */
+static double g_av_fps = 0.0, g_av_rate = 0.0;
+static int    g_av_timing_changed = 0;
+static int    g_av_refused = 0;   /* a bigger frame refused (logged once) */
 static unsigned g_frame_w = 0, g_frame_h = 0;
 static unsigned long g_video_calls = 0;
 
@@ -102,11 +108,6 @@ static const char *g_aspect_names[3] = { "1:1", "4:3", "16:9" };
 static const int g_aspect_x[3] = { 1, 4, 16 };
 static const int g_aspect_y[3] = { 1, 3,  9 };
 
-/* Set when a core's log message looks like a missing-firmware/BIOS error.
-   Cores typically continue running but the game hangs at first use of the
-   missing chip; surfacing this prominently makes the cause obvious. */
-static int g_firmware_warned = 0;
-
 static int hk_pressed(const me_kb_bindings *b) {
     for (int i = 0; i < b->count; i++) {
         const me_kb_binding *k = &b->b[i];
@@ -127,28 +128,6 @@ static int hk_xi_pressed(const me_xi_bindings *b, int player, int *prev) {
     return fired;
 }
 
-static int looks_like_firmware_error(const char *s) {
-    if (!s) return 0;
-    /* Case-insensitive substring search for any of a few generic phrases.
-       Different cores phrase it differently ("firmware file", "BIOS file
-       not found", "missing BIOS", "required ROM"); these cover the common
-       formulations across SNES coprocessors, GBA BIOS, PSX/Saturn BIOS,
-       N64 64DD IPL, etc. */
-    static const char *needles[] = {
-        "firmware", "BIOS", "bios", "Could not find", "required ROM",
-        "not found in system", NULL
-    };
-    for (const char **n = needles; *n; n++) {
-        const char *p = s;
-        size_t nl = strlen(*n);
-        while (*p) {
-            if (_strnicmp(p, *n, nl) == 0) return 1;
-            p++;
-        }
-    }
-    return 0;
-}
-
 /* ---- log callback --------------------------------------------------------- */
 static void me_log_cb(enum retro_log_level level, const char *fmt, ...) {
     const char *tag = "?";
@@ -159,25 +138,12 @@ static void me_log_cb(enum retro_log_level level, const char *fmt, ...) {
         case RETRO_LOG_ERROR: tag = "ERR"; break;
         default: break;
     }
-    /* Format once into a buffer so we can both print it and scan it. */
     char buf[1024];
     va_list ap; va_start(ap, fmt);
     int n = vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
     if (n < 0) { fprintf(stderr, "[core:%s] (format error)\n", tag); return; }
     fprintf(stderr, "[core:%s] %s", tag, buf);
-    /* Heuristic: a "could not find ... .rom" / "firmware missing" style line.
-       Print a prominent warning the first time and remember so we can also
-       surface it at exit if the game gets stuck. */
-    if (!g_firmware_warned && looks_like_firmware_error(buf)) {
-        g_firmware_warned = 1;
-        fprintf(stderr,
-                "[firmware] WARNING: the core reported a missing firmware/BIOS file.\n"
-                "[firmware] The game may freeze or behave incorrectly when it tries to use\n"
-                "[firmware] the missing chip. Place the required file in the system\n"
-                "[firmware] directory (./firmware) and restart.\n");
-        fflush(stderr);
-    }
 }
 
 /* ---- hardware-rendering state --------------------------------------------
@@ -276,6 +242,10 @@ static void me_log(me_log_stream s, const char *fmt, ...) {
     va_start(ap, fmt);
     vfprintf(f, fmt, ap);
     va_end(ap);
+    /* The Windows CRT treats _IOLBF as full buffering: flush completed lines
+       ourselves, or a crash or hard exit loses the last 4 KB. */
+    size_t n = strlen(fmt);
+    if (n && fmt[n - 1] == '\n') fflush(f);
 }
 
 static void me_log_close_all(void) {
@@ -376,10 +346,13 @@ static void set_input_layout(const me_input_layout *l) {
 #define ME_CI_TYPES 32
 static struct { char desc[64]; unsigned id; } g_ci[ME_CI_PORTS][ME_CI_TYPES];
 static int g_ci_n[ME_CI_PORTS];
+static int g_ci_ports;   /* ports the core described */
 
 static void store_controller_info(const struct retro_controller_info *ci) {
     memset(g_ci_n, 0, sizeof(g_ci_n));
+    g_ci_ports = 0;
     for (int p = 0; p < ME_CI_PORTS && ci[p].types; p++) {
+        g_ci_ports = p + 1;
         for (unsigned t = 0; t < ci[p].num_types && g_ci_n[p] < ME_CI_TYPES; t++) {
             const struct retro_controller_description *d = &ci[p].types[t];
             if (!d->desc) continue;
@@ -429,6 +402,16 @@ static int adapter_usable(const me_core *core, const me_adapter *a) {
     return 1;
 }
 
+/* Plug a gamepad into each port the core described, as RetroArch does once a
+   game is loaded: some cores (Dolphin) set a port's controller up only when
+   told what's in it, and never read input otherwise. Cores that describe no
+   ports keep their own defaults. The adapter, if any, goes in after. */
+static void plug_gamepads(me_core *core) {
+    if (!core->retro_set_controller_port_device) return;
+    for (int p = 0; p < g_ci_ports && p < ME_MAX_PLAYERS; p++)
+        core->retro_set_controller_port_device((unsigned)p, RETRO_DEVICE_JOYPAD);
+}
+
 /* Plug in (or unplug) the console's adapter as the settings say, and give
    the game its players. Called once the game is loaded, and again when the
    checkbox changes; most games look for an adapter only when they boot. */
@@ -461,6 +444,28 @@ static void apply_adapter(me_core *core) {
     if (g_players > ME_MAX_PLAYERS) g_players = ME_MAX_PLAYERS;
     printf("[input] %d player%s%s%s\n", g_players, g_players == 1 ? "" : "s",
            a ? " with the " : "", a ? a->name : "");
+}
+
+/* Rumble: each player's strong and weak motor, as the core last set them,
+   on the controller slot that player uses. Cores may call from their own
+   threads. */
+static volatile uint16_t g_rumble[ME_MAX_PLAYERS][2];
+
+static bool me_set_rumble_state(unsigned port, enum retro_rumble_effect effect, uint16_t strength) {
+    if (port >= ME_MAX_PLAYERS || (effect != RETRO_RUMBLE_STRONG && effect != RETRO_RUMBLE_WEAK))
+        return false;
+    g_rumble[port][effect] = strength;
+    me_settings_lock();
+    int slot = g_settings.input_source[port] != ME_SRC_KEYBOARD ? g_settings.xi_index[port] : -1;
+    me_settings_unlock();
+    if (slot >= 0) me_xinput_rumble(slot, g_rumble[port][RETRO_RUMBLE_STRONG], g_rumble[port][RETRO_RUMBLE_WEAK]);
+    return true;
+}
+
+/* Motors off on every pad, when a game closes. */
+static void rumble_stop(void) {
+    memset((void *)g_rumble, 0, sizeof(g_rumble));
+    for (int slot = 0; slot < ME_XI_SLOTS; slot++) me_xinput_rumble(slot, 0, 0);
 }
 
 static bool me_environment_cb(unsigned cmd, void *data) {
@@ -594,6 +599,46 @@ static bool me_environment_cb(unsigned cmd, void *data) {
             if (g_env_trace) me_log(ME_LOG_ENV, "[env] SET_CONTROLLER_INFO -> true\n");
             if (data) store_controller_info((const struct retro_controller_info *)data);
             return true;
+        case RETRO_ENVIRONMENT_GET_RUMBLE_INTERFACE: { /* 23 */
+            if (!data) return false;
+            ((struct retro_rumble_interface *)data)->set_rumble_state = me_set_rumble_state;
+            if (g_env_trace) me_log(ME_LOG_ENV, "[env] GET_RUMBLE_INTERFACE -> true\n");
+            return true;
+        }
+        case RETRO_ENVIRONMENT_SET_GEOMETRY: {         /* 37 */
+            /* Frames are shown at whatever size the core draws them, and
+               frame gen follows that too; nothing else uses the base size. */
+            const struct retro_game_geometry *g = (const struct retro_game_geometry *)data;
+            if (g_env_trace && g)
+                me_log(ME_LOG_ENV, "[env] SET_GEOMETRY %ux%u aspect=%.4f -> true\n",
+                       g->base_width, g->base_height, g->aspect_ratio);
+            return true;
+        }
+        case RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO: {   /* 32 */
+            const struct retro_system_av_info *av = (const struct retro_system_av_info *)data;
+            if (!av) return false;
+            /* While loading, nothing is built yet: session_open reads the AV
+               info after retro_load_game. Once running, new timing re-paces
+               the game from the next frame on (session_run_frame), and a new
+               size is a geometry change. A frame bigger than the backbuffer
+               would need the renderers rebuilt, which isn't done: refused,
+               and the core keeps its old size. */
+            unsigned max_w = av->geometry.max_width  ? av->geometry.max_width  : av->geometry.base_width;
+            unsigned max_h = av->geometry.max_height ? av->geometry.max_height : av->geometry.base_height;
+            int ok = !g_back || (max_w <= g_back_max_w && max_h <= g_back_max_h);
+            int retimed = ok && g_back && (av->timing.fps != g_av_fps || av->timing.sample_rate != g_av_rate);
+            if (g_env_trace || retimed || (!ok && !g_av_refused))
+                me_log(ME_LOG_ENV, "[env] SET_SYSTEM_AV_INFO %s max=%ux%u fps=%.4f rate=%.1f -> %s\n",
+                       g_back ? "(running)" : "(loading)", max_w, max_h,
+                       av->timing.fps, av->timing.sample_rate, ok ? "true" : "false");
+            if (!ok) g_av_refused = 1;
+            if (retimed) {
+                g_av_fps  = av->timing.fps;
+                g_av_rate = av->timing.sample_rate;
+                g_av_timing_changed = 1;
+            }
+            return ok;
+        }
         case RETRO_ENVIRONMENT_SET_CONTENT_INFO_OVERRIDE:
             /* We don't actually apply the override (we use the original
                need_fullpath from get_system_info), so report false. Saying
@@ -1116,24 +1161,34 @@ static void me_input_poll_cb(void) {
 static int16_t me_input_state_cb(unsigned port, unsigned device, unsigned index, unsigned id) {
     /* Ports the console doesn't have (without its adapter) stay empty. */
     if (port >= (unsigned)g_players) return 0;
+    /* A subclass (a multitap, a Wii Remote...) reads like its base device. */
     unsigned base = device & RETRO_DEVICE_MASK;
     if (g_env_trace && base < 32 && !(g_devices_read & (1u << base))) {
         g_devices_read |= 1u << base;
-        me_log(ME_LOG_ENV, "[input] core reads device %u (port %u)\n", base, port);
+        me_log(ME_LOG_ENV, "[input] core reads device %u (0x%x, port %u)\n", base, device, port);
     }
+    const unsigned n_ids = sizeof(g_pad[0]) / sizeof(g_pad[0][0]);
     if (base == RETRO_DEVICE_POINTER || base == RETRO_DEVICE_MOUSE)
         return touch_state(port, base, index, id);
-    if (device == RETRO_DEVICE_JOYPAD) {
-        if (id >= sizeof(g_pad[0]) / sizeof(g_pad[0][0])) return 0;
-        return g_pad[port][id];
+    if (base == RETRO_DEVICE_JOYPAD) {
+        if (id == RETRO_DEVICE_ID_JOYPAD_MASK) {
+            int16_t mask = 0;
+            for (unsigned i = 0; i < n_ids; i++) if (g_pad[port][i]) mask |= (int16_t)(1 << i);
+            return mask;
+        }
+        return id < n_ids ? g_pad[port][id] : 0;
     }
-    if (device == RETRO_DEVICE_ANALOG) {
+    if (base == RETRO_DEVICE_ANALOG) {
         if (index == RETRO_DEVICE_INDEX_ANALOG_LEFT) {
             if (id == RETRO_DEVICE_ID_ANALOG_X) return g_analog[port][AN_LX];
             if (id == RETRO_DEVICE_ID_ANALOG_Y) return g_analog[port][AN_LY];
         } else if (index == RETRO_DEVICE_INDEX_ANALOG_RIGHT) {
             if (id == RETRO_DEVICE_ID_ANALOG_X) return g_analog[port][AN_RX];
             if (id == RETRO_DEVICE_ID_ANALOG_Y) return g_analog[port][AN_RY];
+        } else if (index == RETRO_DEVICE_INDEX_ANALOG_BUTTON) {
+            /* How far a button is pressed (analog triggers): the bound
+               input is on or off, so all the way or not at all. */
+            return id < n_ids && g_pad[port][id] ? 0x7fff : 0;
         }
         return 0;
     }
@@ -1460,6 +1515,8 @@ static int me_pick_affinity_masks(DWORD_PTR *emu_mask, DWORD_PTR *audio_mask) {
     return 1;
 }
 
+static DWORD g_main_tid;   /* the emulation thread (main's) */
+
 static LONG WINAPI me_unhandled_exception(EXCEPTION_POINTERS *ep) {
     DWORD code = ep && ep->ExceptionRecord ? ep->ExceptionRecord->ExceptionCode : 0;
     void *addr = ep && ep->ExceptionRecord ? ep->ExceptionRecord->ExceptionAddress : NULL;
@@ -1474,9 +1531,34 @@ static LONG WINAPI me_unhandled_exception(EXCEPTION_POINTERS *ep) {
         GetModuleFileNameA(mod, modname, sizeof(modname));
     }
     uintptr_t off = mod ? (uintptr_t)addr - (uintptr_t)mod : 0;
-    fprintf(stderr, "[crash] unhandled exception 0x%08lx at %p (%s+0x%llx)\n",
-            (unsigned long)code, addr, modname, (unsigned long long)off);
+    /* Which thread: ours, or one a core started (its render thread...). */
+    DWORD tid = GetCurrentThreadId();
+    char line[MAX_PATH + 160];
+    int n = snprintf(line, sizeof(line),
+                     "[crash] unhandled exception 0x%08lx at %p (%s+0x%llx) on %s thread %lu\n",
+                     (unsigned long)code, addr, modname, (unsigned long long)off,
+                     tid == g_main_tid ? "the emulation" : "another", (unsigned long)tid);
+    if (n < 0) n = 0;
+    if ((size_t)n >= sizeof(line)) n = (int)sizeof(line) - 1;
+    fputs(line, stderr);
     fflush(stderr);
+    /* Also in logs\crash.log, for games opened without a console window.
+       Plain Win32 calls: the heap may be what broke. */
+    char path[MAX_PATH + 16];
+    snprintf(path, sizeof(path), "%s\\crash.log", g_log_dir);
+    CreateDirectoryA(g_log_dir, NULL);
+    HANDLE f = CreateFileA(path, FILE_APPEND_DATA, FILE_SHARE_READ, NULL, OPEN_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL, NULL);
+    if (f != INVALID_HANDLE_VALUE) {
+        SYSTEMTIME t; GetLocalTime(&t);
+        char when[40];
+        int wn = snprintf(when, sizeof(when), "%04u-%02u-%02u %02u:%02u:%02u ",
+                          t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond);
+        DWORD wrote;
+        if (wn > 0) WriteFile(f, when, (DWORD)wn, &wrote, NULL);
+        WriteFile(f, line, (DWORD)n, &wrote, NULL);
+        CloseHandle(f);
+    }
     return EXCEPTION_EXECUTE_HANDLER;
 }
 
@@ -1523,6 +1605,11 @@ typedef struct me_session {
     double        frame_period_ms;
     LARGE_INTEGER qpf, qstart;
     unsigned long frame_count;
+    /* Frame pace_base_frame is due pace_base_ms after qstart, and each one
+       after it frame_period_ms later: both move when the core's rate
+       changes (SET_SYSTEM_AV_INFO), so no deadline jumps. */
+    double        pace_base_ms;
+    unsigned long pace_base_frame;
 
     int    ra_frames;
     size_t ra_state_size;
@@ -1557,12 +1644,13 @@ static void session_reset_globals(void) {
     g_pixel_format = RETRO_PIXEL_FORMAT_0RGB1555;
     g_back = NULL;
     g_back_max_w = g_back_max_h = 0;
+    g_av_fps = g_av_rate = 0.0;
+    g_av_timing_changed = g_av_refused = 0;
     g_frame_w = g_frame_h = 0;
     g_video_calls = 0;
     g_use_d3d11 = 0;
     memset(&g_hw_render, 0, sizeof(g_hw_render));
     g_hw_render_requested = g_hw_render_accepted = 0;
-    g_firmware_warned = 0;
     me_vars_set(NULL);
     memset(g_env_seen, 0, sizeof(g_env_seen));
     g_av_mute = 0;
@@ -1577,6 +1665,7 @@ static void session_reset_globals(void) {
     me_layout_unknown(&g_in_layout);
     g_core_name[0] = '\0';
     memset(g_ci_n, 0, sizeof(g_ci_n));
+    g_ci_ports = 0;
     g_console = -1;
     g_players = ME_MAX_PLAYERS;
     g_adapter = NULL;
@@ -1606,6 +1695,7 @@ static void session_close(me_session *s) {
         core->retro_unload_game();
     }
     if (s->core_inited) core->retro_deinit();
+    rumble_stop();
     /* GL before D3D11: GL interop holds a registration on the D3D11 device. */
     me_gl_shutdown();
     me_d3d11_shutdown();
@@ -1677,12 +1767,6 @@ static int init_vulkan(me_session *s) {
         fprintf(stderr, "[render] Vulkan init failed; falling back to D3D11/GDI\n");
         return 0;
     }
-    if (g_hw_render_accepted) {
-        fprintf(stderr,
-            "[render] WARNING: --vulkan with a GL hardware core. The GL framebuffer\n"
-            "[render]          is not yet bridged to Vulkan; expect a black screen.\n"
-            "[render]          Software cores (mesen, snes9x, etc.) display correctly.\n");
-    }
 #ifdef ME_HAVE_LSFG
     /* B3: Wire up the LSFG backend now that Vulkan is ready.
      * We use the core's base frame size from av_info. At context-open time
@@ -1707,6 +1791,90 @@ static int init_vulkan(me_session *s) {
     printf("[render] --vulkan requested but build has no Vulkan support (set VULKAN_SDK and rebuild)\n");
     return 0;
 #endif
+}
+
+/* The rate to pace a core running at `fps` at: its own, or snapped to the
+   display refresh when settings.yaml asks and the speed error allows. */
+static double paced_fps(double fps) {
+    /* Refresh-rate matching: if the monitor's actual rate is a near-exact
+       integer multiple of the core's nominal fps, snap the pacing deadline to
+       refresh/N so FIFO holds every frame for exactly N refreshes (no judder).
+       Removes residual judder when core Hz ≠ display Hz (e.g. 60.10 vs 59.94)
+       at the cost of a tiny core-vs-device clock mismatch the audio DRC
+       already absorbs. fps here is the per-core rate from the AV info, so the
+       target adapts to whatever console/region is loaded. Opt-in via
+       settings.yaml. */
+    if (g_settings.match_display_hz) {
+        HMONITOR mon = MonitorFromWindow(g_hwnd, MONITOR_DEFAULTTONEAREST);
+        MONITORINFOEXA mi = {0};
+        mi.cbSize = sizeof(mi);
+        double disp_hz = 0.0;
+        if (GetMonitorInfoA(mon, (MONITORINFO *)&mi)) {
+            /* Prefer the exact rational refresh; fall back to integer Hz. */
+            disp_hz = me_query_exact_refresh_hz(mi.szDevice);
+            if (disp_hz <= 1.0) {
+                DEVMODEA dm = {0};
+                dm.dmSize = sizeof(dm);
+                if (EnumDisplaySettingsA(mi.szDevice, ENUM_CURRENT_SETTINGS, &dm)
+                    && dm.dmDisplayFrequency > 1) {
+                    /* dmDisplayFrequency is integer Hz. Treat 59 as 59.94 (NTSC). */
+                    disp_hz = (dm.dmDisplayFrequency == 59) ? 59.94 : (double)dm.dmDisplayFrequency;
+                }
+            }
+        }
+        if (disp_hz > 1.0) {
+            /* The display may run at an integer multiple of the core rate
+               (e.g. 239.760 Hz panel vs 60.0998 Hz NES = ~4x). Pace to
+               refresh/N so FIFO holds every frame for exactly N refreshes —
+               no judder, no tearing, no VRR. N==1 reduces to the plain
+               near-match case. */
+            long n = (long)(disp_hz / fps + 0.5);
+            if (n < 1) n = 1;
+            double target = disp_hz / (double)n;
+            double ratio = target / fps;
+            double dev_pct = (target / fps - 1.0) * 100.0;
+
+            /* Snapping the game to refresh/N kills judder but changes its speed
+               by dev_pct, because a standard panel is never an exact multiple of
+               the console rate (a "240 Hz" panel is 59.940x4, not 60.0998x4).
+               competition mode (match_strict) only snaps when that error is
+               negligible — i.e. a true exact-multiple refresh; casual mode
+               tolerates the ~0.27% NTSC offset for plug-and-play smoothness.
+               Past ~0.3% no clean hold count exists at all (144 Hz, 700 Hz, ...). */
+            const double TOL_STRICT = 0.0005; /* 0.05% — competition */
+            const double TOL_CASUAL = 0.003;  /* 0.30% — casual smoothness */
+            double tol = g_settings.match_strict ? TOL_STRICT : TOL_CASUAL;
+
+            if (ratio > 1.0 - tol && ratio < 1.0 + tol) {
+                printf("[pace] match_display_hz: core %.4f Hz -> %.4f Hz "
+                       "(display %.4f / %ld), game speed %+.3f%% [%s]\n",
+                       fps, target, disp_hz, n, dev_pct,
+                       g_settings.match_strict ? "competition" : "casual");
+                fps = target;
+            } else if (ratio > 1.0 - TOL_CASUAL && ratio < 1.0 + TOL_CASUAL) {
+                /* A clean multiple, but the speed error exceeds competition
+                   tolerance — only reachable in strict mode. */
+                fprintf(stderr,
+                    "[pace] competition mode: display %.4f Hz / %ld = %.4f Hz is a clean multiple\n"
+                    "[pace]   but %+.2f%% off the %.4f Hz core rate. Keeping NATIVE speed (legal);\n"
+                    "[pace]   expect minor judder. For smooth+legal: create a custom refresh of\n"
+                    "[pace]   %.3f Hz (= core x%ld). For smooth+casual: set match_strict: false.\n",
+                    disp_hz, n, target, dev_pct, fps, fps * (double)n, n);
+            } else {
+                fprintf(stderr,
+                    "[pace] WARNING: display %.4f Hz is not an integer multiple of the\n"
+                    "[pace]          %.4f Hz core rate (closest is /%ld = %.4f Hz, %+.2f%% off).\n"
+                    "[pace]          Running NATIVE core rate for speed accuracy; expect judder\n"
+                    "[pace]          during scrolling. For smooth playback use a refresh that\n"
+                    "[pace]          divides the core rate evenly (e.g. 60/120/240/360 for ~60fps\n"
+                    "[pace]          cores; 50/100/150/200 for ~50fps PAL) or enable VRR.\n",
+                    disp_hz, fps, n, target, dev_pct);
+            }
+        } else {
+            printf("[pace] match_display_hz: could not query display refresh; keeping core rate\n");
+        }
+    }
+    return fps;
 }
 
 /* Load core + ROM, build the presenter/audio around its AV info, and create
@@ -1811,6 +1979,7 @@ static int session_open(me_session *s, const char *core_path_in, const char *rom
         goto fail;
     }
     s->game_loaded = 1;
+    plug_gamepads(core);
     apply_adapter(core);
 
     if (me_build_save_path(core_path, rom_path, s->save_path, sizeof(s->save_path)) == 0) {
@@ -1837,6 +2006,8 @@ static int session_open(me_session *s, const char *core_path_in, const char *rom
            av.geometry.aspect_ratio, av.timing.fps, av.timing.sample_rate);
 
     /* Allocate backbuffer sized to max geometry. */
+    g_av_fps  = av.timing.fps;
+    g_av_rate = av.timing.sample_rate;
     g_back_max_w = av.geometry.max_width  ? av.geometry.max_width  : av.geometry.base_width;
     g_back_max_h = av.geometry.max_height ? av.geometry.max_height : av.geometry.base_height;
     g_back = (u32 *)calloc((size_t)g_back_max_w * g_back_max_h, sizeof(u32));
@@ -1910,84 +2081,8 @@ static int session_open(me_session *s, const char *core_path_in, const char *rom
     g_core_rate = (unsigned)(av.timing.sample_rate > 0 ? av.timing.sample_rate : 48000);
     double fps = av.timing.fps > 1.0 ? av.timing.fps : 60.0;
 
-    /* Refresh-rate matching: if the monitor's actual rate is a near-exact
-       integer multiple of the core's nominal fps, snap the pacing deadline to
-       refresh/N so FIFO holds every frame for exactly N refreshes (no judder).
-       Removes residual judder when core Hz ≠ display Hz (e.g. 60.10 vs 59.94)
-       at the cost of a tiny core-vs-device clock mismatch the audio DRC
-       already absorbs. fps here is the per-core rate from the AV info, so the
-       target adapts to whatever console/region is loaded. Opt-in via
-       settings.yaml. */
-    if (g_settings.match_display_hz) {
-        HMONITOR mon = MonitorFromWindow(g_hwnd, MONITOR_DEFAULTTONEAREST);
-        MONITORINFOEXA mi = {0};
-        mi.cbSize = sizeof(mi);
-        double disp_hz = 0.0;
-        if (GetMonitorInfoA(mon, (MONITORINFO *)&mi)) {
-            /* Prefer the exact rational refresh; fall back to integer Hz. */
-            disp_hz = me_query_exact_refresh_hz(mi.szDevice);
-            if (disp_hz <= 1.0) {
-                DEVMODEA dm = {0};
-                dm.dmSize = sizeof(dm);
-                if (EnumDisplaySettingsA(mi.szDevice, ENUM_CURRENT_SETTINGS, &dm)
-                    && dm.dmDisplayFrequency > 1) {
-                    /* dmDisplayFrequency is integer Hz. Treat 59 as 59.94 (NTSC). */
-                    disp_hz = (dm.dmDisplayFrequency == 59) ? 59.94 : (double)dm.dmDisplayFrequency;
-                }
-            }
-        }
-        if (disp_hz > 1.0) {
-            /* The display may run at an integer multiple of the core rate
-               (e.g. 239.760 Hz panel vs 60.0998 Hz NES = ~4x). Pace to
-               refresh/N so FIFO holds every frame for exactly N refreshes —
-               no judder, no tearing, no VRR. N==1 reduces to the plain
-               near-match case. */
-            long n = (long)(disp_hz / fps + 0.5);
-            if (n < 1) n = 1;
-            double target = disp_hz / (double)n;
-            double ratio = target / fps;
-            double dev_pct = (target / fps - 1.0) * 100.0;
+    fps = paced_fps(fps);
 
-            /* Snapping the game to refresh/N kills judder but changes its speed
-               by dev_pct, because a standard panel is never an exact multiple of
-               the console rate (a "240 Hz" panel is 59.940x4, not 60.0998x4).
-               competition mode (match_strict) only snaps when that error is
-               negligible — i.e. a true exact-multiple refresh; casual mode
-               tolerates the ~0.27% NTSC offset for plug-and-play smoothness.
-               Past ~0.3% no clean hold count exists at all (144 Hz, 700 Hz, ...). */
-            const double TOL_STRICT = 0.0005; /* 0.05% — competition */
-            const double TOL_CASUAL = 0.003;  /* 0.30% — casual smoothness */
-            double tol = g_settings.match_strict ? TOL_STRICT : TOL_CASUAL;
-
-            if (ratio > 1.0 - tol && ratio < 1.0 + tol) {
-                printf("[pace] match_display_hz: core %.4f Hz -> %.4f Hz "
-                       "(display %.4f / %ld), game speed %+.3f%% [%s]\n",
-                       fps, target, disp_hz, n, dev_pct,
-                       g_settings.match_strict ? "competition" : "casual");
-                fps = target;
-            } else if (ratio > 1.0 - TOL_CASUAL && ratio < 1.0 + TOL_CASUAL) {
-                /* A clean multiple, but the speed error exceeds competition
-                   tolerance — only reachable in strict mode. */
-                fprintf(stderr,
-                    "[pace] competition mode: display %.4f Hz / %ld = %.4f Hz is a clean multiple\n"
-                    "[pace]   but %+.2f%% off the %.4f Hz core rate. Keeping NATIVE speed (legal);\n"
-                    "[pace]   expect minor judder. For smooth+legal: create a custom refresh of\n"
-                    "[pace]   %.3f Hz (= core x%ld). For smooth+casual: set match_strict: false.\n",
-                    disp_hz, n, target, dev_pct, fps, fps * (double)n, n);
-            } else {
-                fprintf(stderr,
-                    "[pace] WARNING: display %.4f Hz is not an integer multiple of the\n"
-                    "[pace]          %.4f Hz core rate (closest is /%ld = %.4f Hz, %+.2f%% off).\n"
-                    "[pace]          Running NATIVE core rate for speed accuracy; expect judder\n"
-                    "[pace]          during scrolling. For smooth playback use a refresh that\n"
-                    "[pace]          divides the core rate evenly (e.g. 60/120/240/360 for ~60fps\n"
-                    "[pace]          cores; 50/100/150/200 for ~50fps PAL) or enable VRR.\n",
-                    disp_hz, fps, n, target, dev_pct);
-            }
-        } else {
-            printf("[pace] match_display_hz: could not query display refresh; keeping core rate\n");
-        }
-    }
     if (g_no_audio) {
         printf("[audio] disabled via --no-audio; using Sleep-based pacing\n");
         g_dev_rate = g_core_rate;
@@ -2125,6 +2220,11 @@ static void handle_hotkeys(void) {
     }
     if (fire[ME_HK_QUIT])       me_platform_request_quit();
     if (fire[ME_HK_HARD_RESET]) me_cmd_post(ME_CMD_HARD_RESET, 0, NULL);
+}
+
+/* When frame `n` is due, in ms after qstart. */
+static double frame_deadline_ms(const me_session *s, unsigned long n) {
+    return s->pace_base_ms + (double)(n - s->pace_base_frame) * s->frame_period_ms;
 }
 
 /* One main-loop iteration with a game running: backpressure wait, hotkeys,
@@ -2268,14 +2368,25 @@ static void session_run_frame(me_session *s) {
     }
     g_resamp_p_bias = drc_p_term;
 
-    /* QPC absolute-deadline pace. Frame N must land at qstart + N*period.
-       Sleep most of the wait at 1ms resolution, then spin the last bit. */
+    /* The core asked for new timing during this frame: pace from here on at
+       its new rate, and resample its audio from its new sample rate. */
+    if (g_av_timing_changed) {
+        g_av_timing_changed = 0;
+        s->pace_base_ms    = frame_deadline_ms(s, s->frame_count);
+        s->pace_base_frame = s->frame_count;
+        s->frame_period_ms = 1000.0 / paced_fps(g_av_fps > 1.0 ? g_av_fps : 60.0);
+        if (g_av_rate > 0) g_core_rate = (unsigned)g_av_rate;
+        printf("[pace] core timing now %.4f fps, %.1f Hz audio\n", g_av_fps, g_av_rate);
+    }
+
+    /* QPC absolute-deadline pace (frame_deadline_ms). Sleep most of the
+       wait at 1ms resolution, then spin the last bit. */
     s->frame_count++;
     {
         LARGE_INTEGER now;
         QueryPerformanceCounter(&now);
         double elapsed_ms = (double)(now.QuadPart - s->qstart.QuadPart) * 1000.0 / (double)qpf.QuadPart;
-        double deadline_ms = (double)s->frame_count * s->frame_period_ms;
+        double deadline_ms = frame_deadline_ms(s, s->frame_count);
         double wait_ms = deadline_ms - elapsed_ms;
         if (wait_ms > 1.5) Sleep((DWORD)(wait_ms - 1.0));
         while (1) {
@@ -2288,7 +2399,7 @@ static void session_run_frame(me_session *s) {
         LARGE_INTEGER now;
         QueryPerformanceCounter(&now);
         double elapsed_ms = (double)(now.QuadPart - s->qstart.QuadPart) * 1000.0 / (double)qpf.QuadPart;
-        double expected_ms = (double)s->frame_count * s->frame_period_ms;
+        double expected_ms = frame_deadline_ms(s, s->frame_count);
         double drift_ms = elapsed_ms - expected_ms;
         me_log(ME_LOG_TIMING,
                "[timing] frame %lu expected=%.3f ms actual=%.3f ms drift=%+.3f ms (%+.3f us/frame) bias=%+.4f%%\n",
@@ -2416,6 +2527,19 @@ static const char *path_basename(const char *path) {
 
 /* session_open plus the bookkeeping every way of starting a game shares. */
 static int open_game(me_session *s, const char *core_path, const char *rom_path, int console) {
+    /* System files the core can't do without: said up front, since cores
+       report them only in their log, if at all, and some then hang. */
+    char sysdir[MAX_PATH], missing[512] = "", why[1024] = "";
+    exepath(sysdir, sizeof(sysdir), "firmware");
+    me_core_missing_files(path_basename(core_path), sysdir, missing, sizeof(missing));
+    if (missing[0]) {
+        char name[128];
+        me_core_display_name(path_basename(core_path), name, sizeof(name));
+        snprintf(why, sizeof(why), "%s needs these system files, which aren't in %s:\n\n%s",
+                 name, sysdir, missing);
+        fprintf(stderr, "[firmware] %s", why);
+    }
+
     int rc = session_open(s, core_path, rom_path, console);
     if (rc == 0) {
         snprintf(g_last_core, sizeof(g_last_core), "%s", s->core_path);
@@ -2423,6 +2547,10 @@ static int open_game(me_session *s, const char *core_path, const char *rom_path,
         g_last_console = s->console;
         g_powered_off = 0;
         me_ui_notify_loaded(s->rom_path);
+        if (why[0])
+            me_ui_notify_error("%s\nThe game may not start, or may misbehave, until they're added.", why);
+    } else if (why[0]) {
+        me_ui_notify_error("Could not load %s.\n\n%s", path_basename(rom_path), why);
     } else {
         me_ui_notify_error("Could not load %s.\nSee the console window for details.",
                            path_basename(rom_path));
@@ -2553,6 +2681,7 @@ static int console_for_core(const char *rom_path, const char *core_path) {
 }
 
 int main(int argc, char **argv) {
+    g_main_tid = GetCurrentThreadId();
     SetUnhandledExceptionFilter(me_unhandled_exception);
     /* The elevated copy Cores > File Associations runs: registry only, no
        window, no folders or settings.yaml of its own. */
@@ -2732,6 +2861,7 @@ int main(int argc, char **argv) {
                 snprintf(pick_path, sizeof(pick_path), "%s", positional[0]);
         } else if (rc != 0) {
             fprintf(stderr, "[rom] %s\n", err);
+            me_ui_notify_error("%s", err);
             return 1;
         } else {
             rom_path  = positional[0];
@@ -2785,7 +2915,8 @@ int main(int argc, char **argv) {
     memset(&session, 0, sizeof(session));
     int exit_code = 0;
     if (rom_path) {
-        if (open_game(&session, core_path, rom_path, console) != 0) exit_code = 1;
+        /* A failure after the window is up leaves it idle, showing why. */
+        if (open_game(&session, core_path, rom_path, console) != 0 && !g_hwnd) exit_code = 1;
     } else if (create_main_window(640, 480) == 0) {
         me_platform_set_idle(g_hwnd, 1);
         publish_status(&session);

@@ -20,12 +20,19 @@ typedef struct {
     ME_XINPUT_GAMEPAD Gamepad;
 } ME_XINPUT_STATE;
 
+typedef struct {
+    uint16_t wLeftMotorSpeed;    /* low-frequency, strong */
+    uint16_t wRightMotorSpeed;   /* high-frequency, weak */
+} ME_XINPUT_VIBRATION;
+
 typedef DWORD (WINAPI *PFN_XInputGetState)(DWORD dwUserIndex, ME_XINPUT_STATE *pState);
+typedef DWORD (WINAPI *PFN_XInputSetState)(DWORD dwUserIndex, ME_XINPUT_VIBRATION *pVibration);
 
 /* ---- module state --------------------------------------------------------- */
 #define ME_XI_MAX_PLAYERS 4
 
 static PFN_XInputGetState g_xi_GetState = NULL;
+static PFN_XInputSetState g_xi_SetState = NULL;
 static HMODULE            g_xi_dll      = NULL;
 static int                g_xi_loaded   = 0;  /* -1=failed, 0=not tried, 1=ok */
 
@@ -89,6 +96,7 @@ int me_xinput_init(void) {
     if (!g_xi_dll) { g_xi_loaded = -1; return 0; }
 
     g_xi_GetState = (PFN_XInputGetState)GetProcAddress(g_xi_dll, "XInputGetState");
+    g_xi_SetState = (PFN_XInputSetState)(void (*)(void))GetProcAddress(g_xi_dll, "XInputSetState");
     if (!g_xi_GetState) {
         FreeLibrary(g_xi_dll);
         g_xi_dll = NULL;
@@ -147,6 +155,17 @@ int16_t me_xinput_axis(int player_index, me_xi_axis axis) {
 int me_xinput_connected(int player_index) {
     if (player_index < 0 || player_index >= ME_XI_MAX_PLAYERS) return 0;
     return g_xi_connected[player_index];
+}
+
+void me_xinput_rumble(int slot, uint16_t strong, uint16_t weak) {
+    /* Last speeds sent per slot: the driver call only happens on a change,
+       and cores set the same strength every frame. */
+    static volatile LONG sent[ME_XI_MAX_PLAYERS];
+    if (!g_xi_SetState || slot < 0 || slot >= ME_XI_MAX_PLAYERS) return;
+    LONG v = (LONG)(((uint32_t)strong << 16) | weak);
+    if (InterlockedExchange(&sent[slot], v) == v) return;
+    ME_XINPUT_VIBRATION vib = { strong, weak };
+    g_xi_SetState((DWORD)slot, &vib);
 }
 
 unsigned me_xinput_read(int slot, int *connected) {

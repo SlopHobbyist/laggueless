@@ -93,7 +93,10 @@ static const me_console k_consoles[] = {
 
     /* Atari */
     { "a2600",     "Atari 2600",               "a26", "bin",
-      "stella|stella2023|stella2014", 2, NULL, 0 },
+      /* Stella 2023 first: the buildbot's "stella" is an 8.0 pre-release
+         that rejects ordinary cartridge images ("Unrecognized ROM file
+         type"), where 2023 and 2014 load them. */
+      "stella2023|stella|stella2014", 2, NULL, 0 },
     { "a5200",     "Atari 5200",               "a52", "bin",
       "a5200|atari800", 4, NULL, 0 },
     { "a7800",     "Atari 7800",               "a78", "bin",
@@ -164,6 +167,21 @@ static const struct { const char *core; const char *name; } k_core_names[] = {
     { "gearcoleco", "Gearcoleco" },     { "bluemsx", "blueMSX" },
     { "fmsx", "fMSX" },                 { "freeintv", "FreeIntv" },
     { "vecx", "vecx" },
+};
+
+/* System files (in the firmware folder) a core can't do without, as the core
+   names them: files or folders, '|' between names it accepts instead. Only
+   cores that fail or hang without them; ones with a built-in stand-in
+   (Flycast, PCSX ReARMed, PokeMini...) aren't listed. */
+static const struct { const char *core; const char *files[3]; } k_core_files[] = {
+    { "gearcoleco",      { "colecovision.rom|coleco.rom|os7.u2" } },
+    { "freeintv",        { "exec.bin", "grom.bin" } },
+    { "mednafen_psx",    { "scph5501.bin|scph5500.bin|scph5502.bin|scph5503.bin" } },
+    { "mednafen_psx_hw", { "scph5501.bin|scph5500.bin|scph5502.bin|scph5503.bin" } },
+    { "mednafen_lynx",   { "lynxboot.img" } },
+    { "bluemsx",         { "Machines", "Databases" } },
+    { "dolphin",         { "dolphin-emu/Sys" } },
+    { "ppsspp",          { "PPSSPP" } },
 };
 
 #define COUNT(a) (sizeof(a) / sizeof((a)[0]))
@@ -379,6 +397,45 @@ void me_core_display_name(const char *dll, char *out, size_t out_sz) {
         }
     }
     snprintf(out, out_sz, "%s", dll);
+}
+
+/* Is there a file or folder `name` (length n, '/'-separated) in `dir`? */
+static int system_file_exists(const char *dir, const char *name, size_t n) {
+    char path[MAX_PATH];
+    int w = snprintf(path, sizeof(path), "%s\\%.*s", dir, (int)n, name);
+    if (w < 0 || (size_t)w >= sizeof(path)) return 0;
+    for (char *p = path; *p; p++) if (*p == '/') *p = '\\';
+    return GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
+}
+
+void me_core_missing_files(const char *dll, const char *system_dir, char *out, size_t out_sz) {
+    if (!out_sz) return;
+    out[0] = '\0';
+    size_t n = strlen(dll), sfx = strlen(DLL_SUFFIX), len = 0;
+    if (n <= sfx || _stricmp(dll + n - sfx, DLL_SUFFIX) != 0) return;
+    for (size_t i = 0; i < COUNT(k_core_files); i++) {
+        if (strlen(k_core_files[i].core) != n - sfx || _strnicmp(dll, k_core_files[i].core, n - sfx) != 0)
+            continue;
+        for (int f = 0; f < 3 && k_core_files[i].files[f]; f++) {
+            const char *names = k_core_files[i].files[f];
+            int found = 0;
+            for (const char *p = names; *p && !found; ) {
+                size_t k = strcspn(p, "|");
+                found = system_file_exists(system_dir, p, k);
+                p += k;
+                if (*p) p++;
+            }
+            if (found) continue;
+            /* One line per file: its names, "a or b", in Windows form. */
+            for (const char *p = names; *p && len + 5 < out_sz; p++) {
+                if (*p == '|') { memcpy(out + len, " or ", 4); len += 4; }
+                else out[len++] = *p == '/' ? '\\' : *p;
+            }
+            if (len + 1 < out_sz) out[len++] = '\n';
+            out[len] = '\0';
+        }
+        return;
+    }
 }
 
 void me_rom_patterns(char *out, size_t out_sz) {

@@ -18,7 +18,8 @@ LRESULT me_ui_handle(HWND h, UINT msg, WPARAM wp, LPARAM lp, int *handled);
 /* Emulation thread → UI. Any thread; never blocks. */
 void me_ui_notify_loaded(const char *rom_path);   /* add to Open Recent */
 void me_ui_notify_frame_gen(int on);              /* result of ME_CMD_FRAME_GEN */
-void me_ui_notify_error(const char *fmt, ...);    /* message box */
+void me_ui_notify_error(const char *fmt, ...);    /* message box; before the window
+                                                     exists, shown right away */
 /* Ask which of `consoles` a ROM is for (its file type is shared and its
    header doesn't say), then load it as that console's game. */
 void me_ui_pick_console(const char *rom_path, me_console_set consoles);

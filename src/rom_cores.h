@@ -84,6 +84,11 @@ void me_console_core_dll(const me_settings *s, const me_console *c, char *dll, s
    filename itself for cores we don't know. */
 void me_core_display_name(const char *dll, char *out, size_t out_sz);
 
+/* The system files a core can't do without that aren't in `system_dir` (the
+   firmware folder), one per line ("exec.bin\ngrom.bin\n"); "" when none are
+   missing or the core needs none we know of. */
+void me_core_missing_files(const char *dll, const char *system_dir, char *out, size_t out_sz);
+
 /* All extensions in the table as a file-dialog pattern: "*.nes;*.fds;...". */
 void me_rom_patterns(char *out, size_t out_sz);
 

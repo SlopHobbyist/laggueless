@@ -152,6 +152,10 @@ static struct {
     /* Which source slot we wrote last (0 or 1, alternating). */
     int                lsfg_src_slot;
     int                lsfg_multiplier; /* 2, 3, or 4 */
+    /* me_vk_lsfg_init's other arguments, to reopen it at a new size. */
+    char               lsfg_dll[MAX_PATH];
+    float              lsfg_flow_scale;
+    int                lsfg_perf_mode;
 
     /* Backend objects. */
     me_lsfg_instance  *lsfg_inst;
@@ -1536,6 +1540,9 @@ int me_vk_lsfg_init(const char *dll_path, unsigned width, unsigned height,
     g_vk.lsfg_src_slot    = 0;
     g_vk.lsfg_multiplier  = multiplier;
     g_vk.lsfg_timeline_value = 0;
+    if (dll_path != g_vk.lsfg_dll) snprintf(g_vk.lsfg_dll, sizeof(g_vk.lsfg_dll), "%s", dll_path);
+    g_vk.lsfg_flow_scale  = flow_scale;
+    g_vk.lsfg_perf_mode   = perf_mode;
     fprintf(stderr, "[vk-lsfg] B4 OK: frame gen ready (%ux%u, x%d, flow=%.2f, perf=%s, FIFO)\n",
             width, height, multiplier, flow_scale, perf_mode ? "on" : "off");
     return 0;
@@ -1564,6 +1571,26 @@ void me_vk_lsfg_shutdown(void) {
     me_lsfg_backend_destroy(g_vk.lsfg_inst);
     g_vk.lsfg_inst = NULL;
     g_vk.lsfg_enabled = 0;
+}
+
+/* The context is opened at the core's base size, but cores change their frame
+   size as they run (PlayStation games between menus and play). A frame
+   smaller than the context fills its top-left; a bigger one would be cut
+   off, so reopen it big enough for both. Only ever grows, so a game that
+   switches back and forth reopens it once. Costs a GPU idle and a few ms:
+   the frame is late, never dropped. */
+static void lsfg_fit(unsigned frame_w, unsigned frame_h) {
+    if (!g_vk.lsfg_enabled) return;
+    if (frame_w <= g_vk.lsfg_width && frame_h <= g_vk.lsfg_height) return;
+    unsigned w = frame_w > g_vk.lsfg_width  ? frame_w : g_vk.lsfg_width;
+    unsigned h = frame_h > g_vk.lsfg_height ? frame_h : g_vk.lsfg_height;
+    fprintf(stderr, "[vk-lsfg] frame is %ux%u, frame gen was %ux%u; reopening at %ux%u\n",
+            frame_w, frame_h, g_vk.lsfg_width, g_vk.lsfg_height, w, h);
+    int multiplier = g_vk.lsfg_multiplier;
+    me_vk_lsfg_shutdown();
+    if (me_vk_lsfg_init(g_vk.lsfg_dll, w, h, multiplier, g_vk.lsfg_flow_scale,
+                        g_vk.lsfg_perf_mode) != 0)
+        fprintf(stderr, "[vk-lsfg] reopening failed; frame gen off for this game\n");
 }
 
 #endif /* ME_HAVE_LSFG */
@@ -1646,6 +1673,13 @@ int me_vk_present(const u32 *pixels, unsigned frame_w, unsigned frame_h, unsigne
         if (recreate_swapchain() != 0) return -1;
         if (g_vk.swapchain == VK_NULL_HANDLE) return 0; /* minimized */
     }
+
+#ifdef ME_HAVE_LSFG
+    /* Before this frame's commands use the frame gen images. */
+    if (pixels)
+        lsfg_fit(frame_w < g_vk.max_w ? frame_w : g_vk.max_w,
+                 frame_h < g_vk.max_h ? frame_h : g_vk.max_h);
+#endif
 
     FrameSync *f = &g_vk.frames[g_vk.frame_index];
 

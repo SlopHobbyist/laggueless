@@ -64,6 +64,10 @@ int16_t me_xinput_axis(int player_index, me_xi_axis axis);
 /* Returns 1 if the controller at `player_index` is connected. */
 int  me_xinput_connected(int player_index);
 
+/* Set the pad's motors (0..65535 each): strong = the low-frequency one.
+   Any thread; only calls the driver when the speeds change. */
+void me_xinput_rumble(int slot, uint16_t strong, uint16_t weak);
+
 /* Read a slot directly, bypassing the per-frame poll state. Returns the
    ME_XI_* mask (real + pseudo buttons) currently held; *connected (optional)
    receives whether the pad answered. Safe to call from any thread — used by
