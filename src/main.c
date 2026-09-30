@@ -2559,7 +2559,8 @@ static int open_game(me_session *s, const char *core_path, const char *rom_path,
        report them only in their log, if at all, and some then hang. */
     char sysdir[MAX_PATH], missing[512] = "", why[1024] = "";
     exepath(sysdir, sizeof(sysdir), "firmware");
-    me_core_missing_files(path_basename(core_path), sysdir, missing, sizeof(missing));
+    const me_console *c = me_console_at(console);
+    me_core_missing_files(path_basename(core_path), c ? c->id : NULL, sysdir, missing, sizeof(missing));
     if (missing[0]) {
         char name[128];
         me_core_display_name(path_basename(core_path), name, sizeof(name));
@@ -2576,12 +2577,26 @@ static int open_game(me_session *s, const char *core_path, const char *rom_path,
         g_powered_off = 0;
         me_ui_notify_loaded(s->rom_path);
         if (why[0])
-            me_ui_notify_error("%s\nThe game may not start, or may misbehave, until they're added.", why);
+            me_ui_notify_error("%s\nThe game may not start, or may misbehave, until they're added.\n"
+                               "Cores > Firmware shows what each console needs.", why);
     } else if (why[0]) {
-        me_ui_notify_error("Could not load %s.\n\n%s", path_basename(rom_path), why);
+        me_ui_notify_error("Could not load %s.\n\n%s\nCores > Firmware shows what each console needs.",
+                           path_basename(rom_path), why);
     } else {
-        me_ui_notify_error("Could not load %s.\nSee the console window for details.",
-                           path_basename(rom_path));
+        /* Firmware only some games need (a cartridge's extra chip): likely
+           why, when it's missing. */
+        me_firmware_file files[8];
+        int n = me_core_firmware(path_basename(core_path), c ? c->id : NULL, sysdir, files, 8);
+        const me_firmware_file *chip = NULL;
+        for (int i = 0; i < n && !chip; i++)
+            if (files[i].some_games && !files[i].found[0]) chip = &files[i];
+        if (chip)
+            me_ui_notify_error("Could not load %s.\n\nIf the game has an extra chip, it needs %s, "
+                               "which isn't in %s:\n\n%s\n\nCores > Firmware shows what each console needs.",
+                               path_basename(rom_path), chip->label, sysdir, chip->show);
+        else
+            me_ui_notify_error("Could not load %s.\nSee the console window for details.",
+                               path_basename(rom_path));
     }
     publish_status(s);
     return rc;

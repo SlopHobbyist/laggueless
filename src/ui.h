@@ -56,6 +56,10 @@ void me_ui_hotkeys_dialog(HWND owner);
 void me_ui_download_cores(HWND owner);
 void me_ui_set_cores_dialog(HWND owner);
 
+/* Cores > Firmware (ui_firmware.c): the system files the consoles' cores
+   need, and which are missing. Modal to the UI thread only. */
+void me_ui_firmware_dialog(HWND owner);
+
 /* Cores > File Associations (ui_assoc.c): which consoles' ROMs Windows opens
    in laggueless. Modal to the UI thread only. Changing them for all users
    runs this exe elevated with ME_FILE_TYPES_ARG first; main() hands that

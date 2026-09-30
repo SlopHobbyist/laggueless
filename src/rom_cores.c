@@ -169,20 +169,85 @@ static const struct { const char *core; const char *name; } k_core_names[] = {
     { "vecx", "vecx" },
 };
 
-/* System files (in the firmware folder) a core can't start games without, as
-   the core names them: files or folders, '|' between names it accepts
-   instead. Found by starting each core with an empty firmware folder; cores
-   that start without (a built-in stand-in, or files that only add extras,
-   like Dolphin's Sys and PPSSPP's assets) aren't listed. blueMSX's Machines
-   ships with laggueless (free_firmware\: C-BIOS). SwanStation needs a BIOS
-   too, but accepts any file name, so it can't be checked by name. */
-static const struct { const char *core; const char *files[3]; } k_core_files[] = {
-    { "gearcoleco",      { "colecovision.rom|coleco.rom|os7.u2" } },
-    { "freeintv",        { "exec.bin", "grom.bin" } },
-    { "mednafen_psx",    { "scph5501.bin|scph5500.bin|scph5502.bin|scph5503.bin" } },
-    { "mednafen_psx_hw", { "scph5501.bin|scph5500.bin|scph5502.bin|scph5503.bin" } },
-    { "mednafen_lynx",   { "lynxboot.img" } },
-    { "bluemsx",         { "Machines" } },
+/* System files (in the firmware folder) a core needs to start games: files
+   or folders, as the core names them. Found by starting each core with an
+   empty firmware folder; cores that start without them (a built-in stand-in,
+   or files that only add extras, like Dolphin's Sys and PPSSPP's assets)
+   aren't listed, except PCSX ReARMed, whose stand-in BIOS runs games worse.
+   Cores > Firmware lists these; a game warns when one is missing. blueMSX's
+   Machines ships with laggueless (free_firmware\: C-BIOS). */
+typedef struct {
+    const char *names;  /* '|'-separated: every name the core accepts */
+    const char *label;  /* what it is, for Cores > Firmware */
+    const char *show;   /* the names to ask the player for */
+    int some_games;     /* only some games need it (so none are warned about) */
+} core_file;
+
+/* bsnes-mercury and bsnes 2014 run a cartridge's extra chip (Super Mario
+   Kart's DSP-1...) from its firmware; newer cores emulate the chips. */
+#define SNES_CHIP_FIRMWARE { \
+    "dsp1b.program.rom|dsp1.program.rom|dsp2.program.rom|dsp3.program.rom|dsp4.program.rom|" \
+    "st010.program.rom|st011.program.rom|st018.program.rom|cx4.data.rom", \
+    "SNES chip firmware", \
+    "dsp1b.program.rom and dsp1b.data.rom, and the same for the other chips (DSP-1 to 4, " \
+    "ST010, ST011, ST018, Cx4): only games with one need it", 1 }
+
+/* Beetle PSX takes the BIOS of the game's region, under any of these names. */
+#define BEETLE_PSX_BIOS { \
+    "scph5501.bin|scph5500.bin|scph5502.bin|scph-5501.bin|scph-5500.bin|scph-5502.bin|" \
+    "scph5503.bin|scph-5503.bin|scph7003.bin|scph-7003.bin|scph5552.bin|scph-5552.bin|" \
+    "ps1_rom.bin|psxonpsp660.bin|openbios.bin", \
+    "PlayStation BIOS", \
+    "scph5501.bin (USA), scph5500.bin (Japan), scph5502.bin (Europe): the one for your games' region", 0 }
+
+static const struct {
+    const char *core;
+    const char *console;   /* only for this console id, or NULL for all */
+    core_file   files[3];
+} k_core_files[] = {
+    { "gearcoleco", NULL, {
+        { "colecovision.rom|coleco.rom|os7.u2", "ColecoVision BIOS", "colecovision.rom", 0 } } },
+    { "freeintv", NULL, {
+        { "exec.bin", "Intellivision Executive ROM", "exec.bin", 0 },
+        { "grom.bin", "Intellivision Graphics ROM", "grom.bin", 0 } } },
+    { "mednafen_psx",    NULL, { BEETLE_PSX_BIOS } },
+    { "mednafen_psx_hw", NULL, { BEETLE_PSX_BIOS } },
+    /* It starts games with its built-in (HLE) BIOS, but "you should always
+       supply valid BIOS images" (its documentation): compatibility suffers. */
+    { "pcsx_rearmed", NULL, {
+        { "scph5501.bin|scph1001.bin|scph101.bin|scph7001.bin|scph5500.bin|scph5502.bin|psxonpsp660.bin",
+          "PlayStation BIOS", "scph5501.bin, scph1001.bin, scph5500.bin or scph5502.bin: any region", 0 } } },
+    /* It recognizes a BIOS by its contents, not its name: these are the
+       usual ones, but a BIOS under another name works too. */
+    { "swanstation", NULL, {
+        { "scph5501.bin|scph5500.bin|scph5502.bin|scph1001.bin|scph101.bin|scph7001.bin",
+          "PlayStation BIOS", "scph5501.bin, scph5500.bin or scph5502.bin (any file name works)", 0 } } },
+    { "mednafen_lynx", NULL, {
+        { "lynxboot.img", "Lynx boot ROM", "lynxboot.img", 0 } } },
+    { "gearlynx", NULL, {
+        { "lynxboot.img", "Lynx boot ROM", "lynxboot.img", 0 } } },
+    { "bsnes_mercury_accuracy",    NULL, { SNES_CHIP_FIRMWARE } },
+    { "bsnes_mercury_balanced",    NULL, { SNES_CHIP_FIRMWARE } },
+    { "bsnes_mercury_performance", NULL, { SNES_CHIP_FIRMWARE } },
+    { "bsnes2014_accuracy",        NULL, { SNES_CHIP_FIRMWARE } },
+    { "bsnes2014_balanced",        NULL, { SNES_CHIP_FIRMWARE } },
+    { "bsnes2014_performance",     NULL, { SNES_CHIP_FIRMWARE } },
+    /* In its default MSX2+ mode (core options: MSX1 wants MSX.ROM, MSX2
+       MSX2.ROM and MSX2EXT.ROM). */
+    { "fmsx", NULL, {
+        { "MSX2P.ROM", "MSX2+ BIOS", "MSX2P.ROM", 0 },
+        { "MSX2PEXT.ROM", "MSX2+ BIOS extension", "MSX2PEXT.ROM", 0 } } },
+    /* blueMSX runs each console as a "machine": a folder in Machines with a
+       config.ini, and the BIOS if the console has one. Without it, blueMSX
+       falls back to an MSX. */
+    { "bluemsx", "coleco", {
+        { "Machines/COL - ColecoVision/coleco.rom", "ColecoVision BIOS",
+          "Machines\\COL - ColecoVision\\coleco.rom (and its config.ini)", 0 } } },
+    { "bluemsx", "sg1000", {
+        { "Machines/SEGA - SG-1000/config.ini", "SG-1000 machine (no BIOS)",
+          "Machines\\SEGA - SG-1000\\config.ini, from blueMSX's Machines folder", 0 } } },
+    { "bluemsx", "msx", {
+        { "Machines", "MSX machines", "Machines folder (C-BIOS comes with laggueless)", 0 } } },
 };
 
 #define COUNT(a) (sizeof(a) / sizeof((a)[0]))
@@ -546,33 +611,52 @@ static int system_file_exists(const char *dir, const char *name, size_t n) {
     return GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
 }
 
-void me_core_missing_files(const char *dll, const char *system_dir, char *out, size_t out_sz) {
-    if (!out_sz) return;
-    out[0] = '\0';
-    size_t n = strlen(dll), sfx = strlen(DLL_SUFFIX), len = 0;
-    if (n <= sfx || _stricmp(dll + n - sfx, DLL_SUFFIX) != 0) return;
+int me_core_firmware(const char *dll, const char *console_id, const char *system_dir,
+                     me_firmware_file *out, int max) {
+    size_t n = strlen(dll), sfx = strlen(DLL_SUFFIX);
+    int count = 0;
+    if (n <= sfx || _stricmp(dll + n - sfx, DLL_SUFFIX) != 0) return 0;
     for (size_t i = 0; i < COUNT(k_core_files); i++) {
         if (strlen(k_core_files[i].core) != n - sfx || _strnicmp(dll, k_core_files[i].core, n - sfx) != 0)
             continue;
-        for (int f = 0; f < 3 && k_core_files[i].files[f]; f++) {
-            const char *names = k_core_files[i].files[f];
-            int found = 0;
-            for (const char *p = names; *p && !found; ) {
+        if (k_core_files[i].console && (!console_id || _stricmp(k_core_files[i].console, console_id) != 0))
+            continue;
+        for (int f = 0; f < 3 && k_core_files[i].files[f].names && count < max; f++) {
+            const core_file *cf = &k_core_files[i].files[f];
+            me_firmware_file *o = &out[count++];
+            o->label = cf->label;
+            o->show  = cf->show;
+            o->some_games = cf->some_games;
+            o->found[0] = '\0';
+            /* Every name it's there under ("scph5500.bin, scph5501.bin"). */
+            size_t len = 0;
+            for (const char *p = cf->names; *p; ) {
                 size_t k = strcspn(p, "|");
-                found = system_file_exists(system_dir, p, k);
+                if (system_file_exists(system_dir, p, k) && len + k + 3 < sizeof(o->found)) {
+                    len += (size_t)snprintf(o->found + len, sizeof(o->found) - len, "%s%.*s",
+                                            len ? ", " : "", (int)k, p);
+                }
                 p += k;
                 if (*p) p++;
             }
-            if (found) continue;
-            /* One line per file: its names, "a or b", in Windows form. */
-            for (const char *p = names; *p && len + 5 < out_sz; p++) {
-                if (*p == '|') { memcpy(out + len, " or ", 4); len += 4; }
-                else out[len++] = *p == '/' ? '\\' : *p;
-            }
-            if (len + 1 < out_sz) out[len++] = '\n';
-            out[len] = '\0';
+            for (char *c = o->found; *c; c++) if (*c == '/') *c = '\\';
         }
-        return;
+    }
+    return count;
+}
+
+void me_core_missing_files(const char *dll, const char *console_id, const char *system_dir,
+                           char *out, size_t out_sz) {
+    if (!out_sz) return;
+    out[0] = '\0';
+    me_firmware_file files[8];
+    int n = me_core_firmware(dll, console_id, system_dir, files, 8);
+    size_t len = 0;
+    for (int i = 0; i < n; i++) {
+        if (files[i].found[0] || files[i].some_games) continue;
+        int w = snprintf(out + len, out_sz - len, "%s: %s\n", files[i].label, files[i].show);
+        if (w < 0 || (size_t)w >= out_sz - len) break;
+        len += (size_t)w;
     }
 }
 

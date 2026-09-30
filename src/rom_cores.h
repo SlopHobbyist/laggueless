@@ -93,10 +93,26 @@ void me_console_core_dll(const me_settings *s, const me_console *c, char *dll, s
    filename itself for cores we don't know. */
 void me_core_display_name(const char *dll, char *out, size_t out_sz);
 
-/* The system files a core can't do without that aren't in `system_dir` (the
-   firmware folder), one per line ("exec.bin\ngrom.bin\n"); "" when none are
-   missing or the core needs none we know of. */
-void me_core_missing_files(const char *dll, const char *system_dir, char *out, size_t out_sz);
+/* A system file a core needs to start games (a BIOS...), and whether it's
+   in the firmware folder. */
+typedef struct {
+    const char *label;     /* what it is ("PlayStation BIOS") */
+    const char *show;      /* the file names to ask the player for */
+    int         some_games;/* only games with an extra chip need it */
+    char        found[128];/* the names it's there under, "" if missing */
+} me_firmware_file;
+
+/* The system files core `dll` needs to start `console_id`'s games (NULL:
+   any console's), checked in `system_dir`. Fills up to `max`; returns how
+   many (0: it needs none). Optional files (ones that only add extras) are
+   never listed. */
+int me_core_firmware(const char *dll, const char *console_id, const char *system_dir,
+                     me_firmware_file *out, int max);
+
+/* The files me_core_firmware reports missing, one "label: names" line
+   each; "" when none are. Ones only some games need aren't counted. */
+void me_core_missing_files(const char *dll, const char *console_id, const char *system_dir,
+                           char *out, size_t out_sz);
 
 /* All extensions in the table as a file-dialog pattern: "*.nes;*.fds;...". */
 void me_rom_patterns(char *out, size_t out_sz);
